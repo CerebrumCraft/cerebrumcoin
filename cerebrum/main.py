@@ -40,6 +40,11 @@ from cerebrum.signals.technical import (
     RSISignal,
     VWAPSignal,
 )
+from cerebrum.intelligence.news import NewsIngestionPipeline
+from cerebrum.intelligence.llm import LLMNewsAnalyzer
+from cerebrum.intelligence.social import FearGreedSentiment
+from cerebrum.signals.sentiment import FinBERTSentiment
+from cerebrum.signals.regime import RegimeDetector
 
 # Configure structured logging
 structlog.configure(
@@ -77,6 +82,7 @@ class CerebrumCoin:
         self.risk_manager: RiskManager | None = None
         self.signal_agg: SignalAggregator | None = None
         self._signal_generators: list = []
+        self._intelligence_components: list = []
         self._shutdown_event = asyncio.Event()
         self._log = logger.bind(component="main")
 
@@ -157,6 +163,49 @@ class CerebrumCoin:
             window_seconds=self.config.signals.aggregation_window_seconds,
         )
 
+        # Initialize intelligence layer components
+        news_pipeline = NewsIngestionPipeline(
+            self.bus,
+            cryptopanic_api_key=self.config.intelligence.cryptopanic_api_key,
+            cryptopanic_poll_interval=self.config.intelligence.cryptopanic_poll_interval_seconds,
+            newsapi_api_key=self.config.intelligence.newsapi_api_key,
+            newsapi_poll_interval=self.config.intelligence.newsapi_poll_interval_seconds,
+        )
+        await news_pipeline.start()
+        self._intelligence_components.append(news_pipeline)
+
+        llm_analyzer = LLMNewsAnalyzer(
+            self.bus,
+            anthropic_api_key=self.config.llm.anthropic_api_key,
+            model=self.config.llm.model,
+            max_calls_per_hour=self.config.llm.max_calls_per_hour,
+            batch_size=self.config.llm.news_batch_size,
+            batch_window_seconds=self.config.llm.news_batch_window_seconds,
+            timeout_seconds=self.config.llm.timeout_seconds,
+        )
+        await llm_analyzer.start()
+        self._intelligence_components.append(llm_analyzer)
+
+        fear_greed = FearGreedSentiment(
+            self.bus,
+            poll_interval=self.config.intelligence.fear_greed_poll_interval_seconds,
+        )
+        await fear_greed.start()
+        self._intelligence_components.append(fear_greed)
+
+        if self.config.intelligence.enable_finbert:
+            finbert = FinBERTSentiment(
+                self.bus,
+                enabled=True,
+            )
+            self._intelligence_components.append(finbert)
+
+        regime_detector = RegimeDetector(
+            self.bus,
+            use_hmm=self.config.intelligence.enable_hmm_regime,
+        )
+        self._intelligence_components.append(regime_detector)
+
         # Initialize risk manager with rules
         risk_rules = [
             PositionSizingRule(self.config.risk.position_size_percent),
@@ -188,6 +237,11 @@ class CerebrumCoin:
     async def stop(self) -> None:
         """Stop the trading system gracefully."""
         self._log.info("cerebrumcoin_stopping")
+
+        # Stop intelligence components
+        for component in self._intelligence_components:
+            if hasattr(component, 'stop'):
+                await component.stop()
 
         # Disconnect adapters
         if self.kraken_adapter:

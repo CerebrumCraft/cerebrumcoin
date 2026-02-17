@@ -10,6 +10,14 @@ using configurable weights and a threshold-based debounce mechanism.
 @rationale Multiple signals produce conflicting recommendations. Weighted voting with
 confidence-adjusted strengths produces a unified decision. Debounce threshold (e.g., 0.3)
 prevents signal flapping on weak/noisy indicators. Only emits when aggregate exceeds threshold.
+
+@decision DEC-INT-005
+@title Regime-aware signal weight adjustment
+@status accepted
+@rationale Different market regimes favor different strategies. BULL: boost trend-following
+(technical). BEAR: boost risk-off (reduce all weights). VOLATILE: reduce confidence and
+increase threshold. SIDEWAYS: favor mean-reversion. Regime changes trigger dynamic weight
+adjustment for context-aware trading.
 """
 
 from collections import defaultdict, deque
@@ -21,7 +29,7 @@ from typing import Deque
 import structlog
 
 from cerebrum.core.bus import EventBus
-from cerebrum.core.events import Event, SignalEvent
+from cerebrum.core.events import Event, RegimeChangeEvent, SignalEvent
 from cerebrum.core.types import EventType, SignalAction, SignalType, Symbol
 
 logger = structlog.get_logger()
@@ -82,14 +90,27 @@ class SignalAggregator:
         
         # Track last emission time per symbol (for debounce)
         self._last_emission: dict[Symbol, float] = {}
-        
+
+        # Current market regime
+        self._current_regime: str = "UNKNOWN"
+
+        # Base weights (stored for regime adjustments)
+        self._base_weights = self._weights.copy()
+
         self._log = logger.bind(component="signal_aggregator")
-        
+
         # Subscribe to all signal types
         bus.subscribe(
             EventType.SIGNAL,
             self._on_signal,
             subscriber_name="signal_aggregator",
+        )
+
+        # Subscribe to regime changes
+        bus.subscribe(
+            EventType.REGIME_CHANGE,
+            self._on_regime_change,
+            subscriber_name="signal_aggregator_regime",
         )
         
         self._log.info(
@@ -231,3 +252,45 @@ class SignalAggregator:
         """Update weight for a signal type."""
         self._weights[signal_type] = weight
         self._log.info("weight_updated", signal_type=signal_type.value, weight=str(weight))
+
+    async def _on_regime_change(self, event: Event) -> None:
+        """Handle regime changes and adjust weights."""
+        if not isinstance(event, RegimeChangeEvent):
+            return
+
+        self._current_regime = event.to_regime
+
+        # Adjust weights based on regime
+        if event.to_regime == "BULL":
+            # Boost trend-following (technical signals)
+            self._weights[SignalType.TECHNICAL] = self._base_weights[SignalType.TECHNICAL] * Decimal("1.2")
+            self._weights[SignalType.SENTIMENT] = self._base_weights[SignalType.SENTIMENT] * Decimal("0.8")
+            self._weights[SignalType.NEWS] = self._base_weights[SignalType.NEWS] * Decimal("0.9")
+
+        elif event.to_regime == "BEAR":
+            # Boost risk-off, reduce all signals
+            self._weights[SignalType.TECHNICAL] = self._base_weights[SignalType.TECHNICAL] * Decimal("0.8")
+            self._weights[SignalType.SENTIMENT] = self._base_weights[SignalType.SENTIMENT] * Decimal("1.2")
+            self._weights[SignalType.NEWS] = self._base_weights[SignalType.NEWS] * Decimal("1.1")
+
+        elif event.to_regime == "VOLATILE":
+            # Reduce all weights, increase threshold (done via confidence reduction in aggregate)
+            self._weights[SignalType.TECHNICAL] = self._base_weights[SignalType.TECHNICAL] * Decimal("0.7")
+            self._weights[SignalType.SENTIMENT] = self._base_weights[SignalType.SENTIMENT] * Decimal("0.6")
+            self._weights[SignalType.NEWS] = self._base_weights[SignalType.NEWS] * Decimal("0.5")
+
+        elif event.to_regime == "SIDEWAYS":
+            # Favor mean-reversion (reduce trend-following)
+            self._weights[SignalType.TECHNICAL] = self._base_weights[SignalType.TECHNICAL] * Decimal("0.9")
+            self._weights[SignalType.SENTIMENT] = self._base_weights[SignalType.SENTIMENT] * Decimal("1.0")
+            self._weights[SignalType.NEWS] = self._base_weights[SignalType.NEWS] * Decimal("1.0")
+
+        else:
+            # Unknown regime: use base weights
+            self._weights = self._base_weights.copy()
+
+        self._log.info(
+            "regime_weights_adjusted",
+            regime=event.to_regime,
+            weights={k.value: str(v) for k, v in self._weights.items()},
+        )
