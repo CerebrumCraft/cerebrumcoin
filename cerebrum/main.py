@@ -23,6 +23,23 @@ from cerebrum.adapters.kraken import KrakenAdapter
 from cerebrum.adapters.paper import PaperTradingAdapter
 from cerebrum.core.bus import EventBus
 from cerebrum.core.config import Config
+from cerebrum.risk.manager import RiskManager
+from cerebrum.risk.portfolio import PortfolioTracker
+from cerebrum.risk.rules import (
+    MaxDrawdownRule,
+    MaxPositionSizeRule,
+    MaxTotalExposureRule,
+    MinSignalStrengthRule,
+    PositionSizingRule,
+)
+from cerebrum.signals.aggregator import SignalAggregator
+from cerebrum.signals.candles import CandleAggregator
+from cerebrum.signals.technical import (
+    BollingerBandsSignal,
+    MACDSignal,
+    RSISignal,
+    VWAPSignal,
+)
 
 # Configure structured logging
 structlog.configure(
@@ -55,6 +72,11 @@ class CerebrumCoin:
         self.bus = EventBus()
         self.kraken_adapter: KrakenAdapter | None = None
         self.paper_adapter: PaperTradingAdapter | None = None
+        self.candle_agg: CandleAggregator | None = None
+        self.portfolio: PortfolioTracker | None = None
+        self.risk_manager: RiskManager | None = None
+        self.signal_agg: SignalAggregator | None = None
+        self._signal_generators: list = []
         self._shutdown_event = asyncio.Event()
         self._log = logger.bind(component="main")
 
@@ -87,6 +109,68 @@ class CerebrumCoin:
         )
         await self.paper_adapter.connect()
 
+        # Initialize candle aggregator
+        self.candle_agg = CandleAggregator(
+            self.bus,
+            interval_seconds=self.config.signals.candle_interval_seconds,
+        )
+
+        # Initialize portfolio tracker
+        self.portfolio = PortfolioTracker(
+            self.bus,
+            initial_balance=self.config.paper.initial_balance_usd,
+        )
+
+        # Initialize technical signal generators
+        self._signal_generators = [
+            RSISignal(
+                self.bus,
+                self.candle_agg,
+                period=self.config.signals.rsi_period,
+                oversold=self.config.signals.rsi_oversold,
+                overbought=self.config.signals.rsi_overbought,
+            ),
+            MACDSignal(
+                self.bus,
+                self.candle_agg,
+                fast=self.config.signals.macd_fast,
+                slow=self.config.signals.macd_slow,
+                signal=self.config.signals.macd_signal,
+            ),
+            BollingerBandsSignal(
+                self.bus,
+                self.candle_agg,
+                period=self.config.signals.bb_period,
+                std_dev=self.config.signals.bb_std_dev,
+            ),
+            VWAPSignal(
+                self.bus,
+                self.candle_agg,
+                period=self.config.signals.vwap_period,
+            ),
+        ]
+
+        # Initialize signal aggregator
+        self.signal_agg = SignalAggregator(
+            self.bus,
+            threshold=self.config.signals.aggregation_threshold,
+            window_seconds=self.config.signals.aggregation_window_seconds,
+        )
+
+        # Initialize risk manager with rules
+        risk_rules = [
+            PositionSizingRule(self.config.risk.position_size_percent),
+            MaxPositionSizeRule(self.config.risk.max_position_size_usd),
+            MaxTotalExposureRule(self.config.risk.max_total_exposure_usd),
+            MaxDrawdownRule(self.config.risk.max_drawdown_percent),
+            MinSignalStrengthRule(),
+        ]
+        self.risk_manager = RiskManager(
+            self.bus,
+            self.portfolio,
+            rules=risk_rules,
+        )
+
         # Subscribe to market data
         await self.kraken_adapter.subscribe_market_data(self.config.trading.symbols)
 
@@ -94,6 +178,8 @@ class CerebrumCoin:
             "cerebrumcoin_started",
             symbols=self.config.trading.symbols,
             initial_balance=str(self.config.paper.initial_balance_usd),
+            signal_generators=len(self._signal_generators),
+            risk_rules=len(risk_rules),
         )
 
         # Wait for shutdown signal

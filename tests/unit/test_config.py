@@ -80,7 +80,6 @@ def test_trading_config_defaults():
     assert config.mode == TradingMode.PAPER
     assert config.symbols == ["BTC/USD", "ETH/USD"]
     assert config.data_refresh_seconds == 1
-    assert config.signal_aggregation_window_seconds == 5
 
 
 def test_master_config_composition():

@@ -23,7 +23,20 @@ state_file = "data/paper_state.json"
 mode = "paper"
 symbols = ["BTC/USD", "ETH/USD"]
 data_refresh_seconds = 1
-signal_aggregation_window_seconds = 5
+
+[signals]
+candle_interval_seconds = 60
+rsi_period = 14
+rsi_oversold = 30
+rsi_overbought = 70
+macd_fast = 12
+macd_slow = 26
+macd_signal = 9
+bb_period = 20
+bb_std_dev = 2.0
+vwap_period = 20
+aggregation_threshold = "0.3"
+aggregation_window_seconds = 5
 
 [logging]
 level = "INFO"
