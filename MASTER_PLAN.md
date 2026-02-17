@@ -16,7 +16,7 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
        └──────────────────── [Closed-Loop Learner] ←───────────────────────────────────────┘
 ```
 
-**Status**: Phase 1 — Foundation (in progress)
+**Status**: Phase 1 — Foundation (completed) | Phase 2 — Signal Engine (planned)
 
 ## Technology Stack
 
@@ -57,18 +57,18 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 
 ## Phases
 
-### Phase 1: Foundation ← CURRENT
+### Phase 1: Foundation (COMPLETED)
 **Goal**: Project scaffolding, event bus, Kraken data flowing through the pipeline.
 
 - [x] Initialize git repo, pyproject.toml with dependencies
-- [ ] Implement `core/bus.py` — async event bus with typed events
-- [ ] Implement `core/events.py` — MarketData, Signal, Order, Fill event types
-- [ ] Implement `core/config.py` — Pydantic settings from TOML + env vars
-- [ ] Implement `core/types.py` — shared type definitions
-- [ ] Implement `adapters/base.py` — abstract exchange adapter
-- [ ] Implement `adapters/kraken.py` — connect to Kraken, stream price data
-- [ ] Implement `adapters/paper.py` — paper trading execution engine
-- **Verification**: Live Kraken price data flows through the event bus, paper orders execute
+- [x] Implement `core/bus.py` — async event bus with typed events
+- [x] Implement `core/events.py` — MarketData, Signal, Order, Fill event types
+- [x] Implement `core/config.py` — Pydantic settings from TOML + env vars
+- [x] Implement `core/types.py` — shared type definitions
+- [x] Implement `adapters/base.py` — abstract exchange adapter
+- [x] Implement `adapters/kraken.py` — connect to Kraken, stream price data
+- [x] Implement `adapters/paper.py` — paper trading execution engine
+- **Verification**: Live Kraken price data flows through the event bus, paper orders execute -- VERIFIED 2026-02-17
 
 ### Phase 2: Signal Engine
 **Goal**: Technical analysis signals producing actionable trade signals.
@@ -124,6 +124,19 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-002 | pandas-ta over ta-lib | No C compilation headaches; pure Python; adequate indicator coverage | 2026-02-17 |
 | DEC-003 | SQLite over Postgres | Zero-ops for solo project; migrate when scale demands it | 2026-02-17 |
 | DEC-004 | Event bus over direct coupling | Enables hot-swap, plugin system, and agentic integration | 2026-02-17 |
+| DEC-BUS-001 | Async event bus with type-based subscriptions | Enables hot-swapping components, plugin architecture, future agentic integration | 2026-02-17 |
+| DEC-EVENTS-001 | Immutable frozen dataclasses for all events | Prevents accidental mutation during event propagation; events are facts | 2026-02-17 |
+| DEC-TYPES-001 | Decimal for all financial calculations | Avoids floating-point precision errors in financial math | 2026-02-17 |
+| DEC-CONFIG-001 | Pydantic Settings with TOML + env var layering | Readable defaults/profiles (paper vs live); env vars for secrets | 2026-02-17 |
+| DEC-ADAPTER-001 | Abstract adapter interface for exchange independence | Allows swapping exchanges without changing business logic | 2026-02-17 |
+| DEC-KRAKEN-001 | ccxt.pro async WebSocket for real-time data | Unified WebSocket interface across exchanges with automatic reconnect | 2026-02-17 |
+| DEC-PAPER-001 | File-based state persistence for paper trading | Simple JSON file persists balances/positions; no database needed yet | 2026-02-17 |
+| DEC-MAIN-001 | Graceful shutdown with signal handlers | Proper cleanup prevents dangling WebSocket connections | 2026-02-17 |
+| DEC-TEST-001 | Test real implementations, not mocks | Validates actual event behavior, not simulated behavior | 2026-02-17 |
+| DEC-TEST-002 | Async test fixtures for event bus validation | Event bus is async; tests must be async to verify queue behavior | 2026-02-17 |
+| DEC-TEST-003 | Test config validation and TOML loading | Validates Pydantic settings: type validation, percentage bounds, composition | 2026-02-17 |
+| DEC-TEST-004 | Test paper trading with real event bus integration | Verifies order execution, balance tracking, commission handling | 2026-02-17 |
+| DEC-TEST-005 | End-to-end pipeline test with mock Kraken data | Integration test verifies complete flow: MarketDataEvent to FillEvent | 2026-02-17 |
 
 ## Resources
 
