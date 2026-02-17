@@ -49,6 +49,7 @@ from cerebrum.core.state import StateManager
 from cerebrum.learning.tracker import TradeTracker
 from cerebrum.learning.scorer import SignalScorer
 from cerebrum.learning.adapter import WeightAdapter
+from cerebrum.monitoring.dashboard import Dashboard
 
 # Configure structured logging
 structlog.configure(
@@ -91,6 +92,7 @@ class CerebrumCoin:
         self.trade_tracker: TradeTracker | None = None
         self.signal_scorer: SignalScorer | None = None
         self.weight_adapter: WeightAdapter | None = None
+        self.dashboard: Dashboard | None = None
         self._shutdown_event = asyncio.Event()
         self._log = logger.bind(component="main")
 
@@ -248,6 +250,17 @@ class CerebrumCoin:
 
         self._log.info("learning_system_initialized", db_path=str(db_path))
 
+        # Initialize dashboard if enabled
+        if self.config.monitoring.dashboard_enabled:
+            self.dashboard = Dashboard(
+                self.bus,
+                self.state_manager,
+                update_interval_seconds=self.config.monitoring.update_interval_seconds,
+                initial_balance=self.config.paper.initial_balance_usd,
+            )
+            await self.dashboard.start()
+            self._log.info("dashboard_started")
+
         # Subscribe to market data
         await self.kraken_adapter.subscribe_market_data(self.config.trading.symbols)
 
@@ -265,6 +278,11 @@ class CerebrumCoin:
     async def stop(self) -> None:
         """Stop the trading system gracefully."""
         self._log.info("cerebrumcoin_stopping")
+
+        # Stop dashboard
+        if self.dashboard:
+            await self.dashboard.stop()
+
 
         # Close learning system
         if self.state_manager:

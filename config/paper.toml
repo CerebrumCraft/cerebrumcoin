@@ -13,3 +13,9 @@ slippage_percent = "0.1"     # Conservative slippage estimate
 level = "DEBUG"
 format = "console"
 file = "logs/paper.log"
+
+[monitoring]
+dashboard_enabled = true
+update_interval_seconds = 30
+report_file_path = "data/session_report.txt"
+backtest_cache_dir = "data/backtest_cache"

@@ -212,6 +212,31 @@ class LLMConfig(BaseSettings):
     )
 
 
+class MonitoringConfig(BaseSettings):
+    """Monitoring and statistics configuration."""
+    dashboard_enabled: bool = Field(
+        default=True,
+        description="Enable real-time dashboard display"
+    )
+    update_interval_seconds: int = Field(
+        default=30,
+        description="Dashboard update interval in seconds"
+    )
+    report_file_path: Path | None = Field(
+        default=Path("data/session_report.txt"),
+        description="Path to save session reports"
+    )
+    backtest_cache_dir: Path = Field(
+        default=Path("data/backtest_cache"),
+        description="Directory for cached backtest data"
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="MONITORING_",
+        extra="ignore",
+    )
+
+
 class Config(BaseSettings):
     """Master configuration combining all subsystems."""
     exchange: ExchangeConfig = Field(default_factory=ExchangeConfig)
@@ -222,6 +247,7 @@ class Config(BaseSettings):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     intelligence: IntelligenceConfig = Field(default_factory=IntelligenceConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -244,3 +270,28 @@ class Config(BaseSettings):
             toml_data = tomllib.load(f)
 
         return cls(**toml_data)
+
+
+class MonitoringConfig(BaseSettings):
+    """Monitoring and statistics configuration."""
+    dashboard_enabled: bool = Field(
+        default=True,
+        description="Enable real-time dashboard display"
+    )
+    update_interval_seconds: int = Field(
+        default=30,
+        description="Dashboard update interval in seconds"
+    )
+    report_file_path: Path | None = Field(
+        default=Path("data/session_report.txt"),
+        description="Path to save session reports"
+    )
+    backtest_cache_dir: Path = Field(
+        default=Path("data/backtest_cache"),
+        description="Directory for cached backtest data"
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="MONITORING_",
+        extra="ignore",
+    )

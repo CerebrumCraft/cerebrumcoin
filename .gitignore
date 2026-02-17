@@ -32,6 +32,7 @@ htmlcov/
 # Data
 *.db
 *.sqlite3
+data/
 tmp/
 
 # OS
