@@ -163,6 +163,55 @@ class LoggingConfig(BaseSettings):
     )
 
 
+class IntelligenceConfig(BaseSettings):
+    """Intelligence layer configuration."""
+    cryptopanic_api_key: str = Field(default="", description="CryptoPanic API key")
+    cryptopanic_poll_interval_seconds: int = Field(
+        default=300,
+        description="CryptoPanic poll interval (5 minutes)"
+    )
+    newsapi_api_key: str = Field(default="", description="NewsAPI.org API key")
+    newsapi_poll_interval_seconds: int = Field(
+        default=1800,
+        description="NewsAPI poll interval (30 minutes)"
+    )
+    fear_greed_poll_interval_seconds: int = Field(
+        default=3600,
+        description="Fear & Greed Index poll interval (1 hour)"
+    )
+    enable_finbert: bool = Field(
+        default=False,
+        description="Enable FinBERT sentiment analysis (requires transformers)"
+    )
+    enable_hmm_regime: bool = Field(
+        default=False,
+        description="Enable HMM-based regime detection (requires hmmlearn)"
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="INTELLIGENCE_",
+        extra="ignore",
+    )
+
+
+class LLMConfig(BaseSettings):
+    """LLM configuration for news reasoning."""
+    anthropic_api_key: str = Field(default="", description="Anthropic API key")
+    model: str = Field(default="claude-haiku-4-5", description="Claude model to use")
+    max_calls_per_hour: int = Field(default=10, description="Rate limit for LLM calls")
+    news_batch_size: int = Field(default=5, description="Number of news items per LLM call")
+    news_batch_window_seconds: int = Field(
+        default=300,
+        description="Time window for batching news (5 minutes)"
+    )
+    timeout_seconds: int = Field(default=30, description="API timeout")
+
+    model_config = SettingsConfigDict(
+        env_prefix="LLM_",
+        extra="ignore",
+    )
+
+
 class Config(BaseSettings):
     """Master configuration combining all subsystems."""
     exchange: ExchangeConfig = Field(default_factory=ExchangeConfig)
@@ -171,6 +220,8 @@ class Config(BaseSettings):
     trading: TradingConfig = Field(default_factory=TradingConfig)
     signals: SignalConfig = Field(default_factory=SignalConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    intelligence: IntelligenceConfig = Field(default_factory=IntelligenceConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
 
     model_config = SettingsConfigDict(
         env_file=".env",
