@@ -92,7 +92,7 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 - [x] Implement `signals/sentiment.py` — FinBERT sentiment scoring
 - [x] Implement `signals/regime.py` — HMM-based regime detection
 - [x] Wire intelligence into aggregator with regime-aware weighting
-- **Verification**: 60/69 tests passing (Phase 1 & 2: 100%, Phase 3: 67% - async mock issues only) -- IMPLEMENTED 2026-02-17
+- **Verification**: 67 passed, 2 skipped, 0 failed — intelligence adjusts behavior based on news and regime shifts -- VERIFIED 2026-02-17
 
 ### Phase 4: Closed-Loop Learning
 **Goal**: Agent learns from its own trading outcomes.
@@ -122,6 +122,15 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 - **Verification**: Live trades on Kraken, plugin system accepting connections
 
 ## Decision Log
+
+**Planning Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-001 | ccxt over raw Kraken API | Unified interface for multi-exchange future; WebSocket support adequate | 2026-02-17 |
+| DEC-002 | pandas-ta over ta-lib | No C compilation headaches; pure Python; adequate indicator coverage | 2026-02-17 |
+| DEC-003 | SQLite over Postgres | Zero-ops for solo project; migrate when scale demands it | 2026-02-17 |
+| DEC-004 | Event bus over direct coupling | Enables hot-swap, plugin system, and agentic integration | 2026-02-17 |
 
 **Phase 1 & 2 Decisions:**
 
