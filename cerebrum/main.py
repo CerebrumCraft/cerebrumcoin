@@ -45,6 +45,10 @@ from cerebrum.intelligence.llm import LLMNewsAnalyzer
 from cerebrum.intelligence.social import FearGreedSentiment
 from cerebrum.signals.sentiment import FinBERTSentiment
 from cerebrum.signals.regime import RegimeDetector
+from cerebrum.core.state import StateManager
+from cerebrum.learning.tracker import TradeTracker
+from cerebrum.learning.scorer import SignalScorer
+from cerebrum.learning.adapter import WeightAdapter
 
 # Configure structured logging
 structlog.configure(
@@ -83,6 +87,10 @@ class CerebrumCoin:
         self.signal_agg: SignalAggregator | None = None
         self._signal_generators: list = []
         self._intelligence_components: list = []
+        self.state_manager: StateManager | None = None
+        self.trade_tracker: TradeTracker | None = None
+        self.signal_scorer: SignalScorer | None = None
+        self.weight_adapter: WeightAdapter | None = None
         self._shutdown_event = asyncio.Event()
         self._log = logger.bind(component="main")
 
@@ -220,6 +228,26 @@ class CerebrumCoin:
             rules=risk_rules,
         )
 
+        # Initialize learning system
+        db_path = Path("data/cerebrum.db")
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_manager = StateManager(db_path)
+        await self.state_manager.initialize()
+
+        self.trade_tracker = TradeTracker(self.bus, self.state_manager, "UNKNOWN")
+        await self.trade_tracker.start()
+
+        self.signal_scorer = SignalScorer(self.bus, self.state_manager)
+        await self.signal_scorer.start()
+
+        def weight_callback(signal_type, regime, weight):
+            self.signal_agg.set_regime_weight(signal_type, regime, weight)
+
+        self.weight_adapter = WeightAdapter(self.bus, self.state_manager, weight_callback)
+        await self.weight_adapter.start()
+
+        self._log.info("learning_system_initialized", db_path=str(db_path))
+
         # Subscribe to market data
         await self.kraken_adapter.subscribe_market_data(self.config.trading.symbols)
 
@@ -237,6 +265,10 @@ class CerebrumCoin:
     async def stop(self) -> None:
         """Stop the trading system gracefully."""
         self._log.info("cerebrumcoin_stopping")
+
+        # Close learning system
+        if self.state_manager:
+            await self.state_manager.close()
 
         # Stop intelligence components
         for component in self._intelligence_components:

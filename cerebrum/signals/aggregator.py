@@ -97,6 +97,9 @@ class SignalAggregator:
         # Base weights (stored for regime adjustments)
         self._base_weights = self._weights.copy()
 
+        # Per-regime learned weights (updated by WeightAdapter)
+        self._regime_weights: dict[str, dict[SignalType, Decimal]] = {}
+
         self._log = logger.bind(component="signal_aggregator")
 
         # Subscribe to all signal types
@@ -253,6 +256,22 @@ class SignalAggregator:
         self._weights[signal_type] = weight
         self._log.info("weight_updated", signal_type=signal_type.value, weight=str(weight))
 
+    def set_regime_weight(self, signal_type: SignalType, regime: str, weight: Decimal) -> None:
+        """Update learned weight for a signal type in a specific regime."""
+        if regime not in self._regime_weights:
+            self._regime_weights[regime] = {}
+        self._regime_weights[regime][signal_type] = weight
+
+        # Apply immediately if this is the current regime
+        if regime == self._current_regime:
+            self._weights[signal_type] = weight
+            self._log.info(
+                "regime_weight_updated",
+                signal_type=signal_type.value,
+                regime=regime,
+                weight=str(weight),
+            )
+
     async def _on_regime_change(self, event: Event) -> None:
         """Handle regime changes and adjust weights."""
         if not isinstance(event, RegimeChangeEvent):
@@ -260,7 +279,14 @@ class SignalAggregator:
 
         self._current_regime = event.to_regime
 
-        # Adjust weights based on regime
+        # Use learned weights if available for this regime
+        if event.to_regime in self._regime_weights:
+            for signal_type, weight in self._regime_weights[event.to_regime].items():
+                self._weights[signal_type] = weight
+            self._log.info("applied_learned_weights", regime=event.to_regime)
+            return
+
+        # Otherwise, apply rule-based regime adjustments
         if event.to_regime == "BULL":
             # Boost trend-following (technical signals)
             self._weights[SignalType.TECHNICAL] = self._base_weights[SignalType.TECHNICAL] * Decimal("1.2")

@@ -111,10 +111,19 @@ class RiskManager:
         """Create a proposed order from a signal."""
         # Determine side
         side = Side.BUY if signal.action == SignalAction.BUY else Side.SELL
-        
+
         # Initial amount (will be sized by rules)
         amount = Decimal("1.0")  # Placeholder
-        
+
+        # Capture signal snapshot for learning
+        signal_snapshot = {
+            signal.signal_type.value: {
+                "strength": float(signal.strength),
+                "confidence": float(signal.confidence),
+                "action": signal.action.value,
+            }
+        }
+
         return OrderEvent(
             event_type=EventType.ORDER,
             timestamp=time(),
@@ -124,6 +133,7 @@ class RiskManager:
             order_type=OrderType.MARKET,
             amount=amount,
             price=None,  # Market order
+            metadata={"signals": signal_snapshot},
         )
     
     async def _apply_rules(

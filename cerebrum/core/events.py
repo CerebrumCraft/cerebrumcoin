@@ -174,3 +174,47 @@ class RegimeChangeEvent(Event):
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'event_type', EventType.REGIME_CHANGE)
+
+
+@dataclass(frozen=True)
+class TradeOpenedEvent(Event):
+    """Published when a trade is opened."""
+    trade_id: int
+    symbol: Symbol
+    side: Side
+    entry_price: Decimal
+    quantity: Decimal
+    signal_snapshot: dict[str, Any]
+    regime: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'event_type', EventType.TRADE_OPENED)
+
+
+@dataclass(frozen=True)
+class TradeClosedEvent(Event):
+    """Published when a trade is closed."""
+    trade_id: int
+    symbol: Symbol
+    side: Side
+    entry_price: Decimal
+    exit_price: Decimal
+    quantity: Decimal
+    pnl: Decimal
+    signal_snapshot: dict[str, Any]
+    regime: str
+    entry_time: float
+    exit_time: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'event_type', EventType.TRADE_CLOSED)
+
+
+@dataclass(frozen=True)
+class ScoreUpdateEvent(Event):
+    """Published when signal scores are recalculated."""
+    regime: str
+    scores: dict[SignalType, dict[str, Decimal]]  # {signal_type: {metric: value}}
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'event_type', EventType.SCORE_UPDATE)
