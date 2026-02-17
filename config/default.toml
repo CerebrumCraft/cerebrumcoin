@@ -1,0 +1,30 @@
+# CerebrumCoin Default Configuration
+
+[exchange]
+name = "kraken"
+testnet = false
+rate_limit_per_minute = 60
+websocket_enabled = true
+
+[risk]
+max_position_size_usd = "1000.0"
+max_total_exposure_usd = "5000.0"
+max_drawdown_percent = "5.0"
+max_daily_loss_usd = "500.0"
+position_size_percent = "2.0"
+
+[paper]
+initial_balance_usd = "10000.0"
+commission_percent = "0.1"
+slippage_percent = "0.05"
+state_file = "data/paper_state.json"
+
+[trading]
+mode = "paper"
+symbols = ["BTC/USD", "ETH/USD"]
+data_refresh_seconds = 1
+signal_aggregation_window_seconds = 5
+
+[logging]
+level = "INFO"
+format = "json"
