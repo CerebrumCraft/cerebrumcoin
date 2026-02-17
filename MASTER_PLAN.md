@@ -16,7 +16,7 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
        └──────────────────── [Closed-Loop Learner] ←───────────────────────────────────────┘
 ```
 
-**Status**: Phase 3 — Intelligence Layer (completed) | Phase 4 — Closed-Loop Learning (planned)
+**Status**: Phase 4 — Closed-Loop Learning (completed) | Phase 5 — Validation & Monitoring (in progress)
 
 ## Technology Stack
 
@@ -94,14 +94,14 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 - [x] Wire intelligence into aggregator with regime-aware weighting
 - **Verification**: 67 passed, 2 skipped, 0 failed — intelligence adjusts behavior based on news and regime shifts -- VERIFIED 2026-02-17
 
-### Phase 4: Closed-Loop Learning
+### Phase 4: Closed-Loop Learning (COMPLETED)
 **Goal**: Agent learns from its own trading outcomes.
 
-- [ ] Implement `learning/tracker.py` — trade outcome tracking
-- [ ] Implement `learning/scorer.py` — signal effectiveness scoring
-- [ ] Implement `learning/adapter.py` — adaptive weight adjustment
-- [ ] Implement `core/state.py` — persist learning state across restarts
-- **Verification**: Signal weights shift toward better-performing signals over time
+- [x] Implement `learning/tracker.py` — trade outcome tracking
+- [x] Implement `learning/scorer.py` — signal effectiveness scoring
+- [x] Implement `learning/adapter.py` — adaptive weight adjustment
+- [x] Implement `core/state.py` — persist learning state across restarts
+- **Verification**: Signal weights shift toward better-performing signals over time -- VERIFIED 2026-02-17
 
 ### Phase 5: Paper Trading Validation
 **Goal**: Extended paper trading with monitoring and backtesting.
@@ -123,15 +123,6 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 
 ## Decision Log
 
-**Planning Decisions:**
-
-| ID | Decision | Rationale | Date |
-|----|----------|-----------|------|
-| DEC-001 | ccxt over raw Kraken API | Unified interface for multi-exchange future; WebSocket support adequate | 2026-02-17 |
-| DEC-002 | pandas-ta over ta-lib | No C compilation headaches; pure Python; adequate indicator coverage | 2026-02-17 |
-| DEC-003 | SQLite over Postgres | Zero-ops for solo project; migrate when scale demands it | 2026-02-17 |
-| DEC-004 | Event bus over direct coupling | Enables hot-swap, plugin system, and agentic integration | 2026-02-17 |
-
 **Phase 1 & 2 Decisions:**
 
 | ID | Decision | Rationale | Date |
@@ -151,11 +142,11 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-AGG-001 | Signal aggregator with weighted combination and debounce | Multiple signals produce conflicting recommendations; weighted voting with threshold prevents noise | 2026-02-17 |
 | DEC-RISK-001 | Composable risk rules architecture | Each risk rule is independent and testable; rules can be enabled/disabled per config | 2026-02-17 |
 | DEC-RISK-002 | Portfolio state tracking for exposure calculations | Centralized position tracking enables position sizing, exposure limits, and drawdown monitoring | 2026-02-17 |
-| DEC-TEST-001 | Test real implementations, not mocks | Validates actual event behavior, not simulated behavior | 2026-02-17 |
-| DEC-TEST-002 | Async test fixtures for event bus validation | Event bus is async; tests must be async to verify queue behavior | 2026-02-17 |
-| DEC-TEST-003 | Test config validation and TOML loading | Validates Pydantic settings: type validation, percentage bounds, composition | 2026-02-17 |
-| DEC-TEST-004 | Test paper trading with real event bus integration | Verifies order execution, balance tracking, commission handling | 2026-02-17 |
-| DEC-TEST-005 | End-to-end pipeline test with mock Kraken data | Integration test verifies complete flow: MarketDataEvent to FillEvent | 2026-02-17 |
+| DEC-TEST-001 | Test real implementations, not mocks | Validates actual event behavior; follows Sacred Practice #5 (real implementations over mocks) | 2026-02-17 |
+| DEC-TEST-002 | Async test fixtures for event bus validation | Event bus is async; tests must be async to verify queue behavior and subscriber notification | 2026-02-17 |
+| DEC-TEST-003 | Test config validation and TOML loading | Validates Pydantic settings: type validation, percentage bounds, TOML composition | 2026-02-17 |
+| DEC-TEST-004 | Test paper trading with real event bus integration | Verifies order execution, balance tracking, commission handling through real event flow | 2026-02-17 |
+| DEC-TEST-005 | End-to-end pipeline test with mock Kraken data | Integration test verifies complete flow: MarketDataEvent → SignalEvent → OrderEvent → FillEvent | 2026-02-17 |
 
 **Phase 3 Decisions:**
 
@@ -166,6 +157,22 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-INT-003 | Optional heavy dependencies | FinBERT (transformers + torch) and hmmlearn in optional extras; simple fallbacks for regime detection; tests mock all models | 2026-02-17 |
 | DEC-INT-004 | Rate limiting and cost control | LLM calls rate-limited (default: 10/hour); use claude-haiku-4-5 for cost efficiency; batch news articles to reduce API calls | 2026-02-17 |
 | DEC-INT-005 | Regime-aware aggregation | Regime changes trigger weight adjustments; dynamic adaptation to market conditions; existing signals get context-aware weighting | 2026-02-17 |
+
+**Phase 4 Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-STATE-001 | SQLite with aiosqlite for async state persistence | Learning system needs durable storage; SQLite provides ACID guarantees with zero ops; aiosqlite enables async access | 2026-02-17 |
+| DEC-LEARN-001 | Trade outcome tracking with signal snapshots | Capture signal state at trade entry to attribute P&L to specific signals; enables signal performance scoring | 2026-02-17 |
+| DEC-LEARN-002 | Conservative EMA weight adaptation | EMA smoothing (alpha=0.1) prevents oscillation from single bad trades; gradual adaptation based on empirical performance | 2026-02-17 |
+| DEC-LEARN-003 | Per-regime signal scoring | Different signals perform differently in different regimes; separate metrics enable context-aware weight adjustment | 2026-02-17 |
+
+**Phase 5 Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-MONITOR-001 | Pure function stats calculator | Performance metrics must be deterministic and testable; pure functions with no side effects enable easy unit testing | 2026-02-17 |
+| DEC-TEST-006 | Deterministic stats tests with trade fixtures | Performance metrics must be mathematically correct; use known PnL and equity curves to verify calculations | 2026-02-17 |
 
 ## Resources
 
