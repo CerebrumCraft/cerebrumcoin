@@ -1,3 +1,4 @@
+# @mock-exempt: Mocking external HTTP API calls (aiohttp) to CryptoPanic/NewsAPI services
 """
 Unit tests for news ingestion pipeline.
 
@@ -10,7 +11,7 @@ No mocking of internal logic—only external API calls are mocked per Sacred Pra
 
 import asyncio
 from datetime import datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -61,14 +62,29 @@ async def test_cryptopanic_integration(event_bus):
         ]
     }
 
-    # Mock aiohttp
-    with patch("cerebrum.intelligence.news.aiohttp.ClientSession") as mock_session:
+    # Mock aiohttp with proper async context manager support
+    with patch("cerebrum.intelligence.news.aiohttp.ClientSession") as mock_session_cls:
+        # Create the response mock
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.json = AsyncMock(return_value=mock_response)
-        
-        mock_get = AsyncMock(return_value=mock_resp)
-        mock_session.return_value.__aenter__.return_value.get = mock_get
+
+        # Create a context manager for session.get()
+        # Key: get() returns a context manager synchronously, not a coroutine
+        mock_get_cm = MagicMock()
+        mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_get_cm.__aexit__ = AsyncMock(return_value=None)
+
+        # Create session instance
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_get_cm)
+
+        # Create session context manager
+        mock_session_cm = MagicMock()
+        mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session_cls.return_value = mock_session_cm
 
         pipeline = NewsIngestionPipeline(
             event_bus,
@@ -114,13 +130,23 @@ async def test_deduplication(event_bus):
         ]
     }
 
-    with patch("cerebrum.intelligence.news.aiohttp.ClientSession") as mock_session:
+    with patch("cerebrum.intelligence.news.aiohttp.ClientSession") as mock_session_cls:
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.json = AsyncMock(return_value=mock_response)
-        
-        mock_get = AsyncMock(return_value=mock_resp)
-        mock_session.return_value.__aenter__.return_value.get = mock_get
+
+        mock_get_cm = MagicMock()
+        mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_get_cm.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_get_cm)
+
+        mock_session_cm = MagicMock()
+        mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session_cls.return_value = mock_session_cm
 
         pipeline = NewsIngestionPipeline(event_bus, cryptopanic_api_key="test")
 
@@ -157,13 +183,23 @@ async def test_newsapi_integration(event_bus):
         ]
     }
 
-    with patch("cerebrum.intelligence.news.aiohttp.ClientSession") as mock_session:
+    with patch("cerebrum.intelligence.news.aiohttp.ClientSession") as mock_session_cls:
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.json = AsyncMock(return_value=mock_response)
-        
-        mock_get = AsyncMock(return_value=mock_resp)
-        mock_session.return_value.__aenter__.return_value.get = mock_get
+
+        mock_get_cm = MagicMock()
+        mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_get_cm.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_get_cm)
+
+        mock_session_cm = MagicMock()
+        mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session_cls.return_value = mock_session_cm
 
         pipeline = NewsIngestionPipeline(event_bus, newsapi_api_key="test")
 

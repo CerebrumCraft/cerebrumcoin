@@ -1,9 +1,10 @@
+# @mock-exempt: Mocking external HTTP API calls (aiohttp) to Fear & Greed Index API
 """
 Unit tests for social sentiment (Fear & Greed Index).
 """
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from cerebrum.core.bus import EventBus
@@ -32,13 +33,23 @@ async def test_fear_greed_extreme_fear(event_bus):
         ]
     }
     
-    with patch("cerebrum.intelligence.social.aiohttp.ClientSession") as mock_session:
+    with patch("cerebrum.intelligence.social.aiohttp.ClientSession") as mock_session_cls:
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.json = AsyncMock(return_value=mock_response)
         
-        mock_get = AsyncMock(return_value=mock_resp)
-        mock_session.return_value.__aenter__.return_value.get = mock_get
+        mock_get_cm = MagicMock()
+        mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_get_cm.__aexit__ = AsyncMock(return_value=None)
+        
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_get_cm)
+        
+        mock_session_cm = MagicMock()
+        mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+        
+        mock_session_cls.return_value = mock_session_cm
         
         sentiment = FearGreedSentiment(event_bus, poll_interval=1)
         
@@ -69,13 +80,23 @@ async def test_fear_greed_extreme_greed(event_bus):
         ]
     }
     
-    with patch("cerebrum.intelligence.social.aiohttp.ClientSession") as mock_session:
+    with patch("cerebrum.intelligence.social.aiohttp.ClientSession") as mock_session_cls:
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.json = AsyncMock(return_value=mock_response)
         
-        mock_get = AsyncMock(return_value=mock_resp)
-        mock_session.return_value.__aenter__.return_value.get = mock_get
+        mock_get_cm = MagicMock()
+        mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_get_cm.__aexit__ = AsyncMock(return_value=None)
+        
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_get_cm)
+        
+        mock_session_cm = MagicMock()
+        mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+        
+        mock_session_cls.return_value = mock_session_cm
         
         sentiment = FearGreedSentiment(event_bus)
         

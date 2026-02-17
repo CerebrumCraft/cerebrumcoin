@@ -1,3 +1,4 @@
+# @mock-exempt: Mocking external Anthropic API calls
 """
 Unit tests for LLM news analyzer.
 
@@ -32,18 +33,34 @@ async def test_llm_disabled_without_key(event_bus):
 @pytest.mark.asyncio
 async def test_rate_limiting(event_bus):
     """Test rate limit enforcement."""
+    from time import time
+
     analyzer = LLMNewsAnalyzer(event_bus, anthropic_api_key="test", max_calls_per_hour=2)
-    
-    # Simulate calls
-    analyzer._call_times.append(asyncio.get_event_loop().time())
-    analyzer._call_times.append(asyncio.get_event_loop().time())
-    
+
+    # Initially under limit
+    assert analyzer._check_rate_limit()
+
+    # Simulate 2 calls (at limit) - use time() not asyncio time
+    current_time = time()
+    analyzer._call_times.append(current_time)
+    analyzer._call_times.append(current_time)
+
+    # Should be at limit now (2 calls with max=2)
     assert not analyzer._check_rate_limit()
+
+    # Simulate time passing (calls expire after 1 hour)
+    analyzer._call_times.clear()
+    analyzer._call_times.append(current_time - 3700)  # Older than 1 hour
+
+    # Old call should be cleaned up, back under limit
+    assert analyzer._check_rate_limit()
 
 
 @pytest.mark.asyncio
 async def test_news_batching(event_bus):
     """Test news batching logic."""
+    pytest.importorskip("anthropic")
+    
     mock_client = AsyncMock()
     mock_response = MagicMock()
     mock_response.content = [MagicMock(text='{"action": "buy", "strength": 0.8, "confidence": 0.7, "reasoning": "Bullish", "affected_symbols": ["BTC/USD"]}')]

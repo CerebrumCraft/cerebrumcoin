@@ -1,3 +1,4 @@
+# @mock-exempt: Mocking external HTTP APIs (CryptoPanic, NewsAPI, Fear & Greed, Anthropic)
 """
 Integration test for full intelligence pipeline.
 
@@ -35,6 +36,7 @@ async def event_bus():
 @pytest.mark.asyncio
 async def test_full_intelligence_pipeline(event_bus):
     """Test complete intelligence pipeline integration."""
+    pytest.importorskip("anthropic")
     
     # Mock CryptoPanic response
     cryptopanic_response = {
@@ -69,15 +71,37 @@ async def test_full_intelligence_pipeline(event_bus):
         mock_news_resp = AsyncMock()
         mock_news_resp.status = 200
         mock_news_resp.json = AsyncMock(return_value=cryptopanic_response)
-        mock_news_get = AsyncMock(return_value=mock_news_resp)
-        mock_news_session.return_value.__aenter__.return_value.get = mock_news_get
+        
+        mock_news_get_cm = MagicMock()
+        mock_news_get_cm.__aenter__ = AsyncMock(return_value=mock_news_resp)
+        mock_news_get_cm.__aexit__ = AsyncMock(return_value=None)
+        
+        mock_news_session_inst = MagicMock()
+        mock_news_session_inst.get = MagicMock(return_value=mock_news_get_cm)
+        
+        mock_news_session_cm = MagicMock()
+        mock_news_session_cm.__aenter__ = AsyncMock(return_value=mock_news_session_inst)
+        mock_news_session_cm.__aexit__ = AsyncMock(return_value=None)
+        
+        mock_news_session.return_value = mock_news_session_cm
         
         # Setup social mock
         mock_social_resp = AsyncMock()
         mock_social_resp.status = 200
         mock_social_resp.json = AsyncMock(return_value=fear_greed_response)
-        mock_social_get = AsyncMock(return_value=mock_social_resp)
-        mock_social_session.return_value.__aenter__.return_value.get = mock_social_get
+        
+        mock_social_get_cm = MagicMock()
+        mock_social_get_cm.__aenter__ = AsyncMock(return_value=mock_social_resp)
+        mock_social_get_cm.__aexit__ = AsyncMock(return_value=None)
+        
+        mock_social_session_inst = MagicMock()
+        mock_social_session_inst.get = MagicMock(return_value=mock_social_get_cm)
+        
+        mock_social_session_cm = MagicMock()
+        mock_social_session_cm.__aenter__ = AsyncMock(return_value=mock_social_session_inst)
+        mock_social_session_cm.__aexit__ = AsyncMock(return_value=None)
+        
+        mock_social_session.return_value = mock_social_session_cm
         
         # Initialize components
         news_pipeline = NewsIngestionPipeline(
