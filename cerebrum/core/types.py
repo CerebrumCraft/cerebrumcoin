@@ -59,6 +59,9 @@ class EventType(str, Enum):
     NEWS = "news"
     SENTIMENT = "sentiment"
     REGIME_CHANGE = "regime_change"
+    TRADE_OPENED = "trade_opened"
+    TRADE_CLOSED = "trade_closed"
+    SCORE_UPDATE = "score_update"
 
 
 class TradingMode(str, Enum):
