@@ -1,0 +1,233 @@
+"""
+Signal aggregator for weighted combination of multiple signal sources.
+
+Combines technical, sentiment, and other signals into a unified trading decision
+using configurable weights and a threshold-based debounce mechanism.
+
+@decision DEC-AGG-001
+@title Signal aggregator with weighted combination and debounce
+@status accepted
+@rationale Multiple signals produce conflicting recommendations. Weighted voting with
+confidence-adjusted strengths produces a unified decision. Debounce threshold (e.g., 0.3)
+prevents signal flapping on weak/noisy indicators. Only emits when aggregate exceeds threshold.
+"""
+
+from collections import defaultdict, deque
+from dataclasses import dataclass
+from decimal import Decimal
+from time import time
+from typing import Deque
+
+import structlog
+
+from cerebrum.core.bus import EventBus
+from cerebrum.core.events import Event, SignalEvent
+from cerebrum.core.types import EventType, SignalAction, SignalType, Symbol
+
+logger = structlog.get_logger()
+
+
+@dataclass
+class SignalWeight:
+    """Weight configuration for a signal type."""
+    signal_type: SignalType
+    weight: Decimal
+    enabled: bool = True
+
+
+class SignalAggregator:
+    """
+    Aggregates multiple signals into a unified trading decision.
+    
+    Features:
+    - Weighted combination of signals by type
+    - Confidence-adjusted signal strength
+    - Threshold-based emission (prevents weak signals)
+    - Time-based signal window for aggregation
+    - Per-symbol signal tracking
+    """
+    
+    def __init__(
+        self,
+        bus: EventBus,
+        weights: dict[SignalType, Decimal] | None = None,
+        threshold: Decimal = Decimal("0.3"),
+        window_seconds: int = 5,
+    ) -> None:
+        """
+        Initialize signal aggregator.
+        
+        Args:
+            bus: Event bus
+            weights: Signal type weights (default: equal weight)
+            threshold: Minimum aggregate strength to emit signal
+            window_seconds: Time window for signal aggregation
+        """
+        self._bus = bus
+        self._threshold = threshold
+        self._window_seconds = window_seconds
+        
+        # Default weights: technical signals weighted higher
+        self._weights: dict[SignalType, Decimal] = weights or {
+            SignalType.TECHNICAL: Decimal("1.0"),
+            SignalType.SENTIMENT: Decimal("0.5"),
+            SignalType.NEWS: Decimal("0.3"),
+            SignalType.REGIME: Decimal("0.7"),
+        }
+        
+        # Per-symbol signal buffer: tracks recent signals in time window
+        self._signal_buffer: dict[Symbol, Deque[SignalEvent]] = defaultdict(
+            lambda: deque(maxlen=50)
+        )
+        
+        # Track last emission time per symbol (for debounce)
+        self._last_emission: dict[Symbol, float] = {}
+        
+        self._log = logger.bind(component="signal_aggregator")
+        
+        # Subscribe to all signal types
+        bus.subscribe(
+            EventType.SIGNAL,
+            self._on_signal,
+            subscriber_name="signal_aggregator",
+        )
+        
+        self._log.info(
+            "signal_aggregator_initialized",
+            weights={k.value: str(v) for k, v in self._weights.items()},
+            threshold=str(threshold),
+            window_seconds=window_seconds,
+        )
+    
+    async def _on_signal(self, event: Event) -> None:
+        """Handle incoming signals and aggregate."""
+        if not isinstance(event, SignalEvent):
+            return
+
+        # CRITICAL: Ignore our own combined signals to prevent feedback loop
+        if event.signal_type == SignalType.COMBINED:
+            return
+
+        symbol = event.symbol
+        current_time = time()
+        
+        # Add signal to buffer
+        self._signal_buffer[symbol].append(event)
+        
+        # Clean old signals outside time window
+        self._clean_old_signals(symbol, current_time)
+        
+        # Aggregate signals
+        aggregate = self._aggregate_signals(symbol, current_time)
+        
+        if aggregate is None:
+            return
+        
+        # Check if aggregate exceeds threshold
+        if aggregate.strength >= self._threshold:
+            # Emit combined signal
+            await self._bus.publish(aggregate)
+            self._last_emission[symbol] = current_time
+            
+            self._log.info(
+                "combined_signal_emitted",
+                symbol=symbol,
+                action=aggregate.action.value,
+                strength=str(aggregate.strength),
+                confidence=str(aggregate.confidence),
+                contributing_signals=len(self._signal_buffer[symbol]),
+            )
+    
+    def _clean_old_signals(self, symbol: Symbol, current_time: float) -> None:
+        """Remove signals outside the aggregation window."""
+        buffer = self._signal_buffer[symbol]
+        cutoff_time = current_time - self._window_seconds
+        
+        # Remove signals older than window
+        while buffer and buffer[0].timestamp < cutoff_time:
+            buffer.popleft()
+    
+    def _aggregate_signals(
+        self,
+        symbol: Symbol,
+        current_time: float,
+    ) -> SignalEvent | None:
+        """
+        Aggregate signals within the time window.
+        
+        Uses weighted voting: each signal contributes its strength * weight * confidence.
+        """
+        signals = self._signal_buffer[symbol]
+        
+        if not signals:
+            return None
+        
+        # Separate by action
+        buy_score = Decimal("0.0")
+        sell_score = Decimal("0.0")
+        buy_weight_sum = Decimal("0.0")
+        sell_weight_sum = Decimal("0.0")
+        confidence_sum = Decimal("0.0")
+
+        for signal in signals:
+            # Get weight for this signal type
+            weight = self._weights.get(signal.signal_type, Decimal("0.5"))
+
+            # Weighted strength contribution (no confidence dilution)
+            contribution = signal.strength * weight
+
+            if signal.action == SignalAction.BUY:
+                buy_score += contribution
+                buy_weight_sum += weight
+            elif signal.action == SignalAction.SELL:
+                sell_score += contribution
+                sell_weight_sum += weight
+            # HOLD and CLOSE don't contribute to directional score
+
+            confidence_sum += signal.confidence
+
+        if buy_weight_sum == 0 and sell_weight_sum == 0:
+            return None
+
+        # Normalize by sum of weights for that action (weighted average)
+        # Multiple agreeing signals with same weight reinforce to the average strength
+        buy_score_norm = buy_score / buy_weight_sum if buy_weight_sum > 0 else Decimal("0.0")
+        sell_score_norm = sell_score / sell_weight_sum if sell_weight_sum > 0 else Decimal("0.0")
+        
+        # Determine aggregate action and strength
+        if buy_score_norm > sell_score_norm:
+            action = SignalAction.BUY
+            strength = buy_score_norm
+        elif sell_score_norm > buy_score_norm:
+            action = SignalAction.SELL
+            strength = sell_score_norm
+        else:
+            action = SignalAction.HOLD
+            strength = Decimal("0.0")
+        
+        # Average confidence
+        avg_confidence = confidence_sum / len(signals) if signals else Decimal("0.5")
+        
+        # Clamp values
+        strength = max(Decimal("0.0"), min(Decimal("1.0"), strength))
+        avg_confidence = max(Decimal("0.0"), min(Decimal("1.0"), avg_confidence))
+        
+        return SignalEvent(
+            event_type=EventType.SIGNAL,
+            timestamp=current_time,
+            signal_type=SignalType.COMBINED,
+            symbol=symbol,
+            action=action,
+            strength=strength,
+            confidence=avg_confidence,
+            reason=f"Aggregated {len(signals)} signals: buy={buy_score_norm:.2f}, sell={sell_score_norm:.2f}",
+        )
+    
+    def get_signal_count(self, symbol: Symbol) -> int:
+        """Get number of signals in buffer for a symbol."""
+        return len(self._signal_buffer[symbol])
+    
+    def set_weight(self, signal_type: SignalType, weight: Decimal) -> None:
+        """Update weight for a signal type."""
+        self._weights[signal_type] = weight
+        self._log.info("weight_updated", signal_type=signal_type.value, weight=str(weight))

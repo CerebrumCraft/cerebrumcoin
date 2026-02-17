@@ -100,6 +100,36 @@ class PaperTradingConfig(BaseSettings):
     )
 
 
+class SignalConfig(BaseSettings):
+    """Signal generation configuration."""
+    candle_interval_seconds: int = Field(
+        default=60,
+        description="Candle aggregation interval (60 = 1 minute)"
+    )
+    rsi_period: int = Field(default=14, description="RSI period")
+    rsi_oversold: int = Field(default=30, description="RSI oversold threshold")
+    rsi_overbought: int = Field(default=70, description="RSI overbought threshold")
+    macd_fast: int = Field(default=12, description="MACD fast period")
+    macd_slow: int = Field(default=26, description="MACD slow period")
+    macd_signal: int = Field(default=9, description="MACD signal period")
+    bb_period: int = Field(default=20, description="Bollinger Bands period")
+    bb_std_dev: float = Field(default=2.0, description="Bollinger Bands std dev")
+    vwap_period: int = Field(default=20, description="VWAP period")
+    aggregation_threshold: Decimal = Field(
+        default=Decimal("0.3"),
+        description="Minimum aggregate signal strength to emit"
+    )
+    aggregation_window_seconds: int = Field(
+        default=5,
+        description="Time window for signal aggregation"
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="SIGNAL_",
+        extra="ignore",
+    )
+
+
 class TradingConfig(BaseSettings):
     """Core trading configuration."""
     mode: TradingMode = Field(
@@ -113,10 +143,6 @@ class TradingConfig(BaseSettings):
     data_refresh_seconds: int = Field(
         default=1,
         description="Market data refresh interval in seconds"
-    )
-    signal_aggregation_window_seconds: int = Field(
-        default=5,
-        description="Window for aggregating multiple signals"
     )
 
     model_config = SettingsConfigDict(
@@ -143,6 +169,7 @@ class Config(BaseSettings):
     risk: RiskConfig = Field(default_factory=RiskConfig)
     paper: PaperTradingConfig = Field(default_factory=PaperTradingConfig)
     trading: TradingConfig = Field(default_factory=TradingConfig)
+    signals: SignalConfig = Field(default_factory=SignalConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     model_config = SettingsConfigDict(
