@@ -1,0 +1,15 @@
+# CerebrumCoin Paper Trading Configuration
+# Extends default.toml with paper trading overrides
+
+[trading]
+mode = "paper"
+
+[paper]
+initial_balance_usd = "10000.0"
+commission_percent = "0.16"  # Kraken's typical maker fee
+slippage_percent = "0.1"     # Conservative slippage estimate
+
+[logging]
+level = "DEBUG"
+format = "console"
+file = "logs/paper.log"
