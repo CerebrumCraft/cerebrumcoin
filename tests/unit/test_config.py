@@ -20,6 +20,7 @@ from cerebrum.core.config import (
     ExchangeConfig,
     PaperTradingConfig,
     RiskConfig,
+    SignalConfig,
     TradingConfig,
 )
 from cerebrum.core.types import TradingMode
@@ -161,3 +162,33 @@ max_drawdown_percent = "3.0"
 
     finally:
         temp_path.unlink()
+
+
+def test_paper_toml_tuned_parameters():
+    """Test that paper.toml has tuned signal and risk parameters."""
+    paper_config_path = Path(__file__).parent.parent.parent / "config" / "paper.toml"
+
+    if not paper_config_path.exists():
+        pytest.skip("paper.toml not found - may be in different environment")
+
+    config = Config.from_toml(paper_config_path)
+
+    # Verify tuned signal parameters (tighter than defaults)
+    assert config.signals.aggregation_threshold == Decimal("0.5"), \
+        "aggregation_threshold should be 0.5 (up from 0.3) to reduce noise"
+    assert config.signals.aggregation_window_seconds == 60, \
+        "aggregation_window should be 60s (up from 5s) for longer confirmation"
+    assert config.signals.rsi_oversold == 25, \
+        "rsi_oversold should be 25 (down from 30) for more extreme signals"
+    assert config.signals.rsi_overbought == 75, \
+        "rsi_overbought should be 75 (up from 70) for more extreme signals"
+
+    # Verify tuned risk parameters
+    assert config.risk.min_signal_strength == Decimal("0.5"), \
+        "min_signal_strength should be 0.5 (up from 0.3) for higher confidence trades"
+
+    # Verify paper trading parameters remain realistic
+    assert config.paper.commission_percent == Decimal("0.16"), \
+        "commission should match Kraken's maker fee"
+    assert config.paper.slippage_percent == Decimal("0.1"), \
+        "slippage should be conservative"
