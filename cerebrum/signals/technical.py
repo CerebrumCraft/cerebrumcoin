@@ -272,13 +272,19 @@ class BollingerBandsSignal(SignalGenerator):
         
         # Calculate Bollinger Bands
         bb = ta.bbands(df["close"], length=self._period, std=self._std_dev)
-        
+
         if bb is None or bb.empty:
             return None
-        
-        lower = bb[f"BBL_{self._period}_{self._std_dev}"].iloc[-1]
-        middle = bb[f"BBM_{self._period}_{self._std_dev}"].iloc[-1]
-        upper = bb[f"BBU_{self._period}_{self._std_dev}"].iloc[-1]
+
+        # Detect column names dynamically (pandas-ta may format std differently)
+        bb_cols = bb.columns.tolist()
+        lower_col = [c for c in bb_cols if c.startswith("BBL_")][0]
+        middle_col = [c for c in bb_cols if c.startswith("BBM_")][0]
+        upper_col = [c for c in bb_cols if c.startswith("BBU_")][0]
+
+        lower = bb[lower_col].iloc[-1]
+        middle = bb[middle_col].iloc[-1]
+        upper = bb[upper_col].iloc[-1]
         current_price = df["close"].iloc[-1]
         
         if pd.isna(lower) or pd.isna(upper):
@@ -354,21 +360,25 @@ class VWAPSignal(SignalGenerator):
     ) -> SignalEvent | None:
         """Generate VWAP-based signal."""
         candles = self._candle_agg.get_candles(symbol, count=self._period + 20)
-        
+
         if len(candles) < self._period:
             return None
-        
-        # Convert to DataFrame
+
+        # Convert to DataFrame with timestamp as index
         df = pd.DataFrame([
             {
                 "high": float(c.high),
                 "low": float(c.low),
                 "close": float(c.close),
                 "volume": float(c.volume),
+                "timestamp": pd.Timestamp(c.timestamp, unit="s"),
             }
             for c in candles
         ])
-        
+
+        # Set DatetimeIndex (required by pandas-ta vwap)
+        df.set_index("timestamp", inplace=True)
+
         # Calculate VWAP
         vwap = ta.vwap(df["high"], df["low"], df["close"], df["volume"])
         

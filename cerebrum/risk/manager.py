@@ -159,6 +159,13 @@ class RiskManager:
             
             if result.decision == RuleDecision.DENY:
                 # Any deny blocks the order
+                self._log.warning(
+                    "order_denied_by_rule",
+                    rule=rule.name,
+                    reason=result.reason,
+                    risk_level=result.risk_level.value,
+                    symbol=signal.symbol,
+                )
                 await self._emit_risk_alert(
                     signal.symbol,
                     result.risk_level,
