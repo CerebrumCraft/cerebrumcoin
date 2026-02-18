@@ -307,26 +307,89 @@ def test_position_sizing_rule():
     assert result.modified_amount == expected_amount
 
 
+def test_position_sizing_rule_denies_when_no_price():
+    """PositionSizingRule must DENY when no price is available.
+
+    Regression test: previously returned APPROVE, leaving the 1.0 BTC
+    placeholder amount unmodified, which caused exchange rejection as
+    insufficient_balance (~$68k required, $10k available).
+    """
+    rule = PositionSizingRule(position_size_percent=Decimal("2.0"))
+
+    class MockPortfolio:
+        def get_total_equity(self):
+            return Decimal("10000.0")
+
+        def get_latest_price(self, symbol):
+            # Simulate startup condition: no market data has arrived yet
+            return None
+
+    portfolio = MockPortfolio()
+
+    signal = SignalEvent(
+        event_type=EventType.SIGNAL,
+        timestamp=time(),
+        signal_type=SignalType.COMBINED,
+        symbol="BTC/USD",
+        action=SignalAction.BUY,
+        strength=Decimal("0.8"),
+        confidence=Decimal("0.9"),
+    )
+
+    # Market order with no price (the Fear & Greed startup scenario)
+    order = OrderEvent(
+        event_type=EventType.ORDER,
+        timestamp=time(),
+        order_id=str(uuid4()),
+        symbol="BTC/USD",
+        side=Side.BUY,
+        order_type=OrderType.MARKET,
+        amount=Decimal("1.0"),  # placeholder amount — must NOT pass through
+    )
+
+    result = rule.evaluate(signal, order, portfolio)
+    assert result.decision == RuleDecision.DENY, (
+        f"Expected DENY when no price data available, got {result.decision}: {result.reason}"
+    )
+    assert "no price data" in result.reason.lower()
+
+
 @pytest.mark.asyncio
 async def test_risk_manager_integration(bus, portfolio):
-    """Test risk manager applies rules correctly."""
+    """Test risk manager applies rules correctly.
+
+    Market data must be seeded before the signal fires so PositionSizingRule
+    can resolve a price for the market order. Without price data the rule now
+    correctly DENYs the order (regression fix for the passthrough bug).
+    """
     # Create rules
     rules = [
         MinSignalStrengthRule(min_strength=Decimal("0.4")),
         PositionSizingRule(position_size_percent=Decimal("2.0")),
     ]
-    
+
     risk_manager = RiskManager(bus, portfolio, rules=rules)
-    
+
     # Collect orders
     orders = []
-    
+
     async def order_collector(event):
         if isinstance(event, OrderEvent):
             orders.append(event)
-    
+
     bus.subscribe(EventType.ORDER, order_collector, "order_collector")
-    
+
+    # Seed market data so PositionSizingRule can resolve a price
+    market_data = MarketDataEvent(
+        event_type=EventType.MARKET_DATA,
+        timestamp=time(),
+        symbol="BTC/USD",
+        price=Decimal("50000"),
+        volume=Decimal("1.0"),
+    )
+    await bus.publish(market_data)
+    await asyncio.sleep(0.1)
+
     # Send strong combined signal
     signal = SignalEvent(
         event_type=EventType.SIGNAL,
@@ -337,13 +400,13 @@ async def test_risk_manager_integration(bus, portfolio):
         strength=Decimal("0.8"),
         confidence=Decimal("0.9"),
     )
-    
+
     await bus.publish(signal)
     await asyncio.sleep(0.3)
-    
-    # Order should be generated (strong signal passes rules)
+
+    # Order should be generated (strong signal + price data available)
     assert len(orders) >= 1
-    
+
     # Order amount should be sized appropriately
     order = orders[0]
     assert order.symbol == "BTC/USD"

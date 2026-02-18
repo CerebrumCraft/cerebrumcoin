@@ -284,10 +284,12 @@ class PositionSizingRule(RiskRule):
             # For market orders, use latest known price from portfolio tracker
             price = portfolio.get_latest_price(order.symbol)
             if price is None:
-                # No price data available - can't size
+                # No price data available - can't safely size the order.
+                # Returning DENY prevents the 1.0 BTC placeholder amount from
+                # reaching the exchange, which would be rejected as insufficient_balance.
                 return RuleResult(
-                    decision=RuleDecision.APPROVE,
-                    reason="Market order with no price data - sizing skipped",
+                    decision=RuleDecision.DENY,
+                    reason="Cannot size order: no price data available",
                     risk_level=RiskLevel.MEDIUM,
                 )
 
