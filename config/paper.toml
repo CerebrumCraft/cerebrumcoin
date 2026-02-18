@@ -14,6 +14,17 @@ level = "DEBUG"
 format = "console"
 file = "logs/paper.log"
 
+[signals]
+# Tighten signal aggregation thresholds to reduce noise
+aggregation_threshold = "0.5"  # Up from 0.3 - require stronger consensus
+aggregation_window_seconds = 60  # Up from 5s - longer confirmation window
+rsi_oversold = 25  # Down from 30 - more extreme oversold
+rsi_overbought = 75  # Up from 70 - more extreme overbought
+
+[risk]
+# Increase minimum signal strength for trade entry
+min_signal_strength = "0.5"  # Up from 0.3 - require higher confidence
+
 [monitoring]
 dashboard_enabled = true
 update_interval_seconds = 30
