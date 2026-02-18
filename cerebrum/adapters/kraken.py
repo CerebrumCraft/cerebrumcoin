@@ -12,6 +12,8 @@ symbol mapping handled internally (BTC/USD -> XBT/USD).
 """
 
 import asyncio
+import os
+from datetime import datetime, timezone
 from decimal import Decimal
 from time import time
 from typing import Any
@@ -43,6 +45,7 @@ class KrakenAdapter(ExchangeAdapter):
     - WebSocket market data via ccxt.pro
     - Automatic reconnection on disconnects
     - Rate limiting
+    - Live order execution (Phase 6)
 
     Note: ccxt.pro handles Kraken's BTC/XBT mapping internally,
     so we pass standard symbols (BTC/USD) directly to the exchange.
@@ -169,14 +172,115 @@ class KrakenAdapter(ExchangeAdapter):
         """
         Execute order on Kraken.
 
-        Note: For Phase 1, this is a stub. Real execution comes in Phase 6.
-        Paper trading handles order execution.
+        @decision DEC-LIVE-001
+        Safety: Requires both TRADING_MODE=live AND KRAKEN_LIVE_ENABLED=true env vars.
+        Uses ccxt create_market_order for execution, polls fetch_order for fill status.
+        
+        Args:
+            order: Order to execute
+            
+        Raises:
+            RuntimeError: If live trading not enabled
+            ccxt.InvalidOrder: If order is invalid
+            ccxt.InsufficientFunds: If insufficient balance
         """
+        # Safety check: dual-gate for live trading
+        trading_mode = os.getenv("TRADING_MODE", "paper")
+        live_enabled = os.getenv("KRAKEN_LIVE_ENABLED", "false").lower() == "true"
+        
+        if trading_mode != "live" or not live_enabled:
+            self._log.warning(
+                "live_order_not_enabled",
+                order_id=order.order_id,
+                trading_mode=trading_mode,
+                live_enabled=live_enabled,
+                message="Dual safety check failed. Set TRADING_MODE=live AND KRAKEN_LIVE_ENABLED=true"
+            )
+            return
+        
         self._log.warning(
-            "live_order_not_implemented",
+            "executing_live_order",
             order_id=order.order_id,
-            message="Use paper trading adapter for Phase 1"
+            symbol=order.symbol,
+            side=order.side.value,
+            amount=str(order.amount),
+            message="REAL MONEY ORDER - This will execute on live exchange"
         )
+        
+        try:
+            # Convert to ccxt format
+            side_str = "buy" if order.side == Side.BUY else "sell"
+            amount_float = float(order.amount)
+            
+            # Execute market order via ccxt
+            ccxt_order = await self._exchange.create_market_order(
+                symbol=order.symbol,
+                side=side_str,
+                amount=amount_float,
+            )
+            
+            self._log.info(
+                "order_submitted",
+                order_id=order.order_id,
+                ccxt_order_id=ccxt_order["id"],
+                status=ccxt_order["status"],
+            )
+            
+            # Poll for fill (Kraken usually fills market orders immediately)
+            max_polls = 10
+            for i in range(max_polls):
+                await asyncio.sleep(0.5)  # Wait 500ms between polls
+                
+                filled_order = await self._exchange.fetch_order(
+                    ccxt_order["id"],
+                    symbol=order.symbol,
+                )
+                
+                if filled_order["status"] == "closed":
+                    # Order filled - publish FillEvent
+                    fill_price = Decimal(str(filled_order["average"]))
+                    fill_amount = Decimal(str(filled_order["filled"]))
+                    
+                    fill_event = FillEvent(
+                        event_type=EventType.FILL,
+                        timestamp=time(),
+                        order_id=order.order_id,
+                        symbol=order.symbol,
+                        side=order.side,
+                        fill_price=fill_price,
+                        filled_amount=fill_amount,
+                        commission=Decimal(str(filled_order.get("fee", {}).get("cost", 0))),
+                        commission_asset="USD",
+                        exchange_order_id=str(filled_order["id"]),
+                    )
+                    
+                    await self.bus.publish(fill_event)
+                    
+                    self._log.info(
+                        "order_filled",
+                        order_id=order.order_id,
+                        price=str(fill_price),
+                        amount=str(fill_amount),
+                    )
+                    return
+                    
+            # Timeout - order didn't fill in time
+            self._log.error(
+                "order_fill_timeout",
+                order_id=order.order_id,
+                ccxt_order_id=ccxt_order["id"],
+                status=filled_order["status"],
+            )
+            
+        except Exception as e:
+            self._log.error(
+                "order_execution_failed",
+                order_id=order.order_id,
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
+            raise
 
     async def get_balance(self, asset: str) -> Decimal:
         """Get current balance for an asset."""
