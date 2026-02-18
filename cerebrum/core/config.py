@@ -61,6 +61,10 @@ class RiskConfig(BaseSettings):
         default=Decimal("2.0"),
         description="Default position size as % of portfolio"
     )
+    min_signal_strength: Decimal = Field(
+        default=Decimal("0.3"),
+        description="Minimum signal strength required to execute trades"
+    )
 
     @field_validator("max_drawdown_percent", "position_size_percent")
     @classmethod
