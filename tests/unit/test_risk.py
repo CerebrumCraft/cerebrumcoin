@@ -2,6 +2,15 @@
 Unit tests for risk management system.
 
 Tests portfolio tracking, risk rules, and risk manager.
+
+@decision DEC-RISK-003
+@title Short position equity accounting — remove abs() from get_total_equity()
+@status accepted
+@rationale abs(amount) incorrectly added short positions' market value to equity
+instead of subtracting it, inflating _peak_equity and causing phantom drawdowns
+(6.2% reported vs 0.03% actual). Fix: use signed amount * price so shorts
+reduce equity. get_total_exposure() retains abs() — it measures total risk
+regardless of direction, which is correct behaviour.
 """
 
 import asyncio
@@ -445,3 +454,120 @@ async def test_risk_manager_rejects_weak_signals(bus, portfolio):
     
     # No order should be generated
     assert len(orders) == 0
+
+
+# ---------------------------------------------------------------------------
+# Short position equity tests (regression for abs() double-counting bug)
+# ---------------------------------------------------------------------------
+
+def test_get_total_equity_short_position_reduces_equity():
+    """Short position must reduce equity, not inflate it.
+
+    Before fix: abs(amount) * price added the short's market value to equity.
+    After fix:  amount * price is negative for shorts, correctly reducing equity.
+
+    Setup: cash = 10000, short 0.1 BTC at 50000 = position value of -5000.
+    Expected equity: 10000 + (-5000) = 5000.
+    """
+    from cerebrum.risk.portfolio import PortfolioTracker, Position
+
+    # Build a minimal tracker directly — bypass __init__ to avoid event bus dependency
+    tracker = PortfolioTracker.__new__(PortfolioTracker)
+    tracker._cash_balance = Decimal("10000")
+    tracker._positions = {
+        "BTC/USD": Position(
+            symbol="BTC/USD",
+            amount=Decimal("-0.1"),        # short
+            average_entry_price=Decimal("50000"),
+            current_price=Decimal("50000"),
+            unrealized_pnl=Decimal("0"),
+            realized_pnl=Decimal("0"),
+        )
+    }
+
+    equity = tracker.get_total_equity()
+    assert equity == Decimal("5000"), (
+        f"Short position should reduce equity to 5000, got {equity}"
+    )
+
+
+def test_get_total_equity_long_position_unchanged():
+    """Long positions must still increase equity (no regression)."""
+    from cerebrum.risk.portfolio import PortfolioTracker, Position
+
+    tracker = PortfolioTracker.__new__(PortfolioTracker)
+    tracker._cash_balance = Decimal("5000")
+    tracker._positions = {
+        "BTC/USD": Position(
+            symbol="BTC/USD",
+            amount=Decimal("0.1"),         # long
+            average_entry_price=Decimal("50000"),
+            current_price=Decimal("50000"),
+            unrealized_pnl=Decimal("0"),
+            realized_pnl=Decimal("0"),
+        )
+    }
+
+    equity = tracker.get_total_equity()
+    assert equity == Decimal("10000"), (
+        f"Long position should increase equity to 10000, got {equity}"
+    )
+
+
+def test_get_total_exposure_still_uses_abs():
+    """get_total_exposure() must use abs() — this method is NOT changed."""
+    from cerebrum.risk.portfolio import PortfolioTracker, Position
+
+    tracker = PortfolioTracker.__new__(PortfolioTracker)
+    tracker._cash_balance = Decimal("10000")
+    tracker._positions = {
+        "BTC/USD": Position(
+            symbol="BTC/USD",
+            amount=Decimal("-0.1"),        # short
+            average_entry_price=Decimal("50000"),
+            current_price=Decimal("50000"),
+            unrealized_pnl=Decimal("0"),
+            realized_pnl=Decimal("0"),
+        )
+    }
+
+    exposure = tracker.get_total_exposure()
+    assert exposure == Decimal("5000"), (
+        f"Exposure should be abs value 5000 regardless of direction, got {exposure}"
+    )
+
+
+def test_drawdown_not_inflated_by_short_position():
+    """Drawdown must not be inflated when a short position is held.
+
+    Before fix: abs() inflated equity with the short's market value, pushing peak
+    equity above initial balance, which caused phantom drawdowns later.
+    After fix:  short value is negative so equity stays at 10000 (cash 15000 - 5000
+    short liability), matching the peak, giving 0% drawdown.
+    """
+    from cerebrum.risk.portfolio import PortfolioTracker, Position
+
+    tracker = PortfolioTracker.__new__(PortfolioTracker)
+    # Simulate: started with 10000, shorted 0.1 BTC at 50000 (received 5000 cash).
+    tracker._cash_balance = Decimal("15000")  # 10000 initial + 5000 from short proceeds
+    tracker._initial_balance = Decimal("10000")
+    tracker._peak_equity = Decimal("10000")   # peak was at initial balance (pre-short)
+    tracker._positions = {
+        "BTC/USD": Position(
+            symbol="BTC/USD",
+            amount=Decimal("-0.1"),
+            average_entry_price=Decimal("50000"),
+            current_price=Decimal("50000"),
+            unrealized_pnl=Decimal("0"),
+            realized_pnl=Decimal("0"),
+        )
+    }
+
+    # equity = 15000 + (-0.1 * 50000) = 15000 - 5000 = 10000
+    equity = tracker.get_total_equity()
+    assert equity == Decimal("10000"), f"Equity should be 10000, got {equity}"
+
+    drawdown = tracker.get_drawdown_percent()
+    assert drawdown == Decimal("0.0"), (
+        f"Drawdown should be 0% when equity equals peak, got {drawdown}%"
+    )
