@@ -236,7 +236,7 @@ class CerebrumCoin:
             MaxPositionSizeRule(self.config.risk.max_position_size_usd),
             MaxTotalExposureRule(self.config.risk.max_total_exposure_usd),
             MaxDrawdownRule(self.config.risk.max_drawdown_percent),
-            MinSignalStrengthRule(),
+            MinSignalStrengthRule(self.config.risk.min_signal_strength),
         ]
         self.risk_manager = RiskManager(
             self.bus,
