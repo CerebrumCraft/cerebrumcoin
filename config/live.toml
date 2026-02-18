@@ -1,0 +1,41 @@
+# CerebrumCoin Live Trading Configuration
+# PRODUCTION USE - Real money at risk
+# Extends default.toml with conservative live trading settings
+
+[trading]
+mode = "live"
+# Start with single symbol in live
+symbols = ["BTC/USD"]
+
+[exchange]
+# API keys loaded from .env (EXCHANGE_API_KEY, EXCHANGE_API_SECRET)
+name = "kraken"
+testnet = false
+rate_limit_per_minute = 60
+websocket_enabled = true
+
+[risk]
+# CONSERVATIVE settings for live trading
+max_position_size_usd = "500.0"      # Max $500 per position (reduced from paper's $1000)
+max_total_exposure_usd = "2000.0"    # Max $2000 total exposure (reduced from $5000)
+max_drawdown_percent = "3.0"         # Circuit breaker at 3% drawdown (tighter than paper's 5%)
+max_daily_loss_usd = "200.0"         # Max $200 daily loss
+position_size_percent = "0.5"        # 0.5% of portfolio per trade (vs 2% in paper)
+
+[signals]
+# More conservative signal thresholds for live
+aggregation_threshold = "0.6"        # Require stronger signal (vs 0.5 in paper)
+aggregation_window_seconds = 120     # Longer debounce window
+
+[logging]
+level = "INFO"
+format = "json"
+file = "logs/live.log"
+
+[monitoring]
+dashboard_enabled = true
+update_interval_seconds = 30
+report_file_path = "data/live_session_report.txt"
+
+# Safety check: This config requires KRAKEN_LIVE_ENABLED=true env var
+# Set in .env when you're ready for live trading

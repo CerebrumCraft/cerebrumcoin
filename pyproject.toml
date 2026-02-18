@@ -33,6 +33,9 @@ ml = [
     "torch>=2.1.0",
     "hmmlearn>=0.3.0",
 ]
+stocks = [
+    "alpaca-py>=0.28.0",
+]
 
 [build-system]
 requires = ["hatchling"]

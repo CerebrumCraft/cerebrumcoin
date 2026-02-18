@@ -23,6 +23,7 @@ from cerebrum.adapters.kraken import KrakenAdapter
 from cerebrum.adapters.paper import PaperTradingAdapter
 from cerebrum.core.bus import EventBus
 from cerebrum.core.config import Config
+from cerebrum.core.types import EventType, TradingMode
 from cerebrum.risk.manager import RiskManager
 from cerebrum.risk.portfolio import PortfolioTracker
 from cerebrum.risk.rules import (
@@ -114,16 +115,29 @@ class CerebrumCoin:
         )
         await self.kraken_adapter.connect()
 
-        # Initialize paper trading adapter for execution
-        self.paper_adapter = PaperTradingAdapter(
-            self.bus,
-            {},
-            initial_balance=self.config.paper.initial_balance_usd,
-            commission_percent=self.config.paper.commission_percent,
-            slippage_percent=self.config.paper.slippage_percent,
-            state_file=self.config.paper.state_file,
-        )
-        await self.paper_adapter.connect()
+        # Initialize execution adapter based on trading mode
+        if self.config.trading.mode == TradingMode.LIVE:
+            self._log.warning(
+                "LIVE_MODE_ACTIVE",
+                message="*** REAL MONEY TRADING ENABLED — Orders will execute on live exchange ***",
+            )
+            # In live mode, Kraken handles both data AND execution
+            self.bus.subscribe(
+                EventType.ORDER,
+                self.kraken_adapter.execute_order,
+                "kraken_live_executor",
+            )
+        else:
+            # Paper mode (default) — use paper adapter for execution
+            self.paper_adapter = PaperTradingAdapter(
+                self.bus,
+                {},
+                initial_balance=self.config.paper.initial_balance_usd,
+                commission_percent=self.config.paper.commission_percent,
+                slippage_percent=self.config.paper.slippage_percent,
+                state_file=self.config.paper.state_file,
+            )
+            await self.paper_adapter.connect()
 
         # Initialize candle aggregator
         self.candle_agg = CandleAggregator(

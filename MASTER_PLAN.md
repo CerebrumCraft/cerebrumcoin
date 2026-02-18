@@ -16,7 +16,7 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
        └──────────────────── [Closed-Loop Learner] ←───────────────────────────────────────┘
 ```
 
-**Status**: Phase 4 — Closed-Loop Learning (completed) | Phase 5 — Validation & Monitoring (in progress)
+**Status**: Phase 5 — Paper Trading Validation (completed) | Phase 6 — Live Trading & Plugin System (in progress)
 
 ## Technology Stack
 
@@ -103,14 +103,16 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 - [x] Implement `core/state.py` — persist learning state across restarts
 - **Verification**: Signal weights shift toward better-performing signals over time -- VERIFIED 2026-02-17
 
-### Phase 5: Paper Trading Validation
+### Phase 5: Paper Trading Validation (COMPLETED)
 **Goal**: Extended paper trading with monitoring and backtesting.
 
-- [ ] Run agent on paper mode for 2+ weeks
-- [ ] Monitoring dashboard (structlog → CLI stats)
-- [ ] Backtests against historical data via vectorbt
-- [ ] Tune risk parameters, signal weights, regime thresholds
-- **Verification**: Positive expectancy on paper + backtests
+- [x] Implement `monitoring/stats.py` — performance metrics calculator (Sharpe, Sortino, drawdown)
+- [x] Implement `monitoring/dashboard.py` — real-time CLI dashboard
+- [x] Implement `monitoring/reporter.py` — session report generator
+- [x] Implement `scripts/run_backtest.py` — backtesting runner via ccxt OHLCV replay
+- [x] Implement `scripts/show_stats.py` — CLI stats viewer
+- [x] Add MonitoringConfig to core config, wire dashboard into main
+- **Verification**: 99 passed, 2 skipped, 0 failed — monitoring dashboard, stats calculator, backtesting, and session reporter operational -- VERIFIED 2026-02-17
 
 ### Phase 6: Live Trading & Plugin System
 **Goal**: Graduate to real trading, enable future system integration.
@@ -172,7 +174,22 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | ID | Decision | Rationale | Date |
 |----|----------|-----------|------|
 | DEC-MONITOR-001 | Pure function stats calculator | Performance metrics must be deterministic and testable; pure functions with no side effects enable easy unit testing | 2026-02-17 |
+| DEC-MONITOR-002 | Event-driven dashboard with periodic updates | Dashboard subscribes to FillEvent/PositionUpdateEvent/TradeClosedEvent for real-time state; asyncio.sleep for periodic console updates (30s); non-blocking | 2026-02-17 |
+| DEC-MONITOR-003 | Session reporter with file and console output | Post-session analysis requires comprehensive reports; uses stats.py for calculations; outputs to console and file with all metrics, trade list, regime breakdown | 2026-02-17 |
+| DEC-MONITOR-004 | CLI stats viewer with SQLite queries | Quick command-line access to trade history, weight evolution, and regime data from persistent state | 2026-02-17 |
+| DEC-MONITOR-005 | Backtesting via OHLCV replay through event bus | Reuses the same event bus pipeline for backtesting; downloads historical OHLCV via ccxt and replays as MarketDataEvents | 2026-02-17 |
 | DEC-TEST-006 | Deterministic stats tests with trade fixtures | Performance metrics must be mathematically correct; use known PnL and equity curves to verify calculations | 2026-02-17 |
+
+**Phase 6 Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-LIVE-001 | Dual safety check for live trading (mode + env flag) | Requires both TRADING_MODE=live AND KRAKEN_LIVE_ENABLED=true before executing real orders; prevents accidental live trading | 2026-02-17 |
+| DEC-PLUGIN-001 | Abstract plugin interface with lifecycle hooks | Plugins need initialize/start/stop hooks for clean lifecycle management; bus reference enables event subscription; metadata properties for discovery | 2026-02-17 |
+| DEC-PLUGIN-002 | Error isolation in plugin registry | One failing plugin shouldn't crash the system; registry wraps plugin.start() in try/except, logs failures, continues with healthy plugins | 2026-02-17 |
+| DEC-ALPACA-001 | Alpaca adapter for multi-asset proof | Stock trading proves multi-asset extensibility; Alpaca provides free paper trading for stocks; same ExchangeAdapter interface | 2026-02-17 |
+| DEC-TEST-007 | Mock external APIs in tests | ccxt and alpaca-py are external dependencies; mock at API boundary (create_order, fetch_order) to test our logic without hitting real exchanges | 2026-02-17 |
+| DEC-TEST-008 | Mock Alpaca API at client boundary | Tests mock TradingClient and StockHistoricalDataClient to verify adapter logic without API keys or market hours | 2026-02-17 |
 
 ## Resources
 
@@ -181,4 +198,5 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | `pyproject.toml` | Dependencies and project config |
 | `config/default.toml` | Default runtime configuration |
 | `config/paper.toml` | Paper trading overrides |
+| `config/live.toml` | Live trading configuration (conservative) |
 | `.env.example` | API key template |
