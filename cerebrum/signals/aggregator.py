@@ -149,10 +149,15 @@ class SignalAggregator:
         
         # Check if aggregate exceeds threshold
         if aggregate.strength >= self._threshold:
+            # Debounce: don't emit if we recently emitted for this symbol
+            last_emit = self._last_emission.get(symbol, 0)
+            if current_time - last_emit < self._window_seconds:
+                return
+
             # Emit combined signal
             await self._bus.publish(aggregate)
             self._last_emission[symbol] = current_time
-            
+
             self._log.info(
                 "combined_signal_emitted",
                 symbol=symbol,

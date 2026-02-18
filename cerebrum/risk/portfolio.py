@@ -182,11 +182,12 @@ class PortfolioTracker:
         return self._cash_balance
     
     def get_total_equity(self) -> Decimal:
-        """Get total equity (cash + unrealized P&L)."""
-        unrealized_total = sum(
-            pos.unrealized_pnl for pos in self._positions.values()
+        """Get total equity (cash + position market values)."""
+        position_value = sum(
+            abs(pos.amount) * pos.current_price
+            for pos in self._positions.values()
         )
-        return self._cash_balance + unrealized_total
+        return self._cash_balance + position_value
     
     def get_total_exposure(self) -> Decimal:
         """Get total position exposure (sum of position values)."""
