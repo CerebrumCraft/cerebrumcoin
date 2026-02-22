@@ -394,19 +394,28 @@ class VWAPSignal(SignalGenerator):
         # Calculate distance from VWAP as percentage
         distance_pct = ((current_price - vwap_value) / vwap_value) * 100
         
-        # Map distance to signal
-        # distance > 2%: price well above VWAP (bullish)
-        # distance < -2%: price well below VWAP (bearish)
-        
-        if distance_pct > 0:
-            action = SignalAction.BUY
-            strength = Decimal(str(min(distance_pct / 5, 1.0)))  # Cap at 5%
-        elif distance_pct < 0:
-            action = SignalAction.SELL
-            strength = Decimal(str(min(abs(distance_pct) / 5, 1.0)))
-        else:
+        # Neutral zone: price within 0.5% of VWAP is statistically insignificant.
+        # Emitting signals this close to VWAP generated noise trades in paper sessions.
+        # Only fire when price has moved meaningfully away from VWAP.
+        #
+        # @decision DEC-SIGNAL-005
+        # @title VWAP neutral zone (0.5%) to filter near-VWAP noise
+        # @status accepted
+        # @rationale Price within 0.5% of VWAP is inside normal bid/ask spread noise.
+        # Strength scales from the edge of the neutral zone, not from VWAP itself.
+        neutral_zone = 0.5  # percent — signals only fire when price is >0.5% from VWAP
+
+        if abs(distance_pct) < neutral_zone:
             action = SignalAction.HOLD
             strength = Decimal("0.0")
+        elif distance_pct > 0:
+            action = SignalAction.BUY
+            effective_distance = distance_pct - neutral_zone
+            strength = Decimal(str(min(effective_distance / 5, 1.0)))
+        else:
+            action = SignalAction.SELL
+            effective_distance = abs(distance_pct) - neutral_zone
+            strength = Decimal(str(min(effective_distance / 5, 1.0)))
         
         confidence = Decimal("0.70")  # VWAP is fairly reliable
         

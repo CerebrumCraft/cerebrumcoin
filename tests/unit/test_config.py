@@ -174,8 +174,8 @@ def test_paper_toml_tuned_parameters():
     config = Config.from_toml(paper_config_path)
 
     # Verify tuned signal parameters (tighter than defaults)
-    assert config.signals.aggregation_threshold == Decimal("0.5"), \
-        "aggregation_threshold should be 0.5 (up from 0.3) to reduce noise"
+    assert config.signals.aggregation_threshold == Decimal("0.4"), \
+        "aggregation_threshold should be 0.4 — consensus multiplier makes 0.4 equivalent to old 0.5"
     assert config.signals.aggregation_window_seconds == 60, \
         "aggregation_window should be 60s (up from 5s) for longer confirmation"
     assert config.signals.rsi_oversold == 25, \
@@ -186,6 +186,14 @@ def test_paper_toml_tuned_parameters():
     # Verify tuned risk parameters
     assert config.risk.min_signal_strength == Decimal("0.5"), \
         "min_signal_strength should be 0.5 (up from 0.3) for higher confidence trades"
+    assert config.risk.stop_loss_percent == Decimal("2.0"), \
+        "stop_loss_percent should be 2.0 (new exit rule)"
+    assert config.risk.take_profit_percent == Decimal("3.0"), \
+        "take_profit_percent should be 3.0 (new exit rule)"
+    assert config.risk.max_position_age_minutes == 120, \
+        "max_position_age_minutes should be 120 (2 hour time-based exit)"
+    assert config.risk.position_size_percent == Decimal("3.0"), \
+        "position_size_percent should be 3.0 (up from 2.0 to reduce commission drag)"
 
     # Verify paper trading parameters remain realistic
     assert config.paper.commission_percent == Decimal("0.16"), \

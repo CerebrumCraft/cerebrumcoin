@@ -24,6 +24,7 @@ from cerebrum.adapters.paper import PaperTradingAdapter
 from cerebrum.core.bus import EventBus
 from cerebrum.core.config import Config
 from cerebrum.core.types import EventType, TradingMode
+from cerebrum.risk.exit_monitor import ExitMonitor
 from cerebrum.risk.manager import RiskManager
 from cerebrum.risk.portfolio import PortfolioTracker
 from cerebrum.risk.rules import (
@@ -86,6 +87,7 @@ class CerebrumCoin:
         self.candle_agg: CandleAggregator | None = None
         self.portfolio: PortfolioTracker | None = None
         self.risk_manager: RiskManager | None = None
+        self.exit_monitor: ExitMonitor | None = None
         self.signal_agg: SignalAggregator | None = None
         self._signal_generators: list = []
         self._intelligence_components: list = []
@@ -242,6 +244,15 @@ class CerebrumCoin:
             self.bus,
             self.portfolio,
             rules=risk_rules,
+        )
+
+        # Initialize exit monitor (stop-loss, take-profit, time-based exits)
+        self.exit_monitor = ExitMonitor(
+            self.bus,
+            self.portfolio,
+            stop_loss_percent=self.config.risk.stop_loss_percent,
+            take_profit_percent=self.config.risk.take_profit_percent,
+            max_position_age_minutes=self.config.risk.max_position_age_minutes,
         )
 
         # Initialize learning system

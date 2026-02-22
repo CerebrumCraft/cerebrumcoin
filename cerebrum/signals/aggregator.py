@@ -222,6 +222,26 @@ class SignalAggregator:
         # Multiple agreeing signals with same weight reinforce to the average strength
         buy_score_norm = buy_score / buy_weight_sum if buy_weight_sum > 0 else Decimal("0.0")
         sell_score_norm = sell_score / sell_weight_sum if sell_weight_sum > 0 else Decimal("0.0")
+
+        # Consensus multiplier: reward agreement across signal generators.
+        # When all weight is on one side, multiplier = sqrt(1.0) = 1.0 (no change).
+        # When weight is split 50/50, each side gets sqrt(0.5) ≈ 0.71, making it
+        # harder for either direction to cross the threshold.
+        # sqrt gives diminishing returns so even a 75% majority still gets 0.87x.
+        #
+        # @decision DEC-AGG-002
+        # @title Consensus multiplier via sqrt(buy_weight_fraction)
+        # @status accepted
+        # @rationale 4 weak signals all agreeing at 0.3 should outscore a 50/50 split.
+        # Old normalization (divide by directional weight sum) made 4x0.3 BUY = 0.3
+        # regardless of opposing signals. Now a split suppresses both directions.
+        import math as _math
+        total_weight = buy_weight_sum + sell_weight_sum
+        if total_weight > Decimal("0"):
+            buy_consensus = buy_weight_sum / total_weight
+            sell_consensus = sell_weight_sum / total_weight
+            buy_score_norm = buy_score_norm * Decimal(str(_math.sqrt(float(buy_consensus))))
+            sell_score_norm = sell_score_norm * Decimal(str(_math.sqrt(float(sell_consensus))))
         
         # Determine aggregate action and strength
         if buy_score_norm > sell_score_norm:
