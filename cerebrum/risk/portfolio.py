@@ -189,9 +189,14 @@ class PortfolioTracker:
         return self._cash_balance
 
     def get_total_equity(self) -> Decimal:
-        """Get total equity (cash + position market values)."""
+        """Get total equity (cash + signed position market values).
+
+        Short positions (negative amount) correctly reduce equity since the
+        trader owes the asset. Long positions (positive amount) increase equity.
+        Do NOT use abs() here — that was the double-counting bug (DEC-RISK-003).
+        """
         position_value = sum(
-            abs(pos.amount) * pos.current_price
+            pos.amount * pos.current_price  # signed: long adds, short subtracts
             for pos in self._positions.values()
         )
         return self._cash_balance + position_value
