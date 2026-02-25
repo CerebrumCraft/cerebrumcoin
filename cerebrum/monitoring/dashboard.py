@@ -111,14 +111,22 @@ class Dashboard:
             pass  # Portfolio tracker handles equity updates
     
     async def _on_position_update(self, event: Event) -> None:
-        """Handle position update events."""
+        """Handle position update events.
+
+        amount=0 signals that the position was closed — remove it from the
+        open-positions dict so the dashboard shows accurate state.
+        """
         if isinstance(event, PositionUpdateEvent):
-            self._open_positions[event.symbol] = {
-                "amount": event.amount,
-                "entry_price": event.average_entry_price,
-                "current_price": event.current_price,
-                "unrealized_pnl": event.unrealized_pnl,
-            }
+            if event.amount == 0:
+                # Position closed: remove from tracking dict
+                self._open_positions.pop(event.symbol, None)
+            else:
+                self._open_positions[event.symbol] = {
+                    "amount": event.amount,
+                    "entry_price": event.average_entry_price,
+                    "current_price": event.current_price,
+                    "unrealized_pnl": event.unrealized_pnl,
+                }
     
     async def _on_trade_closed(self, event: Event) -> None:
         """Handle trade closed events."""

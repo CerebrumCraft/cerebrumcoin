@@ -18,7 +18,7 @@ from decimal import Decimal
 import structlog
 
 from cerebrum.core.bus import EventBus
-from cerebrum.core.events import Event, FillEvent, MarketDataEvent
+from cerebrum.core.events import Event, FillEvent, MarketDataEvent, PositionUpdateEvent
 from cerebrum.core.types import Amount, EventType, Price, Side, Symbol
 
 logger = structlog.get_logger()
@@ -105,7 +105,14 @@ class PortfolioTracker:
         if event.side == Side.SELL:
             filled_amount = -filled_amount
 
-        # Update or create position
+        # @decision DEC-DASH-001: Publish PositionUpdateEvent on fills only (not price ticks)
+        # to keep dashboard updated without flooding the event bus.
+        #
+        # Update or create position, then publish PositionUpdateEvent so subscribers
+        # (e.g. the monitoring dashboard) stay in sync with current position state.
+        # On position closure we publish amount=0 so subscribers can remove the entry.
+        position_event: PositionUpdateEvent | None = None
+
         if symbol in self._positions:
             pos = self._positions[symbol]
 
@@ -122,20 +129,54 @@ class PortfolioTracker:
                 # Update position
                 new_amount = pos.amount + filled_amount
                 if abs(new_amount) < Decimal("0.0001"):  # Position closed
+                    # Capture state before deletion so we can publish event
+                    closed_entry_price = pos.average_entry_price
+                    closed_realized_pnl = pos.realized_pnl
                     del self._positions[symbol]
                     self._log.info(
                         "position_closed",
                         symbol=symbol,
                         realized_pnl=str(realized_pnl),
                     )
+                    # amount=0 signals closure to subscribers
+                    position_event = PositionUpdateEvent(
+                        event_type=EventType.POSITION_UPDATE,
+                        timestamp=event.timestamp,
+                        symbol=symbol,
+                        amount=Decimal("0"),
+                        average_entry_price=closed_entry_price,
+                        current_price=fill_price,
+                        unrealized_pnl=Decimal("0.0"),
+                        realized_pnl=closed_realized_pnl,
+                    )
                 else:
                     pos.amount = new_amount
+                    position_event = PositionUpdateEvent(
+                        event_type=EventType.POSITION_UPDATE,
+                        timestamp=event.timestamp,
+                        symbol=symbol,
+                        amount=pos.amount,
+                        average_entry_price=pos.average_entry_price,
+                        current_price=pos.current_price,
+                        unrealized_pnl=pos.unrealized_pnl,
+                        realized_pnl=pos.realized_pnl,
+                    )
             else:
                 # Adding to position: update average entry (preserve original entry_time)
                 total_cost = (pos.amount * pos.average_entry_price) + (filled_amount * fill_price)
                 new_amount = pos.amount + filled_amount
                 pos.average_entry_price = total_cost / new_amount
                 pos.amount = new_amount
+                position_event = PositionUpdateEvent(
+                    event_type=EventType.POSITION_UPDATE,
+                    timestamp=event.timestamp,
+                    symbol=symbol,
+                    amount=pos.amount,
+                    average_entry_price=pos.average_entry_price,
+                    current_price=pos.current_price,
+                    unrealized_pnl=pos.unrealized_pnl,
+                    realized_pnl=pos.realized_pnl,
+                )
         else:
             # New position — record entry time at fill event timestamp
             self._positions[symbol] = Position(
@@ -153,6 +194,16 @@ class PortfolioTracker:
                 amount=str(filled_amount),
                 price=str(fill_price),
             )
+            position_event = PositionUpdateEvent(
+                event_type=EventType.POSITION_UPDATE,
+                timestamp=event.timestamp,
+                symbol=symbol,
+                amount=filled_amount,
+                average_entry_price=fill_price,
+                current_price=fill_price,
+                unrealized_pnl=Decimal("0.0"),
+                realized_pnl=Decimal("0.0"),
+            )
 
         # Update cash balance
         cost = filled_amount * fill_price
@@ -162,6 +213,11 @@ class PortfolioTracker:
         equity = self.get_total_equity()
         if equity > self._peak_equity:
             self._peak_equity = equity
+
+        # Publish position state so dashboard and other subscribers stay current.
+        # Published after cash/equity updates so subscribers see consistent state.
+        if position_event is not None:
+            await self._bus.publish(position_event)
 
     async def _on_market_data(self, event: Event) -> None:
         """Update position prices with market data."""
