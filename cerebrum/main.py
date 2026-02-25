@@ -33,6 +33,7 @@ from cerebrum.risk.rules import (
     MaxTotalExposureRule,
     MinSignalStrengthRule,
     PositionSizingRule,
+    PostFillCooldownRule,
 )
 from cerebrum.signals.aggregator import SignalAggregator
 from cerebrum.signals.candles import CandleAggregator
@@ -239,6 +240,10 @@ class CerebrumCoin:
             MaxTotalExposureRule(self.config.risk.max_total_exposure_usd),
             MaxDrawdownRule(self.config.risk.max_drawdown_percent),
             MinSignalStrengthRule(self.config.risk.min_signal_strength),
+            PostFillCooldownRule(
+                cooldown_seconds=self.config.risk.post_fill_cooldown_seconds,
+                bus=self.bus,
+            ),
         ]
         self.risk_manager = RiskManager(
             self.bus,

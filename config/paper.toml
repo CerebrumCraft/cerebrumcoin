@@ -30,6 +30,8 @@ position_size_percent = "3.0"
 stop_loss_percent = "2.0"
 take_profit_percent = "3.0"
 max_position_age_minutes = 120
+# Post-fill cooldown: prevent rapid-fire ordering (5 minutes between fills per symbol)
+post_fill_cooldown_seconds = 300
 
 [monitoring]
 dashboard_enabled = true

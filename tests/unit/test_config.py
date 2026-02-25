@@ -194,6 +194,8 @@ def test_paper_toml_tuned_parameters():
         "max_position_age_minutes should be 120 (2 hour time-based exit)"
     assert config.risk.position_size_percent == Decimal("3.0"), \
         "position_size_percent should be 3.0 (up from 2.0 to reduce commission drag)"
+    assert config.risk.post_fill_cooldown_seconds == 300, \
+        "post_fill_cooldown_seconds should be 300 (5 min) to prevent rapid-fire ordering"
 
     # Verify paper trading parameters remain realistic
     assert config.paper.commission_percent == Decimal("0.16"), \
