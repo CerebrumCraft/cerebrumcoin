@@ -193,16 +193,17 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-TEST-007 | Mock external APIs in tests | ccxt and alpaca-py are external dependencies; mock at API boundary (create_order, fetch_order) to test our logic without hitting real exchanges | 2026-02-17 |
 | DEC-TEST-008 | Mock Alpaca API at client boundary | Tests mock TradingClient and StockHistoricalDataClient to verify adapter logic without API keys or market hours | 2026-02-17 |
 
-### Phase 7: Paper Trading Improvement (IN PROGRESS)
+### Phase 7: Paper Trading Improvement (COMPLETED)
 **Goal**: Fix poor paper trading performance (25 trades, 20% win rate, Sharpe -1.42) with exit rules and signal quality improvements.
 
-- [ ] Add `entry_time` to `Position` dataclass for time-based exits (DEC-EXIT-001)
-- [ ] Implement `ExitMonitor` in `cerebrum/risk/exit_monitor.py` — stop-loss, take-profit, time-based exits (DEC-EXIT-001)
-- [ ] Add exit config fields to `RiskConfig` (stop_loss_percent, take_profit_percent, max_position_age_minutes)
-- [ ] Wire `ExitMonitor` in `cerebrum/main.py`
-- [ ] Fix signal aggregator consensus normalization — reward agreeing signals (DEC-AGG-002)
-- [ ] Add VWAP neutral zone to eliminate near-VWAP noise signals (DEC-SIGNAL-005)
-- [ ] Tune paper.toml: lower threshold to 0.4, increase position size to 3%
+- [x] Add `entry_time` to `Position` dataclass for time-based exits (DEC-EXIT-001)
+- [x] Implement `ExitMonitor` in `cerebrum/risk/exit_monitor.py` — stop-loss, take-profit, time-based exits (DEC-EXIT-001)
+- [x] Add exit config fields to `RiskConfig` (stop_loss_percent, take_profit_percent, max_position_age_minutes)
+- [x] Wire `ExitMonitor` in `cerebrum/main.py`
+- [x] Fix signal aggregator consensus normalization — reward agreeing signals (DEC-AGG-002)
+- [x] Add VWAP neutral zone to eliminate near-VWAP noise signals (DEC-SIGNAL-005)
+- [x] Tune paper.toml: lower threshold to 0.4, increase position size to 3%
+- **Verification**: 133 tests pass, 0 failures (2026-02-25)
 
 **Phase 7 Decisions:**
 

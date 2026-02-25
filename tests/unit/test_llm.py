@@ -3,6 +3,15 @@
 Unit tests for LLM news analyzer.
 
 Tests verify batching, rate limiting, and graceful degradation.
+
+@decision DEC-TEST-004
+@title Mock at anthropic module boundary, not cerebrum re-export
+@status accepted
+@rationale LLMNewsAnalyzer imports AsyncAnthropic locally inside _analyze_batch()
+via `from anthropic import AsyncAnthropic`. Module-level patching of
+`cerebrum.intelligence.llm.AsyncAnthropic` does nothing because no attribute by
+that name exists at module scope. Patching `anthropic.AsyncAnthropic` intercepts
+the import at the source, which is the correct boundary for external API mocks.
 """
 
 import asyncio
@@ -66,7 +75,7 @@ async def test_news_batching(event_bus):
     mock_response.content = [MagicMock(text='{"action": "buy", "strength": 0.8, "confidence": 0.7, "reasoning": "Bullish", "affected_symbols": ["BTC/USD"]}')]
     mock_client.messages.create = AsyncMock(return_value=mock_response)
     
-    with patch("cerebrum.intelligence.llm.AsyncAnthropic", return_value=mock_client):
+    with patch("anthropic.AsyncAnthropic", return_value=mock_client):
         analyzer = LLMNewsAnalyzer(event_bus, anthropic_api_key="test", batch_size=2)
         await analyzer.start()
         

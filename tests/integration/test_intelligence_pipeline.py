@@ -62,46 +62,40 @@ async def test_full_intelligence_pipeline(event_bus):
     mock_llm_response = MagicMock()
     mock_llm_response.content = [MagicMock(text='{"action": "buy", "strength": 0.8, "confidence": 0.7, "reasoning": "Bullish adoption", "affected_symbols": ["BTC/USD"]}')]
     mock_llm_client.messages.create = AsyncMock(return_value=mock_llm_response)
-    
-    with patch("cerebrum.intelligence.news.aiohttp.ClientSession") as mock_news_session, \
-         patch("cerebrum.intelligence.social.aiohttp.ClientSession") as mock_social_session, \
-         patch("cerebrum.intelligence.llm.AsyncAnthropic", return_value=mock_llm_client):
-        
-        # Setup news mock
-        mock_news_resp = AsyncMock()
-        mock_news_resp.status = 200
-        mock_news_resp.json = AsyncMock(return_value=cryptopanic_response)
-        
-        mock_news_get_cm = MagicMock()
-        mock_news_get_cm.__aenter__ = AsyncMock(return_value=mock_news_resp)
-        mock_news_get_cm.__aexit__ = AsyncMock(return_value=None)
-        
-        mock_news_session_inst = MagicMock()
-        mock_news_session_inst.get = MagicMock(return_value=mock_news_get_cm)
-        
-        mock_news_session_cm = MagicMock()
-        mock_news_session_cm.__aenter__ = AsyncMock(return_value=mock_news_session_inst)
-        mock_news_session_cm.__aexit__ = AsyncMock(return_value=None)
-        
-        mock_news_session.return_value = mock_news_session_cm
-        
-        # Setup social mock
-        mock_social_resp = AsyncMock()
-        mock_social_resp.status = 200
-        mock_social_resp.json = AsyncMock(return_value=fear_greed_response)
-        
-        mock_social_get_cm = MagicMock()
-        mock_social_get_cm.__aenter__ = AsyncMock(return_value=mock_social_resp)
-        mock_social_get_cm.__aexit__ = AsyncMock(return_value=None)
-        
-        mock_social_session_inst = MagicMock()
-        mock_social_session_inst.get = MagicMock(return_value=mock_social_get_cm)
-        
-        mock_social_session_cm = MagicMock()
-        mock_social_session_cm.__aenter__ = AsyncMock(return_value=mock_social_session_inst)
-        mock_social_session_cm.__aexit__ = AsyncMock(return_value=None)
-        
-        mock_social_session.return_value = mock_social_session_cm
+
+    # Both news.py and social.py do `import aiohttp` at the top level, so they
+    # share the same aiohttp module object. Patching each sub-path separately
+    # (news.aiohttp.ClientSession, social.aiohttp.ClientSession) targets the same
+    # underlying attribute — the second patch wins and the first mock never fires.
+    # Fix: patch aiohttp.ClientSession once at the source with a URL-dispatching
+    # side_effect so both callers get the right response.
+    def make_session_for_url(url, response_data):
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=response_data)
+        mock_get_cm = MagicMock()
+        mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_get_cm.__aexit__ = AsyncMock(return_value=None)
+        mock_sess_inst = MagicMock()
+        mock_sess_inst.get = MagicMock(return_value=mock_get_cm)
+        mock_sess_cm = MagicMock()
+        mock_sess_cm.__aenter__ = AsyncMock(return_value=mock_sess_inst)
+        mock_sess_cm.__aexit__ = AsyncMock(return_value=None)
+        return mock_sess_cm
+
+    cryptopanic_session_cm = make_session_for_url("cryptopanic", cryptopanic_response)
+    fear_greed_session_cm = make_session_for_url("fear_greed", fear_greed_response)
+
+    # Alternate which session mock to return on successive calls:
+    # first call → news pipeline (CryptoPanic), second → social (Fear & Greed)
+    session_call_count = [0]
+    def session_side_effect(*args, **kwargs):
+        idx = session_call_count[0]
+        session_call_count[0] += 1
+        return [cryptopanic_session_cm, fear_greed_session_cm][idx % 2]
+
+    with patch("aiohttp.ClientSession", side_effect=session_side_effect), \
+         patch("anthropic.AsyncAnthropic", return_value=mock_llm_client):
         
         # Initialize components
         news_pipeline = NewsIngestionPipeline(
@@ -144,7 +138,12 @@ async def test_full_intelligence_pipeline(event_bus):
         event_bus.subscribe(EventType.NEWS, collect_news, subscriber_name="test_news")
         event_bus.subscribe(EventType.SIGNAL, collect_signals, subscriber_name="test_signals")
         event_bus.subscribe(EventType.REGIME_CHANGE, collect_regimes, subscriber_name="test_regime")
-        
+
+        # Yield to event loop so subscriber consumer tasks are started before we
+        # publish events — without this, news published by _fetch_cryptopanic()
+        # is delivered before test_news's queue task is running.
+        await asyncio.sleep(0)
+
         # Trigger pipeline
         await news_pipeline._fetch_cryptopanic()
         await fear_greed._fetch_and_emit()

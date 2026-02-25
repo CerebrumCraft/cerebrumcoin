@@ -26,9 +26,17 @@ from cerebrum.core.config import (
 from cerebrum.core.types import TradingMode
 
 
-def test_exchange_config_defaults():
-    """Test ExchangeConfig default values."""
-    config = ExchangeConfig()
+def test_exchange_config_defaults(monkeypatch):
+    """Test ExchangeConfig default values.
+
+    Isolates from real .env file and environment variables by passing
+    _env_file=None and clearing EXCHANGE_* env vars via monkeypatch.
+    """
+    # Isolate from real .env file and any EXCHANGE_* env vars
+    monkeypatch.delenv("EXCHANGE_API_KEY", raising=False)
+    monkeypatch.delenv("EXCHANGE_API_SECRET", raising=False)
+
+    config = ExchangeConfig(_env_file=None)
 
     assert config.name == "kraken"
     assert config.api_key == ""
