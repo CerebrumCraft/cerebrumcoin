@@ -16,7 +16,7 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
        └──────────────────── [Closed-Loop Learner] ←───────────────────────────────────────┘
 ```
 
-**Status**: Phase 5 — Paper Trading Validation (completed) | Phase 6 — Live Trading & Plugin System (in progress)
+**Status**: ALL PHASES COMPLETED — CerebrumCoin is a fully operational autonomous trading agent
 
 ## Technology Stack
 
@@ -114,14 +114,16 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 - [x] Add MonitoringConfig to core config, wire dashboard into main
 - **Verification**: 99 passed, 2 skipped, 0 failed — monitoring dashboard, stats calculator, backtesting, and session reporter operational -- VERIFIED 2026-02-17
 
-### Phase 6: Live Trading & Plugin System
+### Phase 6: Live Trading & Plugin System (COMPLETED)
 **Goal**: Graduate to real trading, enable future system integration.
 
-- [ ] Switch paper adapter to real Kraken execution
-- [ ] Implement `plugins/base.py` — plugin interface
-- [ ] Implement `plugins/registry.py` — plugin discovery and lifecycle
-- [ ] Stock adapter (Alpaca) as multi-asset proof
-- **Verification**: Live trades on Kraken, plugin system accepting connections
+- [x] Switch paper adapter to real Kraken execution with dual safety gate (DEC-LIVE-001)
+- [x] Implement `plugins/base.py` — abstract plugin interface with lifecycle hooks (DEC-PLUGIN-001)
+- [x] Implement `plugins/registry.py` — plugin discovery, lifecycle, error isolation (DEC-PLUGIN-002)
+- [x] Implement `adapters/alpaca.py` — Alpaca stock adapter as multi-asset proof (DEC-ALPACA-001)
+- [x] Add `config/live.toml` — conservative live trading configuration
+- [x] Wire live/paper mode branching in `main.py`
+- **Verification**: 110 tests pass, 3 skipped — live Kraken execution, plugin system, and Alpaca adapter operational -- VERIFIED 2026-02-17
 
 ## Decision Log
 
@@ -190,6 +192,25 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-ALPACA-001 | Alpaca adapter for multi-asset proof | Stock trading proves multi-asset extensibility; Alpaca provides free paper trading for stocks; same ExchangeAdapter interface | 2026-02-17 |
 | DEC-TEST-007 | Mock external APIs in tests | ccxt and alpaca-py are external dependencies; mock at API boundary (create_order, fetch_order) to test our logic without hitting real exchanges | 2026-02-17 |
 | DEC-TEST-008 | Mock Alpaca API at client boundary | Tests mock TradingClient and StockHistoricalDataClient to verify adapter logic without API keys or market hours | 2026-02-17 |
+
+### Phase 7: Paper Trading Improvement (IN PROGRESS)
+**Goal**: Fix poor paper trading performance (25 trades, 20% win rate, Sharpe -1.42) with exit rules and signal quality improvements.
+
+- [ ] Add `entry_time` to `Position` dataclass for time-based exits (DEC-EXIT-001)
+- [ ] Implement `ExitMonitor` in `cerebrum/risk/exit_monitor.py` — stop-loss, take-profit, time-based exits (DEC-EXIT-001)
+- [ ] Add exit config fields to `RiskConfig` (stop_loss_percent, take_profit_percent, max_position_age_minutes)
+- [ ] Wire `ExitMonitor` in `cerebrum/main.py`
+- [ ] Fix signal aggregator consensus normalization — reward agreeing signals (DEC-AGG-002)
+- [ ] Add VWAP neutral zone to eliminate near-VWAP noise signals (DEC-SIGNAL-005)
+- [ ] Tune paper.toml: lower threshold to 0.4, increase position size to 3%
+
+**Phase 7 Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-EXIT-001 | ExitMonitor as separate component from RiskManager | RiskRules evaluate proposed orders; ExitMonitor proactively generates exit orders. Separation of concerns: rules say yes/no, monitor watches and acts | 2026-02-21 |
+| DEC-AGG-002 | Consensus multiplier via sqrt(buy_weight_fraction) | Rewards signal agreement without hard requirements. sqrt gives diminishing returns (100% consensus=1.0x, 50%=0.71x). Prevents 4 weak agreeing signals from equaling 1 strong signal when split | 2026-02-21 |
+| DEC-SIGNAL-005 | VWAP neutral zone (0.5%) to filter near-VWAP noise | Price within 0.5% of VWAP is statistically insignificant; emitting signals there created noise trades. Neutral zone forces meaningful deviation before firing | 2026-02-21 |
 
 ## Resources
 

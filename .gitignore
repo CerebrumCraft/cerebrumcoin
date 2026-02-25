@@ -38,3 +38,12 @@ tmp/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code
+.claude/
+
+# Workflow artifacts
+.proof-status
+.surface-audit-drift.txt
+DECISIONS.md
+firebase-debug.log
