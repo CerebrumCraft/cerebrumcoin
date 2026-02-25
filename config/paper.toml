@@ -16,7 +16,7 @@ file = "logs/paper.log"
 
 [signals]
 # Tighten signal aggregation thresholds to reduce noise
-aggregation_threshold = "0.5"  # Up from 0.3 - require stronger consensus
+aggregation_threshold = "0.4"  # Down from 0.5 - consensus multiplier makes 0.4 equivalent
 aggregation_window_seconds = 60  # Up from 5s - longer confirmation window
 rsi_oversold = 25  # Down from 30 - more extreme oversold
 rsi_overbought = 75  # Up from 70 - more extreme overbought
@@ -24,6 +24,14 @@ rsi_overbought = 75  # Up from 70 - more extreme overbought
 [risk]
 # Increase minimum signal strength for trade entry
 min_signal_strength = "0.5"  # Up from 0.3 - require higher confidence
+# Position sizing: 3% reduces commission drag vs 2% default
+position_size_percent = "3.0"
+# Exit rules: stop-loss, take-profit, and time-based position management
+stop_loss_percent = "2.0"
+take_profit_percent = "3.0"
+max_position_age_minutes = 120
+# Post-fill cooldown: prevent rapid-fire ordering (5 minutes between fills per symbol)
+post_fill_cooldown_seconds = 300
 
 [monitoring]
 dashboard_enabled = true

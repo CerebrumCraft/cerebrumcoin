@@ -16,13 +16,17 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
+from typing import TYPE_CHECKING
 
 import structlog
 
-from cerebrum.core.events import OrderEvent, SignalEvent
-from cerebrum.core.types import Amount, RiskLevel, Side
+from cerebrum.core.events import Event, FillEvent, OrderEvent, SignalEvent
+from cerebrum.core.types import Amount, EventType, RiskLevel, Side, Symbol
 
 from .portfolio import PortfolioTracker
+
+if TYPE_CHECKING:
+    from cerebrum.core.bus import EventBus
 
 logger = structlog.get_logger()
 
@@ -303,4 +307,99 @@ class PositionSizingRule(RiskRule):
             reason=f"Position sized at {self._size_percent}% of equity, adjusted by signal strength",
             risk_level=RiskLevel.LOW,
             modified_amount=adjusted_amount,
+        )
+
+
+class PostFillCooldownRule(RiskRule):
+    """
+    Rate-limit new orders after a fill to prevent rapid-fire position accumulation.
+
+    # @decision DEC-COOL-001: Post-fill cooldown prevents rapid-fire ordering.
+    # Self-subscribes to FillEvents via bus (like ExitMonitor pattern).
+    # Per-symbol tracking ensures independent cooldowns for each trading pair.
+    # Default 300s (5 min) configurable via risk.post_fill_cooldown_seconds.
+    #
+    # Problem solved: without cooldown, the 60s aggregation window allows a new
+    # BUY every minute — observed as 28 fills in 20 minutes during paper trading.
+    # The cooldown enforces a minimum gap between fills per symbol, regardless of
+    # how many buy signals the aggregator emits in that window.
+    #
+    # Design: _last_fill_time is updated on every FillEvent (both BUY and SELL).
+    # This means selling also resets the cooldown, so the system won't immediately
+    # re-enter a position after an exit fills. This is intentional — re-entries
+    # should wait for a fresh signal window.
+    """
+
+    def __init__(
+        self,
+        cooldown_seconds: int,
+        bus: "EventBus",
+        _clock=None,
+    ) -> None:
+        """
+        Initialize post-fill cooldown rule.
+
+        Args:
+            cooldown_seconds: Minimum seconds between fills per symbol.
+                              Orders arriving sooner than this after the last
+                              fill for the same symbol will be DENY'd.
+            bus: Event bus to subscribe to FillEvents.
+            _clock: Callable returning current time as float (default: time.time).
+                    Injectable for testing without mocking or long sleeps.
+        """
+        import time as _time_module
+        super().__init__("post_fill_cooldown")
+        self._cooldown_seconds = cooldown_seconds
+        self._clock = _clock if _clock is not None else _time_module.time
+        # Per-symbol timestamp of the most recent fill (unix epoch float)
+        self._last_fill_time: dict[Symbol, float] = {}
+
+        bus.subscribe(
+            EventType.FILL,
+            self._on_fill,
+            subscriber_name="post_fill_cooldown_rule",
+        )
+
+        self._log.info(
+            "post_fill_cooldown_initialized",
+            cooldown_seconds=cooldown_seconds,
+        )
+
+    async def _on_fill(self, event: Event) -> None:
+        """Record fill timestamp per symbol when a FillEvent is received."""
+        if not isinstance(event, FillEvent):
+            return
+        self._last_fill_time[event.symbol] = event.timestamp
+        self._log.debug(
+            "fill_recorded",
+            symbol=event.symbol,
+            fill_time=event.timestamp,
+            cooldown_seconds=self._cooldown_seconds,
+        )
+
+    def evaluate(
+        self,
+        signal: SignalEvent,
+        order: OrderEvent,
+        portfolio: PortfolioTracker,
+    ) -> RuleResult:
+        """Deny the order if a fill for this symbol occurred within the cooldown window."""
+        last_fill = self._last_fill_time.get(order.symbol)
+        if last_fill is not None:
+            elapsed = self._clock() - last_fill
+            if elapsed < self._cooldown_seconds:
+                remaining = int(self._cooldown_seconds - elapsed)
+                return RuleResult(
+                    decision=RuleDecision.DENY,
+                    reason=(
+                        f"Post-fill cooldown active for {order.symbol}: "
+                        f"{remaining}s remaining (cooldown={self._cooldown_seconds}s)"
+                    ),
+                    risk_level=RiskLevel.LOW,
+                )
+
+        return RuleResult(
+            decision=RuleDecision.APPROVE,
+            reason="No active cooldown",
+            risk_level=RiskLevel.LOW,
         )

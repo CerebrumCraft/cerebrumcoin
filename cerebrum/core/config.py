@@ -65,6 +65,22 @@ class RiskConfig(BaseSettings):
         default=Decimal("0.3"),
         description="Minimum signal strength required to execute trades"
     )
+    stop_loss_percent: Decimal = Field(
+        default=Decimal("2.0"),
+        description="Close position if unrealized loss exceeds this % of entry value"
+    )
+    take_profit_percent: Decimal = Field(
+        default=Decimal("3.0"),
+        description="Close position if unrealized gain exceeds this % of entry value"
+    )
+    max_position_age_minutes: int = Field(
+        default=120,
+        description="Close position if open longer than this many minutes"
+    )
+    post_fill_cooldown_seconds: int = Field(
+        default=300,
+        description="Minimum seconds between fills per symbol to prevent rapid-fire ordering"
+    )
 
     @field_validator("max_drawdown_percent", "position_size_percent")
     @classmethod
