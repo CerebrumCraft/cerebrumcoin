@@ -210,6 +210,8 @@ class IntelligenceConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="INTELLIGENCE_",
+        env_file=".env",
+        env_file_encoding="utf-8",
         extra="ignore",
     )
 
@@ -228,6 +230,8 @@ class LLMConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="LLM_",
+        env_file=".env",
+        env_file_encoding="utf-8",
         extra="ignore",
     )
 
