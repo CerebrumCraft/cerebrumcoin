@@ -54,19 +54,37 @@ from cerebrum.learning.scorer import SignalScorer
 from cerebrum.learning.adapter import WeightAdapter
 from cerebrum.monitoring.dashboard import Dashboard
 
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.add_log_level,
-        structlog.processors.StackInfoRenderer(),
-        structlog.dev.ConsoleRenderer() if sys.stderr.isatty() else structlog.processors.JSONRenderer(),
-    ],
-    wrapper_class=structlog.make_filtering_bound_logger(min_level="INFO"),
-    context_class=dict,
-    logger_factory=structlog.PrintLoggerFactory(),
-    cache_logger_on_first_use=True,
-)
+def _configure_logging(level: str = "INFO") -> None:
+    """
+    Configure structlog with the given minimum log level.
+
+    Called twice: once at module load with "INFO" default (so logging works
+    before config is available), and again after config loads to apply the
+    user's preferred level from config.logging.level.
+
+    cache_logger_on_first_use=False is required to allow reconfiguration
+    after the initial module-level call.
+
+    Args:
+        level: Minimum log level string (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+    """
+    structlog.configure(
+        processors=[
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.add_log_level,
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.ConsoleRenderer() if sys.stderr.isatty() else structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(min_level=level),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+        cache_logger_on_first_use=False,
+    )
+
+
+# Configure logging at module load with INFO default so that any module-level
+# log statements work before the config file is read.
+_configure_logging("INFO")
 
 logger = structlog.get_logger()
 
@@ -349,6 +367,10 @@ async def async_main(config_path: Path) -> None:
     """
     # Load configuration
     config = Config.from_toml(config_path)
+
+    # Reconfigure logging with user's preferred level from config.
+    # This supersedes the module-level INFO default.
+    _configure_logging(config.logging.level)
 
     # Create application
     app = CerebrumCoin(config)

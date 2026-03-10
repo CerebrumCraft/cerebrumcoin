@@ -18,6 +18,7 @@ import pytest
 from cerebrum.core.config import (
     Config,
     ExchangeConfig,
+    LoggingConfig,
     PaperTradingConfig,
     RiskConfig,
     SignalConfig,
@@ -172,6 +173,43 @@ max_drawdown_percent = "3.0"
         temp_path.unlink()
 
 
+def test_logging_config_defaults():
+    """Test LoggingConfig default values."""
+    config = LoggingConfig()
+
+    assert config.level == "INFO"
+    assert config.format == "json"
+    assert config.file is None
+
+
+def test_logging_config_level_parsed_from_toml():
+    """Test that LoggingConfig.level is correctly parsed from TOML."""
+    toml_content = """
+[logging]
+level = "DEBUG"
+format = "console"
+"""
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.toml', delete=False) as f:
+        f.write(toml_content)
+        temp_path = Path(f.name)
+
+    try:
+        config = Config.from_toml(temp_path)
+
+        assert config.logging.level == "DEBUG"
+        assert config.logging.format == "console"
+    finally:
+        temp_path.unlink()
+
+
+def test_logging_config_level_variety():
+    """Test that LoggingConfig accepts all standard log levels."""
+    for level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        config = LoggingConfig(level=level)
+        assert config.level == level
+
+
 def test_paper_toml_tuned_parameters():
     """Test that paper.toml has tuned signal and risk parameters."""
     paper_config_path = Path(__file__).parent.parent.parent / "config" / "paper.toml"
@@ -192,18 +230,18 @@ def test_paper_toml_tuned_parameters():
         "rsi_overbought should be 75 (up from 70) for more extreme signals"
 
     # Verify tuned risk parameters
-    assert config.risk.min_signal_strength == Decimal("0.5"), \
-        "min_signal_strength should be 0.5 (up from 0.3) for higher confidence trades"
-    assert config.risk.stop_loss_percent == Decimal("2.0"), \
-        "stop_loss_percent should be 2.0 (new exit rule)"
+    assert config.risk.min_signal_strength == Decimal("0.6"), \
+        "min_signal_strength should be 0.6 (up from 0.5) for higher conviction in choppy markets"
+    assert config.risk.stop_loss_percent == Decimal("1.5"), \
+        "stop_loss_percent should be 1.5 (down from 2.0) for faster exit on losing trades"
     assert config.risk.take_profit_percent == Decimal("3.0"), \
         "take_profit_percent should be 3.0 (new exit rule)"
     assert config.risk.max_position_age_minutes == 120, \
         "max_position_age_minutes should be 120 (2 hour time-based exit)"
     assert config.risk.position_size_percent == Decimal("3.0"), \
         "position_size_percent should be 3.0 (up from 2.0 to reduce commission drag)"
-    assert config.risk.post_fill_cooldown_seconds == 300, \
-        "post_fill_cooldown_seconds should be 300 (5 min) to prevent rapid-fire ordering"
+    assert config.risk.post_fill_cooldown_seconds == 600, \
+        "post_fill_cooldown_seconds should be 600 (10 min) to reduce churn in range-bound markets"
 
     # Verify paper trading parameters remain realistic
     assert config.paper.commission_percent == Decimal("0.16"), \
