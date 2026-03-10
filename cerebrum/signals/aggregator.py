@@ -333,12 +333,19 @@ class SignalAggregator:
         elif event.to_regime == "SIDEWAYS":
             # Favor mean-reversion (reduce trend-following)
             self._weights[SignalType.TECHNICAL] = self._base_weights[SignalType.TECHNICAL] * Decimal("0.9")
-            self._weights[SignalType.SENTIMENT] = self._base_weights[SignalType.SENTIMENT] * Decimal("1.0")
+            # @decision DEC-SENT-001: Reduce sentiment weight in non-trending regimes.
+            # SIDEWAYS: 0.4x multiplier (effective 0.2) — sentiment is noise in ranging markets.
+            # UNKNOWN: 0.6x multiplier (effective 0.3) — partial dampening when regime unclear.
+            # Prevents Fear&Greed index from dominating signal aggregation.
+            self._weights[SignalType.SENTIMENT] = self._base_weights[SignalType.SENTIMENT] * Decimal("0.4")
             self._weights[SignalType.NEWS] = self._base_weights[SignalType.NEWS] * Decimal("1.0")
 
         else:
-            # Unknown regime: use base weights
+            # Unknown regime: use base weights with dampened sentiment
+            # @decision DEC-SENT-001 (continued): 0.6x multiplier in UNKNOWN regime prevents
+            # sentiment dominance when the regime classifier lacks confidence.
             self._weights = self._base_weights.copy()
+            self._weights[SignalType.SENTIMENT] = self._base_weights[SignalType.SENTIMENT] * Decimal("0.6")
 
         self._log.info(
             "regime_weights_adjusted",
