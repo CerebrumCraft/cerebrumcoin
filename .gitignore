@@ -41,6 +41,9 @@ Thumbs.db
 
 # Claude Code
 .claude/
+.worktrees/
+.serena/
+docs/plans/
 
 # Workflow artifacts
 .proof-status
