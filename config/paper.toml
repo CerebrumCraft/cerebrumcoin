@@ -23,15 +23,15 @@ rsi_overbought = 75  # Up from 70 - more extreme overbought
 
 [risk]
 # Increase minimum signal strength for trade entry
-min_signal_strength = "0.5"  # Up from 0.3 - require higher confidence
+min_signal_strength = "0.6"  # Up from 0.5 - higher conviction required in choppy markets
 # Position sizing: 3% reduces commission drag vs 2% default
 position_size_percent = "3.0"
-# Exit rules: stop-loss, take-profit, and time-based position management
-stop_loss_percent = "2.0"
+# Exit rules: tighter stop-loss to cut losses faster in sideways conditions
+stop_loss_percent = "1.5"    # Down from 2.0 - faster exit on losing trades
 take_profit_percent = "3.0"
 max_position_age_minutes = 120
-# Post-fill cooldown: prevent rapid-fire ordering (5 minutes between fills per symbol)
-post_fill_cooldown_seconds = 300
+# Post-fill cooldown: longer cooldown to reduce churn in range-bound markets
+post_fill_cooldown_seconds = 600  # Up from 300 - 10 minutes between fills per symbol
 
 [monitoring]
 dashboard_enabled = true
