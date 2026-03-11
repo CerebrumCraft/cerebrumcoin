@@ -61,19 +61,26 @@ class SignalAggregator:
         weights: dict[SignalType, Decimal] | None = None,
         threshold: Decimal = Decimal("0.3"),
         window_seconds: int = 5,
+        buy_suppression_factor: str = "0.2",
+        buy_suppression_min_confidence: str = "0.8",
     ) -> None:
         """
         Initialize signal aggregator.
-        
+
         Args:
             bus: Event bus
             weights: Signal type weights (default: equal weight)
             threshold: Minimum aggregate strength to emit signal
             window_seconds: Time window for signal aggregation
+            buy_suppression_factor: Multiplier applied to buy score in high-confidence BEAR regime
+            buy_suppression_min_confidence: Minimum regime confidence to trigger buy suppression
         """
         self._bus = bus
         self._threshold = threshold
         self._window_seconds = window_seconds
+        self._regime_confidence: Decimal = Decimal("0.0")
+        self._buy_suppression_factor = Decimal(buy_suppression_factor)
+        self._buy_suppression_min_confidence = Decimal(buy_suppression_min_confidence)
         
         # Default weights: technical signals weighted higher
         self._weights: dict[SignalType, Decimal] = weights or {
@@ -243,6 +250,14 @@ class SignalAggregator:
             buy_score_norm = buy_score_norm * Decimal(str(_math.sqrt(float(buy_consensus))))
             sell_score_norm = sell_score_norm * Decimal(str(_math.sqrt(float(sell_consensus))))
         
+        # @decision DEC-REGIME-002: Suppress buy signals in high-confidence BEAR regime.
+        # When regime detector is confident we're in a downtrend (confidence >= 0.8),
+        # multiply buy score by 0.2 to prevent buying into falling markets.
+        # This addresses the paper-trading session where 0/20 trades won because
+        # the BEAR regime was misclassified as SIDEWAYS and buy signals fired freely.
+        if self._current_regime == "BEAR" and self._regime_confidence >= self._buy_suppression_min_confidence:
+            buy_score_norm *= self._buy_suppression_factor
+
         # Determine aggregate action and strength
         if buy_score_norm > sell_score_norm:
             action = SignalAction.BUY
@@ -303,6 +318,7 @@ class SignalAggregator:
             return
 
         self._current_regime = event.to_regime
+        self._regime_confidence = event.confidence
 
         # Use learned weights if available for this regime
         if event.to_regime in self._regime_weights:
