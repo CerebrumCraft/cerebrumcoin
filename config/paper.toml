@@ -38,3 +38,14 @@ dashboard_enabled = true
 update_interval_seconds = 30
 report_file_path = "data/session_report.txt"
 backtest_cache_dir = "data/backtest_cache"
+
+[regime]
+window_size = 100
+update_interval = 20
+cumulative_trend_threshold = 0.005
+ma_slope_threshold = 0.00005
+mean_return_threshold = 0.002
+volatility_threshold = 0.03
+ma_period = 10
+buy_suppression_factor = "0.2"
+buy_suppression_min_confidence = "0.8"

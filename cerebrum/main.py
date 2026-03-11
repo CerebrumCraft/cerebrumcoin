@@ -206,6 +206,8 @@ class CerebrumCoin:
             self.bus,
             threshold=self.config.signals.aggregation_threshold,
             window_seconds=self.config.signals.aggregation_window_seconds,
+            buy_suppression_factor=self.config.regime.buy_suppression_factor,
+            buy_suppression_min_confidence=self.config.regime.buy_suppression_min_confidence,
         )
 
         # Initialize intelligence layer components
@@ -247,7 +249,14 @@ class CerebrumCoin:
 
         regime_detector = RegimeDetector(
             self.bus,
+            window_size=self.config.regime.window_size,
+            update_interval=self.config.regime.update_interval,
             use_hmm=self.config.intelligence.enable_hmm_regime,
+            cumulative_trend_threshold=self.config.regime.cumulative_trend_threshold,
+            ma_slope_threshold=self.config.regime.ma_slope_threshold,
+            mean_return_threshold=self.config.regime.mean_return_threshold,
+            volatility_threshold=self.config.regime.volatility_threshold,
+            ma_period=self.config.regime.ma_period,
         )
         self._intelligence_components.append(regime_detector)
 

@@ -42,3 +42,14 @@ aggregation_window_seconds = 5
 [logging]
 level = "INFO"
 format = "json"
+
+[regime]
+window_size = 100
+update_interval = 20
+cumulative_trend_threshold = 0.005
+ma_slope_threshold = 0.00005
+mean_return_threshold = 0.002
+volatility_threshold = 0.03
+ma_period = 10
+buy_suppression_factor = "0.2"
+buy_suppression_min_confidence = "0.8"

@@ -183,6 +183,42 @@ class LoggingConfig(BaseSettings):
     )
 
 
+class RegimeConfig(BaseSettings):
+    """Regime detection configuration."""
+    window_size: int = Field(default=100, description="Number of price points for regime calculation")
+    update_interval: int = Field(default=20, description="Update regime every N market data events")
+    cumulative_trend_threshold: float = Field(
+        default=0.005,
+        description="Cumulative return threshold to detect slow trends (0.5%)"
+    )
+    ma_slope_threshold: float = Field(
+        default=0.00005,
+        description="MA slope threshold for directional momentum"
+    )
+    mean_return_threshold: float = Field(
+        default=0.002,
+        description="Mean return threshold for strong trends (0.2%)"
+    )
+    volatility_threshold: float = Field(
+        default=0.03,
+        description="Volatility threshold for VOLATILE regime (3%)"
+    )
+    ma_period: int = Field(default=10, description="Moving average period for slope calculation")
+    buy_suppression_factor: str = Field(
+        default="0.2",
+        description="Buy score multiplier in high-confidence BEAR regime"
+    )
+    buy_suppression_min_confidence: str = Field(
+        default="0.8",
+        description="Minimum regime confidence to trigger buy suppression"
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="REGIME_",
+        extra="ignore",
+    )
+
+
 class IntelligenceConfig(BaseSettings):
     """Intelligence layer configuration."""
     cryptopanic_api_key: str = Field(default="", description="CryptoPanic API key")
@@ -269,6 +305,7 @@ class Config(BaseSettings):
     trading: TradingConfig = Field(default_factory=TradingConfig)
     signals: SignalConfig = Field(default_factory=SignalConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    regime: RegimeConfig = Field(default_factory=RegimeConfig)
     intelligence: IntelligenceConfig = Field(default_factory=IntelligenceConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
