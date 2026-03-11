@@ -15,6 +15,19 @@ Both approaches detect 4 regimes: BULL, BEAR, SIDEWAYS, VOLATILE.
 @status accepted
 @rationale Different regimes favor different strategies. BULL: boost trend-following.
 BEAR: boost risk-off. VOLATILE: reduce confidence. SIDEWAYS: favor mean-reversion.
+
+@decision DEC-REGIME-001
+@title Cumulative return + MA slope for slow-trend detection
+@status accepted
+@rationale The original detector used only np.mean(returns) with a 0.2% threshold.
+This missed slow bleeds (e.g. -0.01%/step * 100 steps = -1% cumulative) because each
+individual return was below the threshold. The fix adds two additional signals:
+  1. cumulative_return: (last_price - first_price) / first_price — captures total drift
+  2. ma_slope: slope of short-term SMA, normalized by price — captures directional momentum
+A regime is classified as BEAR/BULL if EITHER (a) mean_return exceeds the threshold
+(existing logic, unchanged) OR (b) cumulative return AND MA slope both agree on direction.
+Confidence is derived from how many of the 3 metrics (mean_return, cumulative, ma_slope)
+agree with the classified direction.
 """
 
 import asyncio
@@ -35,20 +48,33 @@ logger = structlog.get_logger()
 class RegimeDetector:
     """
     Market regime detection using HMM or rule-based approach.
-    
+
     Regimes:
     - BULL: Strong uptrend, low volatility
     - BEAR: Strong downtrend, low volatility
     - SIDEWAYS: No clear trend, low volatility
     - VOLATILE: High volatility regardless of trend
+
+    The rule-based detector uses three complementary metrics to catch slow trends:
+    - mean_return: per-step average return (catches strong trends quickly)
+    - cumulative_return: total drift over the window (catches slow bleeds)
+    - ma_slope: moving-average slope (confirms directional momentum)
+
+    All thresholds are configurable. Confidence (0.0-1.0) is reported with each
+    RegimeChangeEvent based on how many metrics agree with the classification.
     """
 
     def __init__(
         self,
         bus: EventBus,
         window_size: int = 100,
-        update_interval: int = 20,  # Check regime every N market data events
+        update_interval: int = 20,
         use_hmm: bool = False,
+        cumulative_trend_threshold: float = 0.005,
+        ma_slope_threshold: float = 0.00005,
+        mean_return_threshold: float = 0.002,
+        volatility_threshold: float = 0.03,
+        ma_period: int = 10,
     ) -> None:
         """
         Initialize regime detector.
@@ -58,11 +84,23 @@ class RegimeDetector:
             window_size: Number of price points for regime calculation
             update_interval: Update regime every N market data events
             use_hmm: Use HMM if hmmlearn available (else rule-based)
+            cumulative_trend_threshold: Cumulative return threshold for slow-trend detection
+            ma_slope_threshold: MA slope threshold for directional momentum
+            mean_return_threshold: Per-step mean return threshold (original logic)
+            volatility_threshold: Volatility threshold for VOLATILE regime
+            ma_period: Moving-average period for slope calculation
         """
         self._bus = bus
         self._window_size = window_size
         self._update_interval = update_interval
         self._use_hmm = use_hmm
+
+        # Configurable thresholds
+        self._cumulative_trend_threshold = cumulative_trend_threshold
+        self._ma_slope_threshold = ma_slope_threshold
+        self._mean_return_threshold = mean_return_threshold
+        self._volatility_threshold = volatility_threshold
+        self._ma_period = ma_period
 
         # Per-symbol price history
         self._price_history: dict[Symbol, Deque[Decimal]] = {}
@@ -71,18 +109,21 @@ class RegimeDetector:
         # Current regime per symbol
         self._current_regime: dict[Symbol, str] = {}
 
+        # Last computed metrics (set by _detect_regime_rules, read by _update_regime)
+        self._last_metrics: dict[str, float] = {}
+
         self._log = logger.bind(component="regime_detector")
 
         # Check if HMM is available
         self._hmm_available = False
         if use_hmm:
             try:
-                from hmmlearn.hmm import GaussianHMM
+                from hmmlearn.hmm import GaussianHMM  # noqa: F401
                 self._hmm_available = True
                 self._log.info("hmm_enabled")
             except ImportError:
                 self._log.warning("hmm_unavailable",
-                                message="hmmlearn not installed. Using rule-based fallback.")
+                                  message="hmmlearn not installed. Using rule-based fallback.")
 
         # Subscribe to market data
         bus.subscribe(EventType.MARKET_DATA, self._on_market_data, subscriber_name="regime_detector")
@@ -115,31 +156,31 @@ class RegimeDetector:
     async def _update_regime(self, symbol: Symbol) -> None:
         """Calculate and update regime for a symbol."""
         prices = list(self._price_history[symbol])
-        
+
         if len(prices) < 30:
             return
 
-        # Detect regime
+        # Detect regime — both methods now return (regime, confidence)
         if self._hmm_available and self._use_hmm:
-            new_regime = self._detect_regime_hmm(prices)
+            new_regime, confidence = self._detect_regime_hmm(prices)
         else:
-            new_regime = self._detect_regime_rules(prices)
+            new_regime, confidence = self._detect_regime_rules(prices)
 
         # Check for regime change
         old_regime = self._current_regime[symbol]
         if new_regime != old_regime:
             self._current_regime[symbol] = new_regime
 
-            # Emit regime change event
             event = RegimeChangeEvent(
                 event_type=EventType.REGIME_CHANGE,
                 timestamp=asyncio.get_event_loop().time(),
                 from_regime=old_regime,
                 to_regime=new_regime,
-                confidence=Decimal("0.7"),  # TODO: Calculate actual confidence
+                confidence=Decimal(str(confidence)),
                 indicators={
                     "symbol": symbol,
                     "price_points": len(prices),
+                    **{k: round(v, 8) for k, v in self._last_metrics.items()},
                 },
             )
 
@@ -150,39 +191,104 @@ class RegimeDetector:
                 symbol=symbol,
                 from_regime=old_regime,
                 to_regime=new_regime,
+                confidence=round(confidence, 2),
             )
 
-    def _detect_regime_rules(self, prices: list[Decimal]) -> str:
-        """Rule-based regime detection (fallback)."""
+    def _detect_regime_rules(self, prices: list[Decimal]) -> tuple[str, float]:
+        """Rule-based regime detection with cumulative return and MA slope.
+
+        Returns (regime, confidence) where confidence is 0.0-1.0.
+
+        Three complementary metrics are combined:
+          1. mean_return: average per-step return — catches strong trends quickly
+          2. cumulative_return: total drift from first to last price — catches slow bleeds
+          3. ma_slope: normalized slope of the short-term SMA — confirms momentum
+
+        Classification logic:
+          - VOLATILE if volatility > volatility_threshold (takes priority)
+          - BULL/BEAR if mean_return alone exceeds mean_return_threshold
+          - BULL/BEAR if BOTH cumulative_return AND ma_slope exceed their thresholds
+            (handles the slow-bleed case: each step is tiny but net drift is large)
+          - SIDEWAYS otherwise
+        """
         prices_float = [float(p) for p in prices]
         returns = np.diff(prices_float) / prices_float[:-1]
 
-        # Calculate metrics
+        # Core metrics
         volatility = float(np.std(returns))
-        trend = float(np.mean(returns))
+        mean_return = float(np.mean(returns))
 
-        # Thresholds
-        HIGH_VOL = 0.03  # 3% daily volatility
-        STRONG_TREND = 0.002  # 0.2% daily trend
+        # Cumulative return: captures total drift over window
+        cumulative = (prices_float[-1] - prices_float[0]) / prices_float[0]
 
-        # Classify
-        if volatility > HIGH_VOL:
-            return "VOLATILE"
-        elif trend > STRONG_TREND:
-            return "BULL"
-        elif trend < -STRONG_TREND:
-            return "BEAR"
+        # MA slope: slope of short-term SMA, normalized by price
+        ma_period = self._ma_period
+        if len(prices_float) >= ma_period:
+            sma = np.convolve(prices_float, np.ones(ma_period) / ma_period, mode='valid')
+            if len(sma) >= 2:
+                ma_slope = (sma[-1] - sma[0]) / (len(sma) * prices_float[0])
+            else:
+                ma_slope = 0.0
         else:
-            return "SIDEWAYS"
+            ma_slope = 0.0
 
-    def _detect_regime_hmm(self, prices: list[Decimal]) -> str:
-        """HMM-based regime detection."""
+        # Store metrics for indicator reporting (read by _update_regime)
+        self._last_metrics = {
+            "volatility": volatility,
+            "mean_return": mean_return,
+            "cumulative_return": cumulative,
+            "ma_slope": ma_slope,
+        }
+
+        # Classify regime
+        if volatility > self._volatility_threshold:
+            regime = "VOLATILE"
+        elif mean_return > self._mean_return_threshold:
+            regime = "BULL"
+        elif mean_return < -self._mean_return_threshold:
+            regime = "BEAR"
+        elif cumulative > self._cumulative_trend_threshold and ma_slope > self._ma_slope_threshold:
+            regime = "BULL"
+        elif cumulative < -self._cumulative_trend_threshold and ma_slope < -self._ma_slope_threshold:
+            regime = "BEAR"
+        else:
+            regime = "SIDEWAYS"
+
+        # Calculate confidence based on metric agreement
+        if regime == "SIDEWAYS" or regime == "VOLATILE":
+            confidence = 0.6
+        else:
+            direction = 1 if regime == "BULL" else -1
+            agreements = 0
+            if (mean_return * direction) > 0:
+                agreements += 1
+            if (cumulative * direction) > 0:
+                agreements += 1
+            if (ma_slope * direction) > 0:
+                agreements += 1
+
+            if agreements >= 3:
+                confidence = 0.9
+            elif agreements >= 2:
+                confidence = 0.7
+            else:
+                confidence = 0.5
+
+        return regime, confidence
+
+    def _detect_regime_hmm(self, prices: list[Decimal]) -> tuple[str, float]:
+        """HMM-based regime detection.
+
+        Returns (regime, confidence). HMM does not compute per-classification
+        confidence yet, so 0.7 is returned as a fixed placeholder.
+        Falls back to _detect_regime_rules on any error.
+        """
         try:
             from hmmlearn.hmm import GaussianHMM
 
             prices_float = np.array([float(p) for p in prices])
             returns = np.diff(prices_float) / prices_float[:-1]
-            
+
             # Features: returns and volatility
             features = np.column_stack([
                 returns,
@@ -202,18 +308,25 @@ class RegimeDetector:
             mean_return = state_means[0]
             mean_vol = state_means[1]
 
-            # Classify
-            HIGH_VOL = 0.03
-            STRONG_TREND = 0.002
-
-            if mean_vol > HIGH_VOL:
-                return "VOLATILE"
-            elif mean_return > STRONG_TREND:
-                return "BULL"
-            elif mean_return < -STRONG_TREND:
-                return "BEAR"
+            # Classify using same thresholds as rule-based for consistency
+            if mean_vol > self._volatility_threshold:
+                regime = "VOLATILE"
+            elif mean_return > self._mean_return_threshold:
+                regime = "BULL"
+            elif mean_return < -self._mean_return_threshold:
+                regime = "BEAR"
             else:
-                return "SIDEWAYS"
+                regime = "SIDEWAYS"
+
+            # Populate _last_metrics for indicator reporting
+            self._last_metrics = {
+                "volatility": float(mean_vol),
+                "mean_return": float(mean_return),
+                "cumulative_return": 0.0,  # Not computed by HMM path
+                "ma_slope": 0.0,
+            }
+
+            return regime, 0.7  # HMM doesn't compute confidence yet
 
         except Exception as e:
             self._log.error("hmm_detection_failed", error=str(e))
