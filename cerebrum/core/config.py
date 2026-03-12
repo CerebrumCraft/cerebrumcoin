@@ -204,6 +204,14 @@ class RegimeConfig(BaseSettings):
         description="Volatility threshold for VOLATILE regime (3%)"
     )
     ma_period: int = Field(default=10, description="Moving average period for slope calculation")
+    long_window_size: int = Field(
+        default=3000,
+        description="Long-term price window for slow drift detection (~50 min at 1 tick/sec)"
+    )
+    long_cumulative_threshold: float = Field(
+        default=0.001,
+        description="Cumulative return threshold for long window (0.1%)"
+    )
     buy_suppression_factor: str = Field(
         default="0.2",
         description="Buy score multiplier in high-confidence BEAR regime"

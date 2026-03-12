@@ -167,3 +167,79 @@ async def test_regime_event_carries_indicators(event_bus):
     assert "ma_slope" in indicators
     assert "volatility" in indicators
     assert "mean_return" in indicators
+
+
+# --- DEC-REGIME-003: Dual-window tests ---
+
+
+@pytest.mark.asyncio
+async def test_slow_drift_detected_by_long_window():
+    """Short window says SIDEWAYS, but long window catches the slow bleed.
+
+    Short window (100 steps at -0.00003/step): cumulative ~-0.3% -- below
+    the 0.5% short threshold so short window classifies SIDEWAYS.
+    Long window (500 steps): cumulative ~-1.5% -- well above 0.1% long threshold.
+    """
+    bus = EventBus()
+    await bus.start()
+    detector = RegimeDetector(
+        bus,
+        window_size=100,
+        long_window_size=500,
+        long_cumulative_threshold=0.001,
+    )
+
+    base = 70000.0
+    prices = [Decimal(str(base * (1 - 0.00003 * i))) for i in range(500)]
+
+    regime, confidence = detector._detect_regime_rules(
+        prices[-100:],   # short window — last 100 points (~0.3% drift)
+        long_prices=prices,  # long window — all 500 points (~1.5% drift)
+    )
+    assert regime == "BEAR", f"Expected BEAR, got {regime}"
+    assert confidence >= 0.6
+
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_long_window_no_override_when_short_window_has_trend():
+    """When short window already detects BULL/BEAR, long window does not interfere."""
+    bus = EventBus()
+    await bus.start()
+    detector = RegimeDetector(bus, window_size=100, long_window_size=500)
+
+    # Strong uptrend in short window — well above mean_return_threshold
+    prices_short = [Decimal(str(70000 + i * 200)) for i in range(100)]
+    prices_long = [Decimal(str(70000 + i * 50)) for i in range(500)]
+
+    regime, confidence = detector._detect_regime_rules(
+        prices_short, long_prices=prices_long
+    )
+    assert regime == "BULL"
+
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_long_window_insufficient_data_no_effect():
+    """Long window with fewer than 100 points does not affect classification."""
+    bus = EventBus()
+    await bus.start()
+    detector = RegimeDetector(
+        bus,
+        window_size=100,
+        long_window_size=500,
+        long_cumulative_threshold=0.001,
+    )
+
+    # Flat short window -> SIDEWAYS, tiny long window (50 pts, below minimum of 100)
+    prices_short = [Decimal("70000")] * 100
+    prices_long = [Decimal("70000")] * 50  # Below the 100-point minimum
+
+    regime, _ = detector._detect_regime_rules(
+        prices_short, long_prices=prices_long
+    )
+    assert regime == "SIDEWAYS"
+
+    await bus.stop()

@@ -53,3 +53,5 @@ volatility_threshold = 0.03
 ma_period = 10
 buy_suppression_factor = "0.2"
 buy_suppression_min_confidence = "0.8"
+long_window_size = 3000
+long_cumulative_threshold = 0.001
