@@ -212,6 +212,30 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-EXIT-001 | ExitMonitor as separate component from RiskManager | RiskRules evaluate proposed orders; ExitMonitor proactively generates exit orders. Separation of concerns: rules say yes/no, monitor watches and acts | 2026-02-21 |
 | DEC-AGG-002 | Consensus multiplier via sqrt(buy_weight_fraction) | Rewards signal agreement without hard requirements. sqrt gives diminishing returns (100% consensus=1.0x, 50%=0.71x). Prevents 4 weak agreeing signals from equaling 1 strong signal when split | 2026-02-21 |
 | DEC-SIGNAL-005 | VWAP neutral zone (0.5%) to filter near-VWAP noise | Price within 0.5% of VWAP is statistically insignificant; emitting signals there created noise trades. Neutral zone forces meaningful deviation before firing | 2026-02-21 |
+| DEC-TEST-009 | Test exit monitor with real EventBus and PortfolioTracker | ExitMonitor interacts with EventBus and PortfolioTracker via events. Using real implementations validates the full event flow without mocks | 2026-02-21 |
+| DEC-TEST-010 | Test PostFillCooldownRule with injectable clock and real EventBus | PostFillCooldownRule self-subscribes to FillEvents via the bus. Testing with a real EventBus validates subscription wiring, async event delivery, and per-symbol cooldown logic together | 2026-02-21 |
+| DEC-COOL-001 | Post-fill cooldown rule prevents rapid-fire ordering | After a fill, the same symbol is blocked from new orders for cooldown_seconds (default 300s / paper 600s). Prevents churn in range-bound markets where the bot would otherwise oscillate | 2026-02-25 |
+| DEC-DASH-001 | Publish PositionUpdateEvent on fills only (not price ticks) | Keeps dashboard updated without flooding the event bus. Price-tick updates would create thousands of events/minute; fill-driven updates are sparse and sufficient for display | 2026-02-25 |
+| DEC-RISK-003 | Short position equity accounting — remove abs() from get_total_equity() | abs(amount) incorrectly added short positions' market value to equity instead of subtracting it, inflating _peak_equity and causing phantom drawdowns (6.2% reported vs 0.03% actual). Fix: signed amount * price so shorts reduce equity | 2026-02-25 |
+| DEC-RISK-TEST-001 | Unit tests verify fill-driven PositionUpdateEvent publishing | Portfolio tracker must publish PositionUpdateEvent on every fill so the dashboard displays accurate open positions without requiring direct access to internal state | 2026-02-25 |
+
+### Phase 8: Regime Detector Improvements (COMPLETED)
+**Goal**: Fix 0/28 win rate from session 3 by improving regime detection to catch ultra-slow drifts.
+
+- [x] Add three-metric regime detection (mean return + cumulative return + MA slope) — DEC-REGIME-001
+- [x] Add buy suppression (0.2x) in high-confidence BEAR regime — DEC-REGIME-002
+- [x] Add sentiment dampening in non-trending regimes (SIDEWAYS 0.4x, UNKNOWN 0.6x) — DEC-SENT-001
+- [x] Add dual-window regime detection for ultra-slow drift (50-min long window) — DEC-REGIME-003
+- **Verification**: All tests pass
+
+**Phase 8 Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-REGIME-001 | Cumulative return + MA slope for slow-trend detection | Original np.mean(returns) missed slow bleeds. Two new signals: cumulative_return (total drift) and ma_slope (directional momentum). BEAR/BULL if EITHER mean_return exceeds threshold OR both cumulative and ma_slope agree. Confidence from metric agreement count | 2026-03-11 |
+| DEC-REGIME-002 | Buy suppression in high-confidence BEAR regime | Paper session went 0/20 buying into slow downtrend. When regime is BEAR with confidence >= 0.8, buy score is multiplied by 0.2 (configurable), making it nearly impossible to clear the signal threshold | 2026-03-11 |
+| DEC-SENT-001 | Sentiment weight reduction in non-trending regimes | SIDEWAYS (0.4x) and UNKNOWN (0.6x) multipliers on base sentiment weight (0.5). Prevents Fear & Greed index from dominating aggregation when market is ranging or regime classifier lacks confidence | 2026-03-11 |
+| DEC-REGIME-003 | Dual-window regime detection for ultra-slow drift | Single 5-min window cannot detect drifts slower than ~0.04%/min. 50-min long window (3000 ticks default) catches cumulative drifts as small as 0.1%. Only overrides SIDEWAYS — BULL/BEAR from short window is unchanged. Session 3 evidence: 0/28 win rate, -$128 PnL | 2026-03-12 |
 
 ## Resources
 
