@@ -257,6 +257,8 @@ class CerebrumCoin:
             mean_return_threshold=self.config.regime.mean_return_threshold,
             volatility_threshold=self.config.regime.volatility_threshold,
             ma_period=self.config.regime.ma_period,
+            long_window_size=self.config.regime.long_window_size,
+            long_cumulative_threshold=self.config.regime.long_cumulative_threshold,
         )
         self._intelligence_components.append(regime_detector)
 

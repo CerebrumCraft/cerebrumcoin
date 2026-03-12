@@ -28,6 +28,16 @@ A regime is classified as BEAR/BULL if EITHER (a) mean_return exceeds the thresh
 (existing logic, unchanged) OR (b) cumulative return AND MA slope both agree on direction.
 Confidence is derived from how many of the 3 metrics (mean_return, cumulative, ma_slope)
 agree with the classified direction.
+
+@decision DEC-REGIME-003
+@title Dual-window regime detection for ultra-slow drift
+@status accepted
+@rationale Single window (5 min) cannot detect drifts slower than ~0.04%/min.
+Adding a 50-min long window catches cumulative drifts as small as 0.1%,
+preventing the bot from buying into slow bleeds that SIDEWAYS classification misses.
+Session 3 evidence: 0/28 win rate, -$128 PnL with 1% drift over 6.5 hours undetected.
+The long window only overrides a SIDEWAYS classification — if the short window already
+detects BULL or BEAR, the long window does not interfere.
 """
 
 import asyncio
@@ -60,6 +70,10 @@ class RegimeDetector:
     - cumulative_return: total drift over the window (catches slow bleeds)
     - ma_slope: moving-average slope (confirms directional momentum)
 
+    A second, independent long-window price history (default ~50 min) provides a
+    fallback when the short window classifies SIDEWAYS: if the long window detects
+    a cumulative drift beyond long_cumulative_threshold, it overrides to BULL/BEAR.
+
     All thresholds are configurable. Confidence (0.0-1.0) is reported with each
     RegimeChangeEvent based on how many metrics agree with the classification.
     """
@@ -75,13 +89,15 @@ class RegimeDetector:
         mean_return_threshold: float = 0.002,
         volatility_threshold: float = 0.03,
         ma_period: int = 10,
+        long_window_size: int = 3000,
+        long_cumulative_threshold: float = 0.001,
     ) -> None:
         """
         Initialize regime detector.
 
         Args:
             bus: Event bus
-            window_size: Number of price points for regime calculation
+            window_size: Number of price points for short-window regime calculation
             update_interval: Update regime every N market data events
             use_hmm: Use HMM if hmmlearn available (else rule-based)
             cumulative_trend_threshold: Cumulative return threshold for slow-trend detection
@@ -89,6 +105,8 @@ class RegimeDetector:
             mean_return_threshold: Per-step mean return threshold (original logic)
             volatility_threshold: Volatility threshold for VOLATILE regime
             ma_period: Moving-average period for slope calculation
+            long_window_size: Number of price points for long-window drift detection (~50 min)
+            long_cumulative_threshold: Cumulative return threshold for long-window override (0.1%)
         """
         self._bus = bus
         self._window_size = window_size
@@ -102,8 +120,13 @@ class RegimeDetector:
         self._volatility_threshold = volatility_threshold
         self._ma_period = ma_period
 
-        # Per-symbol price history
+        # Long-window parameters (DEC-REGIME-003)
+        self._long_window_size = long_window_size
+        self._long_cumulative_threshold = long_cumulative_threshold
+
+        # Per-symbol price history — short window and long window are independent deques
         self._price_history: dict[Symbol, Deque[Decimal]] = {}
+        self._long_price_history: dict[Symbol, Deque[Decimal]] = {}
         self._event_counts: dict[Symbol, int] = {}
 
         # Current regime per symbol
@@ -139,11 +162,13 @@ class RegimeDetector:
         # Initialize tracking for new symbol
         if symbol not in self._price_history:
             self._price_history[symbol] = deque(maxlen=self._window_size)
+            self._long_price_history[symbol] = deque(maxlen=self._long_window_size)
             self._event_counts[symbol] = 0
             self._current_regime[symbol] = "UNKNOWN"
 
-        # Add price to history
+        # Add price to both short and long history deques
         self._price_history[symbol].append(price)
+        self._long_price_history[symbol].append(price)
         self._event_counts[symbol] += 1
 
         # Check if it's time to update regime
@@ -156,6 +181,7 @@ class RegimeDetector:
     async def _update_regime(self, symbol: Symbol) -> None:
         """Calculate and update regime for a symbol."""
         prices = list(self._price_history[symbol])
+        long_prices = list(self._long_price_history[symbol])
 
         if len(prices) < 30:
             return
@@ -164,7 +190,7 @@ class RegimeDetector:
         if self._hmm_available and self._use_hmm:
             new_regime, confidence = self._detect_regime_hmm(prices)
         else:
-            new_regime, confidence = self._detect_regime_rules(prices)
+            new_regime, confidence = self._detect_regime_rules(prices, long_prices=long_prices)
 
         # Check for regime change
         old_regime = self._current_regime[symbol]
@@ -194,12 +220,16 @@ class RegimeDetector:
                 confidence=round(confidence, 2),
             )
 
-    def _detect_regime_rules(self, prices: list[Decimal]) -> tuple[str, float]:
+    def _detect_regime_rules(
+        self,
+        prices: list[Decimal],
+        long_prices: list[Decimal] | None = None,
+    ) -> tuple[str, float]:
         """Rule-based regime detection with cumulative return and MA slope.
 
         Returns (regime, confidence) where confidence is 0.0-1.0.
 
-        Three complementary metrics are combined:
+        Three complementary metrics are combined for the short window:
           1. mean_return: average per-step return — catches strong trends quickly
           2. cumulative_return: total drift from first to last price — catches slow bleeds
           3. ma_slope: normalized slope of the short-term SMA — confirms momentum
@@ -210,6 +240,15 @@ class RegimeDetector:
           - BULL/BEAR if BOTH cumulative_return AND ma_slope exceed their thresholds
             (handles the slow-bleed case: each step is tiny but net drift is large)
           - SIDEWAYS otherwise
+
+        If regime == SIDEWAYS and long_prices is provided with >= 100 points,
+        the long window is checked for ultra-slow drift (DEC-REGIME-003):
+          - long_cumulative + long_ma_slope both bearish -> override to BEAR (confidence 0.7)
+          - long_cumulative + long_ma_slope both bullish -> override to BULL (confidence 0.7)
+
+        Args:
+            prices: Short-window price list (used for primary classification)
+            long_prices: Optional long-window price list (used only if short window -> SIDEWAYS)
         """
         prices_float = [float(p) for p in prices]
         returns = np.diff(prices_float) / prices_float[:-1]
@@ -240,7 +279,7 @@ class RegimeDetector:
             "ma_slope": ma_slope,
         }
 
-        # Classify regime
+        # Classify regime using short window
         if volatility > self._volatility_threshold:
             regime = "VOLATILE"
         elif mean_return > self._mean_return_threshold:
@@ -253,6 +292,41 @@ class RegimeDetector:
             regime = "BEAR"
         else:
             regime = "SIDEWAYS"
+
+        # Long-window override (DEC-REGIME-003): only when short window says SIDEWAYS
+        # and we have enough long-window data to be meaningful.
+        if regime == "SIDEWAYS" and long_prices is not None and len(long_prices) >= 100:
+            long_prices_float = [float(p) for p in long_prices]
+            long_cumulative = (
+                (long_prices_float[-1] - long_prices_float[0]) / long_prices_float[0]
+            )
+
+            # Compute MA slope on long window using the same approach
+            if len(long_prices_float) >= ma_period:
+                long_sma = np.convolve(
+                    long_prices_float, np.ones(ma_period) / ma_period, mode='valid'
+                )
+                if len(long_sma) >= 2:
+                    long_ma_slope = (
+                        (long_sma[-1] - long_sma[0]) / (len(long_sma) * long_prices_float[0])
+                    )
+                else:
+                    long_ma_slope = 0.0
+            else:
+                long_ma_slope = 0.0
+
+            # Override SIDEWAYS only when both long metrics agree on direction
+            if long_cumulative < -self._long_cumulative_threshold and long_ma_slope < 0:
+                regime = "BEAR"
+                self._last_metrics["long_cumulative_return"] = long_cumulative
+                self._last_metrics["long_ma_slope"] = long_ma_slope
+                return regime, 0.7
+
+            if long_cumulative > self._long_cumulative_threshold and long_ma_slope > 0:
+                regime = "BULL"
+                self._last_metrics["long_cumulative_return"] = long_cumulative
+                self._last_metrics["long_ma_slope"] = long_ma_slope
+                return regime, 0.7
 
         # Calculate confidence based on metric agreement
         if regime == "SIDEWAYS" or regime == "VOLATILE":
