@@ -16,22 +16,22 @@ file = "logs/paper.log"
 
 [signals]
 # Tighten signal aggregation thresholds to reduce noise
-aggregation_threshold = "0.4"  # Down from 0.5 - consensus multiplier makes 0.4 equivalent
-aggregation_window_seconds = 60  # Up from 5s - longer confirmation window
+aggregation_threshold = "0.4"  # Consensus multiplier makes 0.4 effective; 0.5 was too restrictive
+aggregation_window_seconds = 120  # Up from 60s - reduce signal spam (~100/hr → ~50/hr)
 rsi_oversold = 25  # Down from 30 - more extreme oversold
 rsi_overbought = 75  # Up from 70 - more extreme overbought
 
 [risk]
 # Increase minimum signal strength for trade entry
-min_signal_strength = "0.6"  # Up from 0.5 - higher conviction required in choppy markets
+min_signal_strength = "0.6"  # 0.7 was too restrictive; 0.6 worked in session 2
 # Position sizing: 3% reduces commission drag vs 2% default
 position_size_percent = "3.0"
 # Exit rules: tighter stop-loss to cut losses faster in sideways conditions
-stop_loss_percent = "1.5"    # Down from 2.0 - faster exit on losing trades
-take_profit_percent = "3.0"
+stop_loss_percent = "1.5"    # 1.5% worked in session 2; 2.0% let losers bleed too long
+take_profit_percent = "3.0"  # 3.0% reachable in normal ranges; 4.0% never triggered
 max_position_age_minutes = 120
 # Post-fill cooldown: longer cooldown to reduce churn in range-bound markets
-post_fill_cooldown_seconds = 600  # Up from 300 - 10 minutes between fills per symbol
+post_fill_cooldown_seconds = 600  # 10 min worked in session 2; 15 min reduced trade count too aggressively
 
 [monitoring]
 dashboard_enabled = true
@@ -40,9 +40,9 @@ report_file_path = "data/session_report.txt"
 backtest_cache_dir = "data/backtest_cache"
 
 [regime]
-window_size = 100
-update_interval = 20
-cumulative_trend_threshold = 0.005
+window_size = 300             # 100 → 300: ~5 min window captures more cumulative drift
+update_interval = 30          # 20 → 30: less frequent regime recalc
+cumulative_trend_threshold = 0.002  # 0.003 → 0.002: catch mild drifts (ETH -0.7% missed as SIDEWAYS)
 ma_slope_threshold = 0.00005
 mean_return_threshold = 0.002
 volatility_threshold = 0.03
