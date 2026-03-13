@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from cerebrum.core.events import Event, FillEvent, OrderEvent, SignalEvent
+from cerebrum.core.events import Event, FillEvent, OrderEvent, RegimeChangeEvent, SignalEvent
 from cerebrum.core.types import Amount, EventType, RiskLevel, Side, Symbol
 
 from .portfolio import PortfolioTracker
@@ -401,5 +401,96 @@ class PostFillCooldownRule(RiskRule):
         return RuleResult(
             decision=RuleDecision.APPROVE,
             reason="No active cooldown",
+            risk_level=RiskLevel.LOW,
+        )
+
+
+class RegimeTradeHaltRule(RiskRule):
+    """
+    Halt all trading for a symbol when regime is BEAR with high confidence.
+
+    @decision DEC-REGIME-004
+    @title Trade halt in BEAR regime
+    @status accepted
+    @rationale Session 4 showed 39% win rate during BEAR vs 73% non-BEAR.
+    Even sell-side trades lose during strong downtrends. Stopping all trading
+    in BEAR would have saved $37+ in losses. The 0.2x buy suppression alone
+    is insufficient — a full halt is needed. The rule subscribes to
+    REGIME_CHANGE events via the event bus (same pattern as PostFillCooldownRule)
+    and maintains a per-symbol registry of the current regime and confidence.
+    Orders for any symbol currently in BEAR with confidence >= min_confidence
+    are denied regardless of direction (buy or sell).
+    """
+
+    def __init__(self, min_confidence: Decimal, bus: "EventBus") -> None:
+        """
+        Initialize regime trade halt rule.
+
+        Args:
+            min_confidence: Minimum BEAR confidence required to halt trading.
+                            BEAR detections below this threshold are ignored.
+            bus: Event bus to subscribe to REGIME_CHANGE events.
+        """
+        super().__init__("regime_trade_halt")
+        self._min_confidence = min_confidence
+        # symbol -> (regime, confidence)
+        self._regimes: dict[str, tuple[str, Decimal]] = {}
+
+        bus.subscribe(
+            EventType.REGIME_CHANGE,
+            self._on_regime_change,
+            subscriber_name="regime_halt_rule",
+        )
+
+        self._log.info(
+            "regime_halt_rule_initialized",
+            min_confidence=float(min_confidence),
+        )
+
+    async def _on_regime_change(self, event: Event) -> None:
+        """Record the latest regime and confidence for the affected symbol."""
+        if not isinstance(event, RegimeChangeEvent):
+            return
+        symbol = event.indicators.get("symbol", "")
+        if symbol:
+            self._regimes[symbol] = (event.to_regime, event.confidence)
+            self._log.debug(
+                "regime_updated",
+                symbol=symbol,
+                regime=event.to_regime,
+                confidence=float(event.confidence),
+            )
+
+    def evaluate(
+        self,
+        signal: SignalEvent,
+        order: OrderEvent,
+        portfolio: PortfolioTracker,
+    ) -> RuleResult:
+        """Deny the order if the symbol is currently in a high-confidence BEAR regime."""
+        symbol = order.symbol
+        regime_info = self._regimes.get(symbol)
+        if regime_info is None:
+            return RuleResult(
+                decision=RuleDecision.APPROVE,
+                reason="No regime data — trading allowed",
+                risk_level=RiskLevel.LOW,
+            )
+
+        regime, confidence = regime_info
+        if regime == "BEAR" and confidence >= self._min_confidence:
+            return RuleResult(
+                decision=RuleDecision.DENY,
+                reason=(
+                    f"Trading halted: {symbol} in BEAR regime "
+                    f"(confidence={float(confidence):.2f}, "
+                    f"threshold={float(self._min_confidence):.2f})"
+                ),
+                risk_level=RiskLevel.HIGH,
+            )
+
+        return RuleResult(
+            decision=RuleDecision.APPROVE,
+            reason=f"Regime {regime} does not trigger halt",
             risk_level=RiskLevel.LOW,
         )

@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import signal
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import structlog
@@ -34,6 +35,7 @@ from cerebrum.risk.rules import (
     MinSignalStrengthRule,
     PositionSizingRule,
     PostFillCooldownRule,
+    RegimeTradeHaltRule,
 )
 from cerebrum.signals.aggregator import SignalAggregator
 from cerebrum.signals.candles import CandleAggregator
@@ -269,6 +271,10 @@ class CerebrumCoin:
             MaxTotalExposureRule(self.config.risk.max_total_exposure_usd),
             MaxDrawdownRule(self.config.risk.max_drawdown_percent),
             MinSignalStrengthRule(self.config.risk.min_signal_strength),
+            RegimeTradeHaltRule(
+                min_confidence=Decimal(self.config.regime.bear_halt_min_confidence),
+                bus=self.bus,
+            ),
             PostFillCooldownRule(
                 cooldown_seconds=self.config.risk.post_fill_cooldown_seconds,
                 bus=self.bus,

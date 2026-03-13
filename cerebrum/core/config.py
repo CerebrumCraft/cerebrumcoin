@@ -220,6 +220,10 @@ class RegimeConfig(BaseSettings):
         default="0.8",
         description="Minimum regime confidence to trigger buy suppression"
     )
+    bear_halt_min_confidence: str = Field(
+        default="0.7",
+        description="Minimum BEAR confidence to halt all trading for a symbol"
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="REGIME_",
