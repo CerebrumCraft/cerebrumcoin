@@ -25,13 +25,13 @@ rsi_overbought = 75  # Up from 70 - more extreme overbought
 # Increase minimum signal strength for trade entry
 min_signal_strength = "0.6"  # 0.7 was too restrictive; 0.6 worked in session 2
 # Position sizing: 3% reduces commission drag vs 2% default
-position_size_percent = "3.0"
+position_size_percent = "5.0"  # Up from 3% — larger trades reduce commission's relative bite
 # Exit rules: tighter stop-loss to cut losses faster in sideways conditions
 stop_loss_percent = "1.5"    # 1.5% worked in session 2; 2.0% let losers bleed too long
 take_profit_percent = "3.0"  # 3.0% reachable in normal ranges; 4.0% never triggered
 max_position_age_minutes = 120
 # Post-fill cooldown: longer cooldown to reduce churn in range-bound markets
-post_fill_cooldown_seconds = 600  # 10 min worked in session 2; 15 min reduced trade count too aggressively
+post_fill_cooldown_seconds = 900  # Up from 600 — session 4 had 64% commission drag; fewer trades needed
 
 [monitoring]
 dashboard_enabled = true
@@ -49,5 +49,6 @@ volatility_threshold = 0.03
 ma_period = 10
 buy_suppression_factor = "0.2"
 buy_suppression_min_confidence = "0.8"
+bear_halt_min_confidence = "0.7"   # Halt all trading when BEAR confidence >= 0.7 (session 4: 39% WR in BEAR)
 long_window_size = 3000           # ~50 min window catches slow drifts missed by 5-min window
 long_cumulative_threshold = 0.001  # 0.1% drift in long window triggers BEAR/BULL
