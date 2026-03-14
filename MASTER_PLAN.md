@@ -236,6 +236,27 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-REGIME-002 | Buy suppression in high-confidence BEAR regime | Paper session went 0/20 buying into slow downtrend. When regime is BEAR with confidence >= 0.8, buy score is multiplied by 0.2 (configurable), making it nearly impossible to clear the signal threshold | 2026-03-11 |
 | DEC-SENT-001 | Sentiment weight reduction in non-trending regimes | SIDEWAYS (0.4x) and UNKNOWN (0.6x) multipliers on base sentiment weight (0.5). Prevents Fear & Greed index from dominating aggregation when market is ranging or regime classifier lacks confidence | 2026-03-11 |
 | DEC-REGIME-003 | Dual-window regime detection for ultra-slow drift | Single 5-min window cannot detect drifts slower than ~0.04%/min. 50-min long window (3000 ticks default) catches cumulative drifts as small as 0.1%. Only overrides SIDEWAYS — BULL/BEAR from short window is unchanged. Session 3 evidence: 0/28 win rate, -$128 PnL | 2026-03-12 |
+| DEC-REGIME-004 | Trade halt in BEAR regime | Session 4 showed 39% win rate during BEAR vs 73% non-BEAR. Even sell-side trades lose during strong downtrends. Stopping all trading in BEAR would have saved $37+ in losses. The 0.2x buy suppression alone is insufficient — a full halt is needed. RegimeTradeHaltRule subscribes to REGIME_CHANGE events and denies all orders when regime=BEAR and confidence >= min_confidence | 2026-03-13 |
+| DEC-TEST-011 | Test RegimeTradeHaltRule with real EventBus and RegimeChangeEvent | Validates that trading halts during high-confidence BEAR and permits during non-BEAR or low-confidence BEAR. Uses real EventBus (same pattern as test_cooldown_rule.py) to validate bus subscription wiring end-to-end | 2026-03-13 |
+
+### Phase 9: Volatility Gate Risk Rule (COMPLETED)
+**Goal**: Prevent trading during low-volatility SIDEWAYS markets where price range is insufficient to cover round-trip commissions (GitHub Issue #2).
+
+- [x] Add `VolatilityGateRule` to `cerebrum/risk/rules.py` — deny orders when price range % is below threshold (DEC-VOL-001, DEC-VOL-002, DEC-VOL-003)
+- [x] Add config fields `volatility_gate_min_range_pct` and `volatility_gate_window_size` to `RiskConfig` in `cerebrum/core/config.py`
+- [x] Wire `VolatilityGateRule` into `cerebrum/main.py` risk rules list
+- [x] Add defaults to `config/default.toml` and `config/paper.toml` under `[risk]`
+- [x] Add `tests/unit/test_volatility_gate.py` with 7 test scenarios (DEC-TEST-012)
+- **Verification**: 166 passed, 1 skipped — volatility gate denies orders in flat markets, approves during cold start, configurable via TOML (2026-03-14)
+
+**Phase 9 Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-VOL-001 | Percentage price range `(max - min) / min * 100` as volatility metric | Simple, interpretable, directly models whether price swings are large enough to profit after commission. No look-ahead bias. Avoids statistical complexity of std-dev which can be high even in one-directional trends | 2026-03-14 |
+| DEC-VOL-002 | Per-symbol rolling price window via MARKET_DATA event bus subscription | Mirrors PostFillCooldownRule and RegimeTradeHaltRule patterns — self-subscribes in __init__, maintains per-symbol state dict of deque. Decoupled from regime detector; independent risk signal | 2026-03-14 |
+| DEC-VOL-003 | Default threshold 0.5%, lookback 300 ticks, both configurable via TOML | 0.5% covers round-trip commission (~0.32%) plus slippage (~0.1%) with margin. 300 ticks (~5 min at 1 tick/sec) matches the regime detector's short window for consistency. APPROVE on cold start (fewer ticks than window) to not block early trades | 2026-03-14 |
+| DEC-TEST-012 | Test VolatilityGateRule with real EventBus and injected prices | Self-subscribes to MARKET_DATA events. Real EventBus validates subscription wiring. Cold-start APPROVE tests insufficient-data path. Boundary test at exact threshold verifies >= semantics | 2026-03-14 |
 
 ## Resources
 
