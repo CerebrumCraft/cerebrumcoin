@@ -222,8 +222,8 @@ def test_paper_toml_tuned_parameters():
     # Verify tuned signal parameters (tighter than defaults)
     assert config.signals.aggregation_threshold == Decimal("0.4"), \
         "aggregation_threshold should be 0.4 — consensus multiplier makes 0.4 equivalent to old 0.5"
-    assert config.signals.aggregation_window_seconds == 60, \
-        "aggregation_window should be 60s (up from 5s) for longer confirmation"
+    assert config.signals.aggregation_window_seconds == 120, \
+        "aggregation_window should be 120s (tuned in session 2/3 to reduce signal spam)"
     assert config.signals.rsi_oversold == 25, \
         "rsi_oversold should be 25 (down from 30) for more extreme signals"
     assert config.signals.rsi_overbought == 75, \
@@ -238,10 +238,16 @@ def test_paper_toml_tuned_parameters():
         "take_profit_percent should be 3.0 (new exit rule)"
     assert config.risk.max_position_age_minutes == 120, \
         "max_position_age_minutes should be 120 (2 hour time-based exit)"
-    assert config.risk.position_size_percent == Decimal("3.0"), \
-        "position_size_percent should be 3.0 (up from 2.0 to reduce commission drag)"
-    assert config.risk.post_fill_cooldown_seconds == 600, \
-        "post_fill_cooldown_seconds should be 600 (10 min) to reduce churn in range-bound markets"
+    assert config.risk.position_size_percent == Decimal("5.0"), \
+        "position_size_percent should be 5.0 (tuned in session 4 to reduce commission drag on larger trades)"
+    assert config.risk.post_fill_cooldown_seconds == 900, \
+        "post_fill_cooldown_seconds should be 900 (15 min, tuned in session 4 to reduce churn)"
+
+    # Verify volatility gate parameters (Issue #2)
+    assert config.risk.volatility_gate_min_range_pct == Decimal("0.5"), \
+        "volatility_gate_min_range_pct should be 0.5% (covers commission 0.32% + slippage 0.1%)"
+    assert config.risk.volatility_gate_window_size == 300, \
+        "volatility_gate_window_size should be 300 ticks (~5 min rolling window)"
 
     # Verify paper trading parameters remain realistic
     assert config.paper.commission_percent == Decimal("0.16"), \

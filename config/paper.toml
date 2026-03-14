@@ -32,6 +32,9 @@ take_profit_percent = "3.0"  # 3.0% reachable in normal ranges; 4.0% never trigg
 max_position_age_minutes = 120
 # Post-fill cooldown: longer cooldown to reduce churn in range-bound markets
 post_fill_cooldown_seconds = 900  # Up from 600 — session 4 had 64% commission drag; fewer trades needed
+# Volatility gate: deny orders when market too flat to cover commission (0.32%) + slippage (0.1%)
+volatility_gate_min_range_pct = "0.5"  # 0.5% threshold; 0.32% commission + 0.1% slippage = 0.42% floor
+volatility_gate_window_size = 300       # ~5 min rolling window (matches regime short window)
 
 [monitoring]
 dashboard_enabled = true

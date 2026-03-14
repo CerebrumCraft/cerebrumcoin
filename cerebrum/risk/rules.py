@@ -13,6 +13,7 @@ risk profiles (conservative = more rules, aggressive = fewer rules).
 """
 
 from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -20,8 +21,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from cerebrum.core.events import Event, FillEvent, OrderEvent, RegimeChangeEvent, SignalEvent
-from cerebrum.core.types import Amount, EventType, RiskLevel, Side, Symbol
+from cerebrum.core.events import Event, FillEvent, MarketDataEvent, OrderEvent, RegimeChangeEvent, SignalEvent
+from cerebrum.core.types import Amount, EventType, Price, RiskLevel, Side, Symbol
 
 from .portfolio import PortfolioTracker
 
@@ -492,5 +493,135 @@ class RegimeTradeHaltRule(RiskRule):
         return RuleResult(
             decision=RuleDecision.APPROVE,
             reason=f"Regime {regime} does not trigger halt",
+            risk_level=RiskLevel.LOW,
+        )
+
+
+class VolatilityGateRule(RiskRule):
+    """
+    Deny orders when recent price range is too small to cover round-trip commissions.
+
+    @decision DEC-VOL-001
+    @title Percentage price range as volatility metric
+    @status accepted
+    @rationale (max - min) / min * 100 is simple, interpretable, and directly
+    models whether price swings are large enough to profit after commission.
+    No look-ahead bias. Avoids statistical complexity of std-dev which can be
+    high even in one-directional trends.
+
+    @decision DEC-VOL-002
+    @title Per-symbol rolling price window via MARKET_DATA event bus subscription
+    @status accepted
+    @rationale Mirrors PostFillCooldownRule and RegimeTradeHaltRule patterns —
+    self-subscribes in __init__, maintains per-symbol dict of deque. Decoupled
+    from regime detector; independent risk signal.
+
+    @decision DEC-VOL-003
+    @title Default threshold 0.5%, lookback 300 ticks, both configurable via TOML
+    @status accepted
+    @rationale 0.5% covers round-trip commission (~0.32%) plus slippage (~0.1%)
+    with margin. 300 ticks (~5 min at 1 tick/sec) matches the regime detector's
+    short window. APPROVE on cold start (fewer ticks than window) to not block
+    early trades.
+    """
+
+    def __init__(
+        self,
+        min_range_pct: Decimal,
+        window_size: int,
+        bus: "EventBus",
+    ) -> None:
+        """
+        Initialize volatility gate rule.
+
+        Args:
+            min_range_pct: Minimum price range percentage required to allow trading.
+                           Orders are denied when (max - min) / min * 100 < min_range_pct.
+            window_size: Number of recent price ticks to consider per symbol.
+                         The window is a rolling deque — old prices fall off automatically.
+            bus: Event bus to subscribe to MARKET_DATA events.
+        """
+        super().__init__("volatility_gate")
+        self._min_range_pct = min_range_pct
+        self._window_size = window_size
+        # Per-symbol rolling price windows. deque(maxlen=N) auto-evicts oldest entries.
+        self._price_windows: dict[Symbol, deque[Price]] = {}
+
+        bus.subscribe(
+            EventType.MARKET_DATA,
+            self._on_market_data,
+            subscriber_name="volatility_gate_rule",
+        )
+
+        self._log.info(
+            "volatility_gate_initialized",
+            min_range_pct=float(min_range_pct),
+            window_size=window_size,
+        )
+
+    async def _on_market_data(self, event: Event) -> None:
+        """Append the latest price to the per-symbol rolling window."""
+        if not isinstance(event, MarketDataEvent):
+            return
+        symbol = event.symbol
+        if symbol not in self._price_windows:
+            self._price_windows[symbol] = deque(maxlen=self._window_size)
+        self._price_windows[symbol].append(event.price)
+        self._log.debug(
+            "price_recorded",
+            symbol=symbol,
+            price=float(event.price),
+            window_len=len(self._price_windows[symbol]),
+        )
+
+    def evaluate(
+        self,
+        signal: SignalEvent,
+        order: OrderEvent,
+        portfolio: PortfolioTracker,
+    ) -> RuleResult:
+        """
+        Deny the order if recent price range for the symbol is below the minimum threshold.
+
+        Returns APPROVE during cold start (window not yet full) to avoid blocking
+        early trades when the system has just started.
+        """
+        symbol = order.symbol
+        window = self._price_windows.get(symbol)
+
+        # Cold start: insufficient data to evaluate — allow trading
+        if window is None or len(window) < self._window_size:
+            current = len(window) if window is not None else 0
+            return RuleResult(
+                decision=RuleDecision.APPROVE,
+                reason=(
+                    f"Insufficient data for {symbol}: warming up "
+                    f"({current}/{self._window_size} ticks)"
+                ),
+                risk_level=RiskLevel.LOW,
+            )
+
+        # Calculate price range as a percentage of the minimum price
+        price_min = min(window)
+        price_max = max(window)
+        range_pct = (price_max - price_min) / price_min * Decimal("100")
+
+        if range_pct < self._min_range_pct:
+            return RuleResult(
+                decision=RuleDecision.DENY,
+                reason=(
+                    f"Volatility gate: {symbol} range {float(range_pct):.4f}% "
+                    f"< threshold {float(self._min_range_pct):.4f}% "
+                    f"(too flat to cover commission)"
+                ),
+                risk_level=RiskLevel.LOW,
+            )
+
+        return RuleResult(
+            decision=RuleDecision.APPROVE,
+            reason=(
+                f"Volatility sufficient: {symbol} range {float(range_pct):.4f}% "
+                f">= {float(self._min_range_pct):.4f}%"
+            ),
             risk_level=RiskLevel.LOW,
         )

@@ -36,6 +36,7 @@ from cerebrum.risk.rules import (
     PositionSizingRule,
     PostFillCooldownRule,
     RegimeTradeHaltRule,
+    VolatilityGateRule,
 )
 from cerebrum.signals.aggregator import SignalAggregator
 from cerebrum.signals.candles import CandleAggregator
@@ -277,6 +278,11 @@ class CerebrumCoin:
             ),
             PostFillCooldownRule(
                 cooldown_seconds=self.config.risk.post_fill_cooldown_seconds,
+                bus=self.bus,
+            ),
+            VolatilityGateRule(
+                min_range_pct=self.config.risk.volatility_gate_min_range_pct,
+                window_size=self.config.risk.volatility_gate_window_size,
                 bus=self.bus,
             ),
         ]

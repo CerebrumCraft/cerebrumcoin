@@ -13,6 +13,8 @@ max_drawdown_percent = "5.0"
 max_daily_loss_usd = "500.0"
 position_size_percent = "2.0"
 min_signal_strength = "0.3"
+volatility_gate_min_range_pct = "0.5"  # Minimum price range % to allow trading (covers commission + slippage)
+volatility_gate_window_size = 300      # Ticks per symbol (~5 min at 1 tick/sec)
 
 [paper]
 initial_balance_usd = "10000.0"

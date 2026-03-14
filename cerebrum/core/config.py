@@ -81,6 +81,21 @@ class RiskConfig(BaseSettings):
         default=300,
         description="Minimum seconds between fills per symbol to prevent rapid-fire ordering"
     )
+    volatility_gate_min_range_pct: Decimal = Field(
+        default=Decimal("0.5"),
+        description=(
+            "Minimum price range % required to allow trading. "
+            "Orders denied when (max-min)/min*100 < this value. "
+            "Default 0.5% covers round-trip commission + slippage."
+        )
+    )
+    volatility_gate_window_size: int = Field(
+        default=300,
+        description=(
+            "Number of recent price ticks per symbol used to calculate volatility. "
+            "~5 minutes at 1 tick/sec. Rule approves during cold start (window not yet full)."
+        )
+    )
 
     @field_validator("max_drawdown_percent", "position_size_percent")
     @classmethod
