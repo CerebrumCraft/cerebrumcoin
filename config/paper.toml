@@ -35,6 +35,16 @@ post_fill_cooldown_seconds = 900  # Up from 600 — session 4 had 64% commission
 # Volatility gate: deny orders when market too flat to cover commission (0.32%) + slippage (0.1%)
 volatility_gate_min_range_pct = "0.5"  # 0.5% threshold; 0.32% commission + 0.1% slippage = 0.42% floor
 volatility_gate_window_size = 300       # ~5 min rolling window (matches regime short window)
+# SIDEWAYS suppression: deny BUY entries in low-vol sideways markets (Issue #3 fix)
+sideways_suppression_min_range_pct = "1.0"  # 1.0% range required in SIDEWAYS; 3% TP unreachable in <0.5%
+sideways_suppression_window_size = 18000    # ~5 hour window for session-level range assessment
+# Macro volatility gate: session-level flatness detection
+macro_volatility_min_range_pct = "0.8"  # Block entire session if range < 0.8% over 5 hours
+macro_volatility_window_size = 18000    # ~5 hours at 1 tick/sec
+# Adaptive take-profit: scale TP to actual market volatility
+adaptive_tp = true
+tp_multiplier = "1.5"   # effective_tp = range_pct * 1.5 (e.g. 0.4% range -> 0.6% TP)
+min_tp_percent = "0.3"  # Floor: never set TP below 0.3% (covers commission)
 
 [monitoring]
 dashboard_enabled = true

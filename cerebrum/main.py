@@ -29,6 +29,7 @@ from cerebrum.risk.exit_monitor import ExitMonitor
 from cerebrum.risk.manager import RiskManager
 from cerebrum.risk.portfolio import PortfolioTracker
 from cerebrum.risk.rules import (
+    MacroVolatilityGateRule,
     MaxDrawdownRule,
     MaxPositionSizeRule,
     MaxTotalExposureRule,
@@ -36,6 +37,7 @@ from cerebrum.risk.rules import (
     PositionSizingRule,
     PostFillCooldownRule,
     RegimeTradeHaltRule,
+    SidewaysSuppressionRule,
     VolatilityGateRule,
 )
 from cerebrum.signals.aggregator import SignalAggregator
@@ -285,6 +287,16 @@ class CerebrumCoin:
                 window_size=self.config.risk.volatility_gate_window_size,
                 bus=self.bus,
             ),
+            SidewaysSuppressionRule(
+                min_range_pct=self.config.risk.sideways_suppression_min_range_pct,
+                window_size=self.config.risk.sideways_suppression_window_size,
+                bus=self.bus,
+            ),
+            MacroVolatilityGateRule(
+                min_range_pct=self.config.risk.macro_volatility_min_range_pct,
+                window_size=self.config.risk.macro_volatility_window_size,
+                bus=self.bus,
+            ),
         ]
         self.risk_manager = RiskManager(
             self.bus,
@@ -299,6 +311,9 @@ class CerebrumCoin:
             stop_loss_percent=self.config.risk.stop_loss_percent,
             take_profit_percent=self.config.risk.take_profit_percent,
             max_position_age_minutes=self.config.risk.max_position_age_minutes,
+            adaptive_tp=self.config.risk.adaptive_tp,
+            tp_multiplier=self.config.risk.tp_multiplier,
+            min_tp_percent=self.config.risk.min_tp_percent,
         )
 
         # Initialize learning system

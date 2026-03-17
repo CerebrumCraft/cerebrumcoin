@@ -13,9 +13,22 @@ triggered. Separation of concerns: rules say yes/no to inbound signals, the
 monitor independently protects capital by closing stale or losing positions.
 This component subscribes to MARKET_DATA (not SIGNAL) so it fires on every
 price tick rather than waiting for the signal pipeline to produce a SELL.
+
+@decision DEC-EXIT-002
+@title Adaptive take-profit based on recent price range
+@status accepted
+@rationale Session 5 showed 0/17 wins because the fixed 3% take-profit is
+unreachable when intraday range is <0.5%. All positions hit 120-min max-age
+timeout at a guaranteed loss. Adaptive TP scales the take-profit target to
+actual market conditions: effective_tp = max(min_tp, range_pct * tp_multiplier).
+In a 0.4% range market, effective_tp = max(0.3%, 0.4% * 1.5) = 0.6% — still
+reachable while covering commission. In a 2% range market, effective_tp = 3.0%
+(the fixed default). The min_tp floor ensures we never set TP below commission
+cost. Backward-compatible: adaptive_tp=False keeps the fixed behaviour.
 """
 
 import time
+from collections import deque
 from decimal import Decimal
 from uuid import uuid4
 
@@ -35,7 +48,7 @@ class ExitMonitor:
 
     Exit criteria (checked on every MARKET_DATA tick for the position's symbol):
     - Stop-loss: unrealized loss exceeds stop_loss_percent of position value
-    - Take-profit: unrealized gain exceeds take_profit_percent of position value
+    - Take-profit: unrealized gain exceeds take_profit_percent (or adaptive TP) of position value
     - Time-based: position age exceeds max_position_age_minutes
 
     When a criterion is breached, a SELL OrderEvent (MARKET type) is published
@@ -44,6 +57,11 @@ class ExitMonitor:
 
     Only long positions (amount > 0) are handled — the system currently only
     takes long positions via BUY signals.
+
+    Adaptive take-profit (DEC-EXIT-002): when adaptive_tp=True, the effective
+    take-profit is computed as max(min_tp_percent, range_pct * tp_multiplier)
+    where range_pct is the price range over the last tp_window_size ticks.
+    This prevents the 3% TP from being unreachable in low-vol sessions.
     """
 
     def __init__(
@@ -53,6 +71,10 @@ class ExitMonitor:
         stop_loss_percent: Decimal = Decimal("2.0"),
         take_profit_percent: Decimal = Decimal("3.0"),
         max_position_age_minutes: int = 120,
+        adaptive_tp: bool = False,
+        tp_multiplier: Decimal = Decimal("1.5"),
+        min_tp_percent: Decimal = Decimal("0.3"),
+        tp_window_size: int = 18000,
     ) -> None:
         """
         Initialize exit monitor.
@@ -62,13 +84,31 @@ class ExitMonitor:
             portfolio: Portfolio tracker providing current position state
             stop_loss_percent: Close position if loss exceeds this % of entry value
             take_profit_percent: Close position if gain exceeds this % of entry value
+                                 (used as fixed TP when adaptive_tp=False, and as
+                                 the upper bound when adaptive_tp=True)
             max_position_age_minutes: Close position if open longer than this many minutes
+            adaptive_tp: When True, compute effective TP from recent price range.
+                         When False (default), use fixed take_profit_percent.
+            tp_multiplier: Scale factor applied to range_pct for adaptive TP.
+                           effective_tp = max(min_tp_percent, range_pct * tp_multiplier)
+            min_tp_percent: Floor for adaptive TP — never target less than this %.
+                            Should exceed round-trip commission cost (~0.32%).
+            tp_window_size: Number of recent price ticks to use for adaptive TP
+                            range calculation. Default ~18000 = 5 hours at 1 tick/sec.
         """
         self._bus = bus
         self._portfolio = portfolio
         self._stop_loss_pct = stop_loss_percent
         self._take_profit_pct = take_profit_percent
         self._max_age_seconds = max_position_age_minutes * 60
+
+        # Adaptive TP parameters (DEC-EXIT-002)
+        self._adaptive_tp = adaptive_tp
+        self._tp_multiplier = tp_multiplier
+        self._min_tp_percent = min_tp_percent
+        self._tp_window_size = tp_window_size
+        # Per-symbol rolling price windows for adaptive TP range calculation
+        self._tp_price_windows: dict[Symbol, deque] = {}
 
         # Track symbols we've already triggered an exit for to avoid duplicate orders
         self._pending_exits: set[Symbol] = set()
@@ -93,7 +133,52 @@ class ExitMonitor:
             stop_loss_pct=str(stop_loss_percent),
             take_profit_pct=str(take_profit_percent),
             max_age_minutes=max_position_age_minutes,
+            adaptive_tp=adaptive_tp,
+            tp_multiplier=str(tp_multiplier) if adaptive_tp else "n/a",
+            min_tp_percent=str(min_tp_percent) if adaptive_tp else "n/a",
+            tp_window_size=tp_window_size if adaptive_tp else "n/a",
         )
+
+    def _compute_effective_tp(self, symbol: Symbol) -> Decimal:
+        """
+        Compute the effective take-profit percentage for the given symbol.
+
+        When adaptive_tp=False: returns the fixed take_profit_percent.
+        When adaptive_tp=True: returns max(min_tp_percent, range_pct * tp_multiplier)
+        where range_pct is computed from the rolling price window. Falls back to
+        take_profit_percent if the window is not yet full (cold start).
+
+        Args:
+            symbol: Trading symbol to compute TP for.
+
+        Returns:
+            Effective take-profit percentage as a Decimal.
+        """
+        if not self._adaptive_tp:
+            return self._take_profit_pct
+
+        window = self._tp_price_windows.get(symbol)
+        if window is None or len(window) < self._tp_window_size:
+            # Cold start — use the configured fixed TP as fallback
+            return self._take_profit_pct
+
+        price_min = min(window)
+        price_max = max(window)
+        if price_min == Decimal("0"):
+            return self._take_profit_pct
+
+        range_pct = (price_max - price_min) / price_min * Decimal("100")
+        adaptive = range_pct * self._tp_multiplier
+        effective = max(self._min_tp_percent, adaptive)
+
+        self._log.debug(
+            "adaptive_tp_computed",
+            symbol=symbol,
+            range_pct=float(range_pct),
+            adaptive=float(adaptive),
+            effective=float(effective),
+        )
+        return effective
 
     async def _on_fill(self, event: Event) -> None:
         """Clear pending exit flag when a fill confirms the position is closing."""
@@ -113,6 +198,12 @@ class ExitMonitor:
         symbol = event.symbol
         current_price = event.price
         current_time = event.timestamp
+
+        # Update the adaptive TP price window if adaptive mode is enabled
+        if self._adaptive_tp:
+            if symbol not in self._tp_price_windows:
+                self._tp_price_windows[symbol] = deque(maxlen=self._tp_window_size)
+            self._tp_price_windows[symbol].append(current_price)
 
         # Skip if we already have a pending exit order for this symbol
         if symbol in self._pending_exits:
@@ -150,9 +241,10 @@ class ExitMonitor:
                 / pos.average_entry_price
                 * Decimal("100")
             )
-            if gain_pct >= self._take_profit_pct:
+            effective_tp = self._compute_effective_tp(symbol)
+            if gain_pct >= effective_tp:
                 exit_reason = (
-                    f"take_profit: gain {gain_pct:.2f}% >= threshold {self._take_profit_pct}%"
+                    f"take_profit: gain {gain_pct:.2f}% >= threshold {effective_tp}%"
                 )
                 order_type = OrderType.TAKE_PROFIT
 

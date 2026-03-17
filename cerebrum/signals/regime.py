@@ -329,8 +329,18 @@ class RegimeDetector:
                 return regime, 0.7
 
         # Calculate confidence based on metric agreement
-        if regime == "SIDEWAYS" or regime == "VOLATILE":
+        if regime == "VOLATILE":
             confidence = 0.6
+        elif regime == "SIDEWAYS":
+            # Variable SIDEWAYS confidence based on actual volatility level.
+            # Dead-flat (volatility near 0) -> high confidence (0.9): we are
+            # very sure it's sideways, so SidewaysSuppressionRule can act.
+            # Near-volatile threshold -> low confidence (0.3): borderline case.
+            # Formula: confidence = min(0.9, max(0.3, 1.0 - volatility/volatility_threshold))
+            # This is a refinement of DEC-INT-003 — the existing decision captures
+            # the regime detection approach; this refines the confidence derivation.
+            sideways_conf = 1.0 - (volatility / self._volatility_threshold)
+            confidence = min(0.9, max(0.3, sideways_conf))
         else:
             direction = 1 if regime == "BULL" else -1
             agreements = 0

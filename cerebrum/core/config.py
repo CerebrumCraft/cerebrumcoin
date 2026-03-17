@@ -96,6 +96,60 @@ class RiskConfig(BaseSettings):
             "~5 minutes at 1 tick/sec. Rule approves during cold start (window not yet full)."
         )
     )
+    sideways_suppression_min_range_pct: Decimal = Field(
+        default=Decimal("1.0"),
+        description=(
+            "Minimum price range % required to allow BUY entries in SIDEWAYS regime. "
+            "Higher than volatility_gate (1.0% vs 0.5%) because TP must be reachable "
+            "above commission. Session 5: 3% TP unreachable in <0.5% range markets."
+        )
+    )
+    sideways_suppression_window_size: int = Field(
+        default=18000,
+        description=(
+            "Number of recent price ticks for SIDEWAYS suppression range check. "
+            "~5 hours at 1 tick/sec — same as macro gate to detect session-level flatness."
+        )
+    )
+    macro_volatility_min_range_pct: Decimal = Field(
+        default=Decimal("0.8"),
+        description=(
+            "Minimum session-level price range % to allow trading. "
+            "MacroVolatilityGateRule uses a 5-hour window to catch sessions that are "
+            "globally flat even if the 5-min window shows local noise."
+        )
+    )
+    macro_volatility_window_size: int = Field(
+        default=18000,
+        description=(
+            "Number of recent price ticks for macro volatility gate (~5 hours). "
+            "Must be much larger than volatility_gate_window_size to distinguish "
+            "session-level from tick-level flatness."
+        )
+    )
+    adaptive_tp: bool = Field(
+        default=False,
+        description=(
+            "Enable adaptive take-profit based on recent price range. "
+            "When True: effective_tp = max(min_tp_percent, range_pct * tp_multiplier). "
+            "When False: use fixed take_profit_percent (backward compatible)."
+        )
+    )
+    tp_multiplier: Decimal = Field(
+        default=Decimal("1.5"),
+        description=(
+            "Multiplier applied to recent range_pct to compute adaptive TP. "
+            "effective_tp = range_pct * tp_multiplier. Higher = more ambitious target."
+        )
+    )
+    min_tp_percent: Decimal = Field(
+        default=Decimal("0.3"),
+        description=(
+            "Floor for adaptive take-profit — never target less than this %. "
+            "Should exceed round-trip commission cost (~0.32%). "
+            "Prevents TP being set so low that commission guarantees a loss."
+        )
+    )
 
     @field_validator("max_drawdown_percent", "position_size_percent")
     @classmethod

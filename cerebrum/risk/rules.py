@@ -625,3 +625,291 @@ class VolatilityGateRule(RiskRule):
             ),
             risk_level=RiskLevel.LOW,
         )
+
+
+class SidewaysSuppressionRule(RiskRule):
+    """
+    Deny BUY orders when the market is in a SIDEWAYS regime AND price range
+    is below the minimum threshold (insufficient volatility to reach take-profit).
+
+    @decision DEC-REGIME-005
+    @title SIDEWAYS suppression: block BUY entries in low-vol sideways markets
+    @status accepted
+    @rationale Session 5 showed 0/17 win rate (-$61) in SIDEWAYS markets because
+    take-profit (3%) is unreachable when intraday range is <0.5%. All positions hit
+    the 120-min max-age timeout at a guaranteed loss. This rule denies new BUY entries
+    when regime==SIDEWAYS AND the price range over a configurable window is below
+    min_range_pct, preventing accumulation of guaranteed-loss positions.
+
+    SELL orders (exits) are never blocked — the rule only suppresses new entries.
+    This is intentional: if we're already in a position when the regime becomes
+    SIDEWAYS+low-vol, we need exits to work to close the losing position.
+
+    The rule subscribes to both REGIME_CHANGE (to track per-symbol regime) and
+    MARKET_DATA (to maintain a rolling price window for range calculation), following
+    the combined pattern of RegimeTradeHaltRule and VolatilityGateRule.
+
+    APPROVE on cold start (insufficient data) and for BULL/BEAR regimes regardless
+    of volatility — those regimes have directional momentum where TP is reachable.
+    """
+
+    def __init__(
+        self,
+        min_range_pct: Decimal,
+        window_size: int,
+        bus: "EventBus",
+    ) -> None:
+        """
+        Initialize SIDEWAYS suppression rule.
+
+        Args:
+            min_range_pct: Minimum price range percentage required to allow BUY orders
+                           in SIDEWAYS regime. BUYs denied when (max-min)/min*100 < this.
+            window_size: Number of recent price ticks to consider per symbol.
+            bus: Event bus to subscribe to REGIME_CHANGE and MARKET_DATA events.
+        """
+        super().__init__("sideways_suppression")
+        self._min_range_pct = min_range_pct
+        self._window_size = window_size
+        # Per-symbol regime tracking: symbol -> (regime, confidence)
+        self._regimes: dict[str, tuple[str, Decimal]] = {}
+        # Per-symbol rolling price windows for range calculation
+        self._price_windows: dict[Symbol, deque[Price]] = {}
+
+        bus.subscribe(
+            EventType.REGIME_CHANGE,
+            self._on_regime_change,
+            subscriber_name="sideways_suppression_regime",
+        )
+        bus.subscribe(
+            EventType.MARKET_DATA,
+            self._on_market_data,
+            subscriber_name="sideways_suppression_market_data",
+        )
+
+        self._log.info(
+            "sideways_suppression_initialized",
+            min_range_pct=float(min_range_pct),
+            window_size=window_size,
+        )
+
+    async def _on_regime_change(self, event: Event) -> None:
+        """Record the latest regime and confidence for the affected symbol."""
+        if not isinstance(event, RegimeChangeEvent):
+            return
+        symbol = event.indicators.get("symbol", "")
+        if symbol:
+            self._regimes[symbol] = (event.to_regime, event.confidence)
+            self._log.debug(
+                "sideways_suppression_regime_updated",
+                symbol=symbol,
+                regime=event.to_regime,
+                confidence=float(event.confidence),
+            )
+
+    async def _on_market_data(self, event: Event) -> None:
+        """Append the latest price to the per-symbol rolling window."""
+        if not isinstance(event, MarketDataEvent):
+            return
+        symbol = event.symbol
+        if symbol not in self._price_windows:
+            self._price_windows[symbol] = deque(maxlen=self._window_size)
+        self._price_windows[symbol].append(event.price)
+
+    def evaluate(
+        self,
+        signal: SignalEvent,
+        order: OrderEvent,
+        portfolio: PortfolioTracker,
+    ) -> RuleResult:
+        """
+        Deny BUY orders when regime is SIDEWAYS and price range is below threshold.
+
+        SELL orders are always approved — exits must never be blocked.
+        BULL/BEAR regimes are always approved — directional momentum makes TP reachable.
+        Cold start (insufficient price data) approves to avoid blocking early trades.
+        """
+        # Never block exits — allows positions to close even in sideways+low-vol
+        if order.side == Side.SELL:
+            return RuleResult(
+                decision=RuleDecision.APPROVE,
+                reason="SELL order: exits always allowed by SidewaysSuppressionRule",
+                risk_level=RiskLevel.LOW,
+            )
+
+        symbol = order.symbol
+        regime_info = self._regimes.get(symbol)
+
+        # No regime data yet — approve (cold start or unknown symbol)
+        if regime_info is None:
+            return RuleResult(
+                decision=RuleDecision.APPROVE,
+                reason="No regime data — trading allowed (cold start)",
+                risk_level=RiskLevel.LOW,
+            )
+
+        regime, confidence = regime_info
+
+        # Only suppress in SIDEWAYS regime; BULL/BEAR/VOLATILE are directional
+        if regime != "SIDEWAYS":
+            return RuleResult(
+                decision=RuleDecision.APPROVE,
+                reason=f"Regime {regime} does not trigger SIDEWAYS suppression",
+                risk_level=RiskLevel.LOW,
+            )
+
+        # SIDEWAYS detected — check if there's enough volatility to reach take-profit
+        window = self._price_windows.get(symbol)
+
+        # Cold start: insufficient price data — approve
+        if window is None or len(window) < self._window_size:
+            current = len(window) if window is not None else 0
+            return RuleResult(
+                decision=RuleDecision.APPROVE,
+                reason=(
+                    f"SIDEWAYS but insufficient data for {symbol}: warming up "
+                    f"({current}/{self._window_size} ticks)"
+                ),
+                risk_level=RiskLevel.LOW,
+            )
+
+        # Calculate price range percentage
+        price_min = min(window)
+        price_max = max(window)
+        range_pct = (price_max - price_min) / price_min * Decimal("100")
+
+        if range_pct < self._min_range_pct:
+            return RuleResult(
+                decision=RuleDecision.DENY,
+                reason=(
+                    f"SIDEWAYS suppression: {symbol} in SIDEWAYS regime with range "
+                    f"{float(range_pct):.4f}% < threshold {float(self._min_range_pct):.4f}% "
+                    f"(take-profit unreachable in current conditions)"
+                ),
+                risk_level=RiskLevel.MEDIUM,
+            )
+
+        return RuleResult(
+            decision=RuleDecision.APPROVE,
+            reason=(
+                f"SIDEWAYS regime but sufficient range: {symbol} range "
+                f"{float(range_pct):.4f}% >= {float(self._min_range_pct):.4f}%"
+            ),
+            risk_level=RiskLevel.LOW,
+        )
+
+
+class MacroVolatilityGateRule(RiskRule):
+    """
+    Deny orders when session-level (macro) price range is too small to cover
+    round-trip commissions. Identical logic to VolatilityGateRule but uses a
+    much larger default window (~5 hours) to catch session-level flatness that
+    the short-window gate misses.
+
+    @decision DEC-VOL-004
+    @title Macro-window volatility gate for session-level flatness detection
+    @status accepted
+    @rationale The 5-min VolatilityGateRule can be fooled by local noise in a
+    globally flat session — a small local price swing can pass the short gate
+    even though the overall session is ranging <0.5%. Session 5 showed all 17
+    trades were losers in a market moving <0.5% intraday. The macro gate uses
+    an 18000-tick window (~5h at 1 tick/sec) to detect session-level flatness
+    that the 5-min window cannot catch. Both gates must approve for a trade to
+    proceed: the short gate blocks local flatness, the macro gate blocks global
+    flatness.
+    """
+
+    def __init__(
+        self,
+        min_range_pct: Decimal,
+        window_size: int,
+        bus: "EventBus",
+    ) -> None:
+        """
+        Initialize macro volatility gate rule.
+
+        Args:
+            min_range_pct: Minimum price range percentage required to allow trading.
+                           Orders denied when (max-min)/min*100 < min_range_pct
+                           over the macro window.
+            window_size: Number of recent price ticks (default ~18000 = 5 hours).
+            bus: Event bus to subscribe to MARKET_DATA events.
+        """
+        super().__init__("macro_volatility_gate")
+        self._min_range_pct = min_range_pct
+        self._window_size = window_size
+        # Per-symbol rolling price windows
+        self._price_windows: dict[Symbol, deque[Price]] = {}
+
+        bus.subscribe(
+            EventType.MARKET_DATA,
+            self._on_market_data,
+            subscriber_name="macro_volatility_gate_rule",
+        )
+
+        self._log.info(
+            "macro_volatility_gate_initialized",
+            min_range_pct=float(min_range_pct),
+            window_size=window_size,
+        )
+
+    async def _on_market_data(self, event: Event) -> None:
+        """Append the latest price to the per-symbol rolling window."""
+        if not isinstance(event, MarketDataEvent):
+            return
+        symbol = event.symbol
+        if symbol not in self._price_windows:
+            self._price_windows[symbol] = deque(maxlen=self._window_size)
+        self._price_windows[symbol].append(event.price)
+
+    def evaluate(
+        self,
+        signal: SignalEvent,
+        order: OrderEvent,
+        portfolio: PortfolioTracker,
+    ) -> RuleResult:
+        """
+        Deny the order if the macro price range for the symbol is below threshold.
+
+        Returns APPROVE during cold start (window not yet full) to avoid blocking
+        early trades when the system has just started.
+        """
+        symbol = order.symbol
+        window = self._price_windows.get(symbol)
+
+        # Cold start: insufficient data — allow trading
+        if window is None or len(window) < self._window_size:
+            current = len(window) if window is not None else 0
+            return RuleResult(
+                decision=RuleDecision.APPROVE,
+                reason=(
+                    f"Macro gate insufficient data for {symbol}: warming up "
+                    f"({current}/{self._window_size} ticks)"
+                ),
+                risk_level=RiskLevel.LOW,
+            )
+
+        # Calculate price range as a percentage of the minimum price
+        price_min = min(window)
+        price_max = max(window)
+        range_pct = (price_max - price_min) / price_min * Decimal("100")
+
+        if range_pct < self._min_range_pct:
+            return RuleResult(
+                decision=RuleDecision.DENY,
+                reason=(
+                    f"Macro volatility gate: {symbol} session range {float(range_pct):.4f}% "
+                    f"< threshold {float(self._min_range_pct):.4f}% "
+                    f"(session-level flatness — take-profit unreachable)"
+                ),
+                risk_level=RiskLevel.LOW,
+            )
+
+        return RuleResult(
+            decision=RuleDecision.APPROVE,
+            reason=(
+                f"Macro volatility sufficient: {symbol} session range {float(range_pct):.4f}% "
+                f">= {float(self._min_range_pct):.4f}%"
+            ),
+            risk_level=RiskLevel.LOW,
+        )
