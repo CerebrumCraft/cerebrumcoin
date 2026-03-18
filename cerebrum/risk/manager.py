@@ -2,6 +2,16 @@
 Risk manager coordinating all risk rules and order validation.
 
 Applies risk rules to signals before converting to orders, ensuring safe trading.
+
+@decision DEC-RISK-MGR-001
+@title RiskManager as stateful coordinator with per-rule denial counters
+@status accepted
+@rationale RiskManager owns the full order validation pipeline: it receives
+combined SignalEvents, creates proposed orders, applies risk rules in sequence
+(any DENY blocks; MODIFY adjusts amount), and emits approved OrderEvents.
+Denial counters (DEC-DENIAL-001) are accumulated here rather than in individual
+rules because the manager is the single choke-point that sees every denial.
+Single-threaded asyncio means no locking is needed for the counter dict.
 """
 
 from decimal import Decimal
@@ -56,7 +66,12 @@ class RiskManager:
         self._portfolio = portfolio
         self._rules = rules or []
         self._log = logger.bind(component="risk_manager")
-        
+
+        # Per-rule denial counters — incremented each time a rule returns DENY.
+        # Single-threaded asyncio means no lock needed.
+        # @decision DEC-DENIAL-001: denial counters for rule observability
+        self._denial_counts: dict[str, int] = {}
+
         # Subscribe to combined signals only
         bus.subscribe(
             EventType.SIGNAL,
@@ -158,6 +173,9 @@ class RiskManager:
                 highest_risk = result.risk_level
             
             if result.decision == RuleDecision.DENY:
+                # Increment per-rule denial counter for observability
+                self._denial_counts[rule.name] = self._denial_counts.get(rule.name, 0) + 1
+
                 # Any deny blocks the order
                 self._log.warning(
                     "order_denied_by_rule",
@@ -165,6 +183,7 @@ class RiskManager:
                     reason=result.reason,
                     risk_level=result.risk_level.value,
                     symbol=signal.symbol,
+                    denial_counts=dict(self._denial_counts),
                 )
                 await self._emit_risk_alert(
                     signal.symbol,
@@ -217,6 +236,17 @@ class RiskManager:
         )
         await self._bus.publish(alert)
     
+    @property
+    def denial_counts(self) -> dict[str, int]:
+        """
+        Return a copy of per-rule denial counters.
+
+        Returns a copy so callers cannot mutate the live dict.
+        Keys are rule names; values are the number of times that rule
+        has issued a DENY since this RiskManager was created.
+        """
+        return dict(self._denial_counts)
+
     def add_rule(self, rule: RiskRule) -> None:
         """Add a risk rule."""
         self._rules.append(rule)

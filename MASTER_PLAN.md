@@ -258,6 +258,40 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-VOL-003 | Default threshold 0.5%, lookback 300 ticks, both configurable via TOML | 0.5% covers round-trip commission (~0.32%) plus slippage (~0.1%) with margin. 300 ticks (~5 min at 1 tick/sec) matches the regime detector's short window for consistency. APPROVE on cold start (fewer ticks than window) to not block early trades | 2026-03-14 |
 | DEC-TEST-012 | Test VolatilityGateRule with real EventBus and injected prices | Self-subscribes to MARKET_DATA events. Real EventBus validates subscription wiring. Cold-start APPROVE tests insufficient-data path. Boundary test at exact threshold verifies >= semantics | 2026-03-14 |
 
+### Phase 10: SIDEWAYS Guards + Adaptive TP + Data Export (COMPLETED)
+**Goal**: Fix 0/17 SIDEWAYS loss rate (Issue #3) with four targeted guards, add adaptive take-profit, and add data export scripts for fine-tuning and analysis (Issue #4).
+
+- [x] Add `SidewaysSuppressionRule` to `cerebrum/risk/rules.py` — deny BUY orders in SIDEWAYS+low-vol markets (DEC-REGIME-005)
+- [x] Add `MacroVolatilityGateRule` to `cerebrum/risk/rules.py` — session-level (~5h) volatility gate to catch global flatness (DEC-VOL-004)
+- [x] Add adaptive take-profit to `ExitMonitor` — scales TP to actual price range (DEC-EXIT-002)
+- [x] Add `scripts/export_finetune.py` — LLM fine-tuning JSONL exporter (DEC-EXPORT-001)
+- [x] Add `scripts/export_trades_csv.py` — parameter tuning CSV exporter (DEC-EXPORT-002)
+- [x] Add `scripts/export_weights.py` — signal weight history CSV exporter (DEC-EXPORT-003)
+- [x] Add denial counters to `RiskManager` and Guard Denials display to `Dashboard` (DEC-DENIAL-001)
+- [x] Add `tests/unit/test_sideways_suppression.py` (DEC-TEST-013)
+- [x] Add `tests/unit/test_macro_volatility_gate.py` (DEC-TEST-014)
+- [x] Add `tests/unit/test_exit_monitor_adaptive.py` (DEC-TEST-015)
+- [x] Add `tests/unit/test_export_scripts.py` (DEC-TEST-016)
+- [x] Add `tests/unit/test_denial_counter.py` (DEC-TEST-017)
+- **Verification**: All tests pass — SIDEWAYS guards, adaptive TP, and export scripts operational (2026-03-17)
+
+**Phase 10 Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-REGIME-005 | SIDEWAYS suppression: block BUY entries in low-vol sideways markets | Session 5 showed 0/17 win rate (-$61) in SIDEWAYS markets. Take-profit (3%) is unreachable when intraday range is <0.5%. All positions hit the 120-min max-age timeout at a guaranteed loss. Rule denies new BUY entries when regime==SIDEWAYS AND price range < min_range_pct. SELL orders never blocked | 2026-03-17 |
+| DEC-VOL-004 | Macro-window volatility gate for session-level flatness detection | The 5-min VolatilityGateRule is fooled by local noise in a globally flat session. MacroVolatilityGateRule uses an 18000-tick window (~5h) to detect session-level flatness. Both gates must approve for a trade to proceed | 2026-03-17 |
+| DEC-EXIT-002 | Adaptive take-profit based on recent price range | Session 5: fixed 3% TP unreachable in <0.5% intraday range. Adaptive TP: effective_tp = max(min_tp, range_pct * tp_multiplier). In 0.4% range: effective_tp = max(0.3%, 0.6%) = 0.6% — reachable while covering commission. Backward-compatible (adaptive_tp=False keeps fixed behaviour) | 2026-03-17 |
+| DEC-EXPORT-001 | LLM fine-tuning JSONL exporter using raw sqlite3 (no ORM) | Export scripts run outside the full cerebrum system. Raw sqlite3 avoids asyncio-based StateManager and transitive deps. Pure stdlib deployable anywhere Python 3.10+ is available without a venv | 2026-03-17 |
+| DEC-EXPORT-002 | Trades CSV exporter with flattened signal_snapshot columns | Parameter tuning requires flat tabular data. JSON signal_snapshot is destructured into signal_strength, signal_confidence, signal_action columns. ISO timestamps for human readability. hold_duration_min derived from entry/exit timestamps | 2026-03-17 |
+| DEC-EXPORT-003 | Weight history CSV exporter with ISO timestamps | Signal weight evolution is key data for understanding adaptive learning. Exports weight_history table directly with human-readable timestamps | 2026-03-17 |
+| DEC-DENIAL-001 | Denial counters in RiskManager, displayed in Dashboard Guard Denials section | Observability: knowing which rules fire most often guides tuning. Counters are per-rule dicts incremented on every DENY in _apply_rules. Dashboard shows counts when risk_manager is provided (optional parameter) | 2026-03-17 |
+| DEC-TEST-013 | Tests for SidewaysSuppressionRule | Subscribes to both REGIME_CHANGE and MARKET_DATA events. Real EventBus validates subscription wiring. SELL orders must always be approved. BULL/BEAR regimes bypass suppression entirely | 2026-03-17 |
+| DEC-TEST-014 | Tests for MacroVolatilityGateRule | Subscribes to MARKET_DATA events. Key test: local noise passes short gate but macro gate blocks when session is globally flat | 2026-03-17 |
+| DEC-TEST-015 | Tests for adaptive take-profit in ExitMonitor | White-box test of _compute_effective_tp method. End-to-end test verifies exit orders fire at expected gain level below fixed TP threshold | 2026-03-17 |
+| DEC-TEST-016 | Tests for export scripts using in-memory SQLite | Export scripts use raw sqlite3. Tests use in-memory SQLite DB with seeded trade data to verify JSONL validity, CSV headers, and record counts | 2026-03-17 |
+| DEC-TEST-017 | Tests for RiskManager denial counters | Verifies counters increment on DENY, remain at zero for APPROVE/MODIFY, and denial_counts returns a copy not the live dict | 2026-03-17 |
+
 ## Resources
 
 | File | Purpose |

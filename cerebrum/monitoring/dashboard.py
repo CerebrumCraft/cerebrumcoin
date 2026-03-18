@@ -13,6 +13,7 @@ Non-blocking design ensures dashboard doesn't slow down trading decisions.
 
 import asyncio
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -21,6 +22,9 @@ from cerebrum.core.events import Event, FillEvent, PositionUpdateEvent, TradeClo
 from cerebrum.core.state import StateManager
 from cerebrum.core.types import EventType
 from cerebrum.monitoring.stats import calculate_performance_metrics
+
+if TYPE_CHECKING:
+    from cerebrum.risk.manager import RiskManager
 
 logger = structlog.get_logger()
 
@@ -42,29 +46,33 @@ class Dashboard:
         state_manager: StateManager,
         update_interval_seconds: int = 30,
         initial_balance: Decimal = Decimal("10000.0"),
+        risk_manager: "RiskManager | None" = None,
     ) -> None:
         """
         Initialize dashboard.
-        
+
         Args:
             bus: Event bus
             state_manager: State manager for trade history
             update_interval_seconds: How often to update display
             initial_balance: Starting balance for metrics calculation
+            risk_manager: Optional RiskManager — when provided, Guard Denials
+                          section shows per-rule denial counts in the display.
         """
         self._bus = bus
         self._state_manager = state_manager
         self._update_interval = update_interval_seconds
         self._initial_balance = initial_balance
+        self._risk_manager = risk_manager
         self._running = False
         self._update_task: asyncio.Task | None = None
-        
+
         # Current state (updated from events)
         self._current_equity = initial_balance
         self._total_pnl = Decimal("0.0")
         self._open_positions: dict = {}
         self._recent_trades: list = []
-        
+
         self._log = logger.bind(component="dashboard")
     
     async def start(self) -> None:
@@ -177,6 +185,16 @@ class Dashboard:
         print(f"  Max Drawdown: ${metrics['max_drawdown']:.2f} ({metrics['max_drawdown_pct']:.2f}%)")
         print(f"  Total PnL: ${metrics['total_pnl']:.2f}")
         
+        # Guard Denials — shows which risk rules are firing most often
+        if self._risk_manager is not None:
+            counts = self._risk_manager.denial_counts
+            print(f"\nGuard Denials:")
+            if counts:
+                for rule_name, count in sorted(counts.items()):
+                    print(f"  {rule_name}: {count} denials")
+            else:
+                print("  (no denials yet)")
+
         # Open positions
         if self._open_positions:
             print(f"\nOpen Positions ({len(self._open_positions)}):")
