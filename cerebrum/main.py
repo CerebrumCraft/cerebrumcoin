@@ -343,6 +343,7 @@ class CerebrumCoin:
                 self.state_manager,
                 update_interval_seconds=self.config.monitoring.update_interval_seconds,
                 initial_balance=self.config.paper.initial_balance_usd,
+                risk_manager=self.risk_manager,
             )
             await self.dashboard.start()
             self._log.info("dashboard_started")
