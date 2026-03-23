@@ -14,6 +14,7 @@ rules because the manager is the single choke-point that sees every denial.
 Single-threaded asyncio means no locking is needed for the counter dict.
 """
 
+from dataclasses import replace
 from decimal import Decimal
 from time import time
 from uuid import uuid4
@@ -195,20 +196,11 @@ class RiskManager:
             elif result.decision == RuleDecision.MODIFY:
                 # Modify order parameters
                 if result.modified_amount is not None:
-                    # Create modified order (OrderEvent is frozen)
-                    current_order = OrderEvent(
-                        event_type=current_order.event_type,
-                        timestamp=current_order.timestamp,
-                        order_id=current_order.order_id,
-                        symbol=current_order.symbol,
-                        side=current_order.side,
-                        order_type=current_order.order_type,
-                        amount=result.modified_amount,
-                        price=current_order.price,
-                        stop_price=current_order.stop_price,
-                        status=current_order.status,
-                        metadata=current_order.metadata,
-                    )
+                    # Create modified order using replace() — forward-compatible with new fields
+                    # @decision DEC-RISK-MGR-002: use dataclasses.replace() for frozen OrderEvent mutation
+                    # Rationale: listing all fields manually breaks whenever a new field is added
+                    # (e.g. strategy_id). replace() copies all unspecified fields automatically.
+                    current_order = replace(current_order, amount=result.modified_amount)
                 
                 self._log.debug(
                     "rule_modified_order",

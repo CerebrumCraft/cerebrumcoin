@@ -61,7 +61,19 @@ class TradeTracker:
             self._pending_signals[event.order_id] = event.metadata["signals"]
 
     async def _on_fill(self, event: FillEvent) -> None:
-        """Track trade entry/exit on fill."""
+        """Track trade entry/exit on fill.
+
+        The system is long-only: BUY fills open trades, SELL fills close them.
+        FIFO matching by symbol: the oldest open BUY trade is closed by the next
+        SELL fill for that symbol.
+
+        Bug fix (Session 6): the original code called _open_trade for a SELL fill
+        with no matching open BUY trade, creating a phantom "short" position in the
+        DB. On the next BUY fill, get_open_trades() returned that phantom SELL trade
+        and "closed" it instead of opening a real long — leaving 18/19 actual long
+        trades permanently stuck as OPEN. Fix: skip silently (with a warning) when
+        a SELL fill has no matching open BUY trade to close.
+        """
         # Get signal snapshot from pending orders
         signal_snapshot = self._pending_signals.pop(event.order_id, {})
 
@@ -69,21 +81,27 @@ class TradeTracker:
         open_trades = await self._state.get_open_trades(event.symbol)
 
         if event.side == Side.BUY:
-            # Opening long or closing short
             if open_trades and open_trades[0].side == Side.SELL:
-                # Closing short position
+                # Closing a short position (future multi-strategy support)
                 await self._close_trade(open_trades[0], event)
             else:
-                # Opening long position
+                # Opening a long position (normal case for long-only system)
                 await self._open_trade(event, signal_snapshot)
         else:  # SELL
-            # Closing long or opening short
             if open_trades and open_trades[0].side == Side.BUY:
-                # Closing long position
+                # Closing a long position (normal exit path)
                 await self._close_trade(open_trades[0], event)
             else:
-                # Opening short position
-                await self._open_trade(event, signal_snapshot)
+                # No matching open BUY trade — this is an unmatched sell fill.
+                # Do NOT open a phantom short: the system is long-only, and
+                # creating a phantom SELL open trade corrupts future BUY matching.
+                self._log.warning(
+                    "unmatched_sell_fill_skipped",
+                    symbol=event.symbol,
+                    order_id=event.order_id,
+                    open_trade_count=len(open_trades),
+                    reason="no_open_buy_trade_to_close",
+                )
 
     async def _open_trade(self, fill: FillEvent, signal_snapshot: dict) -> None:
         """Record trade entry."""

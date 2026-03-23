@@ -211,7 +211,7 @@ class PaperTradingAdapter(ExchangeAdapter):
             }
             self._trade_history.append(trade_record)
 
-            # Publish fill event
+            # Publish fill event — propagate strategy_id from order for multi-strategy routing
             fill_event = FillEvent(
                 event_type=EventType.FILL,
                 timestamp=time(),
@@ -223,6 +223,7 @@ class PaperTradingAdapter(ExchangeAdapter):
                 commission=commission,
                 commission_asset=quote_asset,
                 exchange_order_id=f"paper_{uuid.uuid4().hex[:8]}",
+                strategy_id=order.strategy_id,
             )
             await self.bus.publish(fill_event)
 
