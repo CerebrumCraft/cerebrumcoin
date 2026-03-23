@@ -42,6 +42,7 @@ from cerebrum.risk.rules import (
 )
 from cerebrum.signals.aggregator import SignalAggregator
 from cerebrum.signals.candles import CandleAggregator
+from cerebrum.signals.support_resistance import SupportResistanceSignal
 from cerebrum.signals.technical import (
     BollingerBandsSignal,
     MACDSignal,
@@ -203,6 +204,13 @@ class CerebrumCoin:
                 self.bus,
                 self.candle_agg,
                 period=self.config.signals.vwap_period,
+            ),
+            SupportResistanceSignal(
+                self.bus,
+                self.candle_agg,
+                pivot_lookback=self.config.signals.sr_pivot_lookback,
+                min_touches=self.config.signals.sr_min_touches,
+                proximity_pct=self.config.signals.sr_proximity_pct,
             ),
         ]
 

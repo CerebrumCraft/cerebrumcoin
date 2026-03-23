@@ -13,5 +13,13 @@ a shared EventBus.
 from cerebrum.strategies.base import StrategyConfig
 from cerebrum.strategies.registry import StrategyRegistry
 from cerebrum.strategies.global_portfolio import GlobalPortfolio
+from cerebrum.strategies.mean_reversion import MeanReversionStrategy
+from cerebrum.strategies.breakout import BreakoutStrategy
 
-__all__ = ["StrategyConfig", "StrategyRegistry", "GlobalPortfolio"]
+__all__ = [
+    "StrategyConfig",
+    "StrategyRegistry",
+    "GlobalPortfolio",
+    "MeanReversionStrategy",
+    "BreakoutStrategy",
+]
