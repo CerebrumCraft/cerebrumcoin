@@ -63,6 +63,7 @@ class SignalAggregator:
         window_seconds: int = 5,
         buy_suppression_factor: str = "0.2",
         buy_suppression_min_confidence: str = "0.8",
+        strategy_id: str | None = None,
     ) -> None:
         """
         Initialize signal aggregator.
@@ -74,6 +75,10 @@ class SignalAggregator:
             window_seconds: Time window for signal aggregation
             buy_suppression_factor: Multiplier applied to buy score in high-confidence BEAR regime
             buy_suppression_min_confidence: Minimum regime confidence to trigger buy suppression
+            strategy_id: Optional strategy identifier. When set, emitted COMBINED
+                         SignalEvents are tagged with this strategy_id so the matching
+                         RiskManager can filter signals to only its own pipeline
+                         (DEC-STRAT-005). None preserves backward-compatible behaviour.
         """
         self._bus = bus
         self._threshold = threshold
@@ -81,6 +86,9 @@ class SignalAggregator:
         self._regime_confidence: Decimal = Decimal("0.0")
         self._buy_suppression_factor = Decimal(buy_suppression_factor)
         self._buy_suppression_min_confidence = Decimal(buy_suppression_min_confidence)
+        # strategy_id is stored and stamped onto every COMBINED signal emitted.
+        # DEC-STRAT-005: None means no filtering — backward compatible.
+        self._strategy_id = strategy_id
         
         # Default weights: technical signals weighted higher
         self._weights: dict[SignalType, Decimal] = weights or {
@@ -107,22 +115,37 @@ class SignalAggregator:
         # Per-regime learned weights (updated by WeightAdapter)
         self._regime_weights: dict[str, dict[SignalType, Decimal]] = {}
 
-        self._log = logger.bind(component="signal_aggregator")
+        # Bind log with strategy context if present
+        self._log = logger.bind(
+            component="signal_aggregator",
+            **({"strategy_id": strategy_id} if strategy_id else {}),
+        )
+
+        # Use strategy-scoped subscriber names so multiple aggregators on the
+        # same bus don't collide. Backward compat: legacy names when no strategy_id.
+        signal_sub_name = (
+            f"signal_aggregator_{strategy_id}" if strategy_id else "signal_aggregator"
+        )
+        regime_sub_name = (
+            f"signal_aggregator_regime_{strategy_id}"
+            if strategy_id
+            else "signal_aggregator_regime"
+        )
 
         # Subscribe to all signal types
         bus.subscribe(
             EventType.SIGNAL,
             self._on_signal,
-            subscriber_name="signal_aggregator",
+            subscriber_name=signal_sub_name,
         )
 
         # Subscribe to regime changes
         bus.subscribe(
             EventType.REGIME_CHANGE,
             self._on_regime_change,
-            subscriber_name="signal_aggregator_regime",
+            subscriber_name=regime_sub_name,
         )
-        
+
         self._log.info(
             "signal_aggregator_initialized",
             weights={k.value: str(v) for k, v in self._weights.items()},
@@ -285,6 +308,7 @@ class SignalAggregator:
             strength=strength,
             confidence=avg_confidence,
             reason=f"Aggregated {len(signals)} signals: buy={buy_score_norm:.2f}, sell={sell_score_norm:.2f}",
+            strategy_id=self._strategy_id,  # DEC-STRAT-005: tag for RiskManager routing
         )
     
     def get_signal_count(self, symbol: Symbol) -> int:
