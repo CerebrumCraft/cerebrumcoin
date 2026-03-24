@@ -155,14 +155,20 @@ class RiskManager:
         # Initial amount (will be sized by rules)
         amount = Decimal("1.0")  # Placeholder
 
-        # Capture signal snapshot for learning
-        signal_snapshot = {
+        # Capture signal snapshot for learning.
+        # Bug fix (Session 7): propagate strategy_id into the snapshot so
+        # TradeTracker can attribute the resulting trade to its originating
+        # strategy. Stored at the top level of the snapshot dict (not nested
+        # inside the signal-type sub-dict) so it is easy to extract later.
+        signal_snapshot: dict = {
             signal.signal_type.value: {
                 "strength": float(signal.strength),
                 "confidence": float(signal.confidence),
                 "action": signal.action.value,
             }
         }
+        if signal.strategy_id:
+            signal_snapshot["strategy_id"] = signal.strategy_id
 
         return OrderEvent(
             event_type=EventType.ORDER,
@@ -174,6 +180,9 @@ class RiskManager:
             amount=amount,
             price=None,  # Market order
             metadata={"signals": signal_snapshot},
+            # Propagate strategy_id so PaperAdapter can stamp the resulting
+            # FillEvent, which TradeTracker then reads in _open_trade().
+            strategy_id=signal.strategy_id,
         )
     
     async def _apply_rules(

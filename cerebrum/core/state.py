@@ -43,6 +43,10 @@ class TradeRecord:
     signal_snapshot: dict[str, Any]
     regime: str
     status: str
+    # Bug fix (Session 7): strategy_id added for multi-strategy P&L attribution.
+    # Optional with None default so existing call-sites and test fixtures that
+    # construct TradeRecord without this field continue to work unchanged.
+    strategy_id: str | None = None
 
 
 @dataclass
@@ -134,6 +138,15 @@ class StateManager:
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_trades_symbol_status ON trades(symbol, status)")
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_trades_regime ON trades(regime)")
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_weight_history_signal ON weight_history(signal_type, regime)")
+        # Bug fix (Session 7): add strategy_id column for multi-strategy attribution.
+        # ALTER TABLE is used (not CREATE TABLE) so that existing production databases
+        # with live trade history gain the column without losing data. The try/except
+        # swallows the "duplicate column" error when running against a DB that was
+        # already migrated (e.g. a second process startup or a test re-run).
+        try:
+            await self._db.execute("ALTER TABLE trades ADD COLUMN strategy_id TEXT")
+        except Exception:
+            pass  # Column already exists — safe to ignore
         await self._db.commit()
 
     async def close(self) -> None:
@@ -147,11 +160,13 @@ class StateManager:
         assert self._db is not None
         cursor = await self._db.execute(
             """INSERT INTO trades (symbol, side, entry_time, entry_price, exit_time, exit_price,
-            quantity, pnl, signal_snapshot, regime, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            quantity, pnl, signal_snapshot, regime, status, strategy_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (trade.symbol, trade.side.value, trade.entry_time, str(trade.entry_price),
              trade.exit_time, str(trade.exit_price) if trade.exit_price else None,
              str(trade.quantity), str(trade.pnl) if trade.pnl else None,
-             json.dumps(trade.signal_snapshot), trade.regime, trade.status)
+             json.dumps(trade.signal_snapshot), trade.regime, trade.status,
+             trade.strategy_id)
         )
         await self._db.commit()
         assert cursor.lastrowid is not None
@@ -182,12 +197,28 @@ class StateManager:
             return self._row_to_trade_record(row) if row else None
 
     async def get_open_trades(self, symbol: Symbol | None = None) -> list[TradeRecord]:
-        """Get all open trades, optionally filtered by symbol."""
+        """Get all open trades, optionally filtered by symbol.
+
+        Results are always ordered by entry_time ASC so that FIFO matching
+        in TradeTracker._on_fill() reliably picks the oldest open trade
+        via open_trades[0].
+
+        Bug fix (Session 7): the previous queries had no ORDER BY clause.
+        SQLite returns rows in an unspecified order without it, which meant
+        FIFO matching was non-deterministic and could close the wrong trade
+        when multiple open positions existed for the same symbol.
+        """
         assert self._db is not None
         if symbol:
-            query, params = "SELECT * FROM trades WHERE status = 'OPEN' AND symbol = ?", (symbol,)
+            query, params = (
+                "SELECT * FROM trades WHERE status = 'OPEN' AND symbol = ? ORDER BY entry_time ASC",
+                (symbol,),
+            )
         else:
-            query, params = "SELECT * FROM trades WHERE status = 'OPEN'", ()
+            query, params = (
+                "SELECT * FROM trades WHERE status = 'OPEN' ORDER BY entry_time ASC",
+                (),
+            )
         async with self._db.execute(query, params) as cursor:
             return [self._row_to_trade_record(row) for row in await cursor.fetchall()]
 
@@ -204,13 +235,24 @@ class StateManager:
             return [self._row_to_trade_record(row) for row in await cursor.fetchall()]
 
     def _row_to_trade_record(self, row: aiosqlite.Row) -> TradeRecord:
-        """Convert database row to TradeRecord."""
+        """Convert database row to TradeRecord.
+
+        strategy_id is read via dict(row) so that rows from older databases
+        that pre-date the ALTER TABLE migration return None rather than raising
+        an IndexError.
+        """
+        row_dict = dict(row)
         return TradeRecord(
-            id=row["id"], symbol=row["symbol"], side=Side(row["side"]),
-            entry_time=row["entry_time"], entry_price=Decimal(row["entry_price"]),
-            exit_time=row["exit_time"], exit_price=Decimal(row["exit_price"]) if row["exit_price"] else None,
-            quantity=Decimal(row["quantity"]), pnl=Decimal(row["pnl"]) if row["pnl"] else None,
-            signal_snapshot=json.loads(row["signal_snapshot"]), regime=row["regime"], status=row["status"]
+            id=row_dict["id"], symbol=row_dict["symbol"], side=Side(row_dict["side"]),
+            entry_time=row_dict["entry_time"], entry_price=Decimal(row_dict["entry_price"]),
+            exit_time=row_dict["exit_time"],
+            exit_price=Decimal(row_dict["exit_price"]) if row_dict["exit_price"] else None,
+            quantity=Decimal(row_dict["quantity"]),
+            pnl=Decimal(row_dict["pnl"]) if row_dict["pnl"] else None,
+            signal_snapshot=json.loads(row_dict["signal_snapshot"]),
+            regime=row_dict["regime"],
+            status=row_dict["status"],
+            strategy_id=row_dict.get("strategy_id"),
         )
 
     async def save_signal_score(self, score: SignalScore) -> None:

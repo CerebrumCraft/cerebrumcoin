@@ -18,7 +18,7 @@ from decimal import Decimal
 import structlog
 
 from cerebrum.core.bus import EventBus
-from cerebrum.core.events import FillEvent, OrderEvent, TradeClosedEvent, TradeOpenedEvent
+from cerebrum.core.events import FillEvent, OrderEvent, RegimeChangeEvent, TradeClosedEvent, TradeOpenedEvent
 from cerebrum.core.state import StateManager, TradeRecord
 from cerebrum.core.types import Side
 
@@ -53,7 +53,22 @@ class TradeTracker:
         from cerebrum.core.types import EventType
         self._bus.subscribe(EventType.ORDER, self._on_order, "trade_tracker_orders")
         self._bus.subscribe(EventType.FILL, self._on_fill, "trade_tracker_fills")
+        # Bug fix (Session 7): subscribe to regime changes so _current_regime stays
+        # current. Without this subscription the tracker initialised with "UNKNOWN"
+        # and never updated it — every trade record was stamped with "UNKNOWN" even
+        # though the regime detector was working correctly.
+        self._bus.subscribe(EventType.REGIME_CHANGE, self._on_regime_change, "trade_tracker_regime")
         self._log.info("trade_tracker_started")
+
+    async def _on_regime_change(self, event: RegimeChangeEvent) -> None:
+        """Update current regime when market regime changes.
+
+        Bug fix (Session 7): without this handler the tracker never updated
+        _current_regime from its initial "UNKNOWN" value, so every trade record
+        was stored with regime="UNKNOWN" regardless of actual market conditions.
+        """
+        self.update_regime(event.to_regime)
+        self._log.info("regime_updated", regime=event.to_regime)
 
     async def _on_order(self, event: OrderEvent) -> None:
         """Capture signal snapshot when order is created."""
@@ -73,12 +88,25 @@ class TradeTracker:
         and "closed" it instead of opening a real long — leaving 18/19 actual long
         trades permanently stuck as OPEN. Fix: skip silently (with a warning) when
         a SELL fill has no matching open BUY trade to close.
+
+        Debug logging (Session 7): log open trade count and matched trade ID on
+        every fill to make FIFO matching decisions observable in session logs.
         """
         # Get signal snapshot from pending orders
         signal_snapshot = self._pending_signals.pop(event.order_id, {})
 
         # Check for open trades to close (FIFO matching)
         open_trades = await self._state.get_open_trades(event.symbol)
+
+        # Session 7 debug: log FIFO matching state for every fill
+        self._log.debug(
+            "fill_received",
+            symbol=event.symbol,
+            side=event.side.value,
+            order_id=event.order_id,
+            open_trade_count=len(open_trades),
+            oldest_open_trade_id=open_trades[0].id if open_trades else None,
+        )
 
         if event.side == Side.BUY:
             if open_trades and open_trades[0].side == Side.SELL:
@@ -90,6 +118,13 @@ class TradeTracker:
         else:  # SELL
             if open_trades and open_trades[0].side == Side.BUY:
                 # Closing a long position (normal exit path)
+                self._log.debug(
+                    "fifo_match_closing",
+                    symbol=event.symbol,
+                    open_trade_id=open_trades[0].id,
+                    entry_price=str(open_trades[0].entry_price),
+                    fill_price=str(event.fill_price),
+                )
                 await self._close_trade(open_trades[0], event)
             else:
                 # No matching open BUY trade — this is an unmatched sell fill.
@@ -118,6 +153,10 @@ class TradeTracker:
             signal_snapshot=signal_snapshot,
             regime=self._current_regime,
             status="OPEN",
+            # Bug fix (Session 7): capture strategy_id from fill so the trade
+            # record can be attributed to the originating strategy for multi-strategy
+            # P&L analysis. getattr guards against callers that pre-date the field.
+            strategy_id=getattr(fill, 'strategy_id', None),
         )
 
         trade_id = await self._state.save_trade(trade)
