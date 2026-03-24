@@ -67,9 +67,9 @@ def config():
 class TestMomentumConfigValues:
     """MOMENTUM_CONFIG matches paper.toml values exactly."""
 
-    def test_initial_balance_is_full_paper_balance(self):
-        """MOMENTUM_CONFIG.initial_balance = $10k (full paper balance)."""
-        assert MOMENTUM_CONFIG.initial_balance == Decimal("10000.0")
+    def test_initial_balance_is_quarter_paper_balance(self):
+        """MOMENTUM_CONFIG.initial_balance = 1/4 of $10k for 4-strategy split."""
+        assert MOMENTUM_CONFIG.initial_balance == Decimal("2500.00")
 
     def test_aggregator_threshold_matches_paper_toml(self):
         """Threshold 0.4 matches paper.toml aggregation_threshold."""
@@ -114,16 +114,16 @@ class TestSingleStrategyPipelineEquivalence:
     to the pre-refactor direct wiring.
     """
 
-    async def test_portfolio_starts_at_full_paper_balance(self, bus, config):
-        """Portfolio balance matches the paper trading initial_balance."""
+    async def test_portfolio_starts_at_quarter_paper_balance(self, bus, config):
+        """Portfolio balance matches MOMENTUM_CONFIG.initial_balance (1/4 of $10k)."""
         registry = StrategyRegistry(bus, config)
         registry.register(MOMENTUM_CONFIG)
         await registry.start_all()
 
         portfolio = registry.get_portfolio("momentum")
         assert portfolio is not None
-        # Full $10k balance — identical to config.paper.initial_balance_usd
-        assert portfolio.get_cash_balance() == Decimal("10000.0")
+        # 1/4 of $10k — equal split across 4 strategies
+        assert portfolio.get_cash_balance() == Decimal("2500.00")
 
     async def test_aggregator_uses_correct_threshold(self, bus, config):
         """Aggregator threshold matches paper.toml aggregation_threshold."""

@@ -214,9 +214,9 @@ class TestStrategyConfigs:
         assert MEAN_REVERSION_CONFIG.name == "mean_reversion"
         assert BREAKOUT_CONFIG.name == "breakout"
 
-    def test_momentum_has_full_balance(self):
-        """MOMENTUM_CONFIG carries full $10k for single-strategy backward compat."""
-        assert MOMENTUM_CONFIG.initial_balance == Decimal("10000.0")
+    def test_momentum_has_quarter_balance(self):
+        """MOMENTUM_CONFIG uses 1/4 of $10k for the 4-strategy equal split."""
+        assert MOMENTUM_CONFIG.initial_balance == Decimal("2500.00")
 
     def test_mean_reversion_and_breakout_have_quarter_balance(self):
         """New strategy configs each start at 1/4 of $10k for 4-way split."""
