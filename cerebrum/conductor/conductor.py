@@ -132,6 +132,13 @@ class Conductor:
         # Track last Opus review date (UTC date string "YYYY-MM-DD")
         self._last_opus_date: str = ""
 
+        # Copilot mode: when True, allocation changes are queued as pending
+        # rather than applied immediately. The dashboard exposes approve/reject
+        # endpoints. A newer proposal overwrites an unresolved one (DEC-DASH-003).
+        self.copilot_mode: bool = False
+        self._pending_allocation: dict[str, Decimal] | None = None
+        self._pending_reasoning: str | None = None
+
         self._running = False
         self._poll_task: asyncio.Task | None = None
 
@@ -187,6 +194,37 @@ class Conductor:
             self._poll_task = None
 
         self._log.info("conductor_stopped")
+
+    # ------------------------------------------------------------------
+    # Copilot mode — human-in-the-loop approval
+    # ------------------------------------------------------------------
+
+    async def approve_pending(self) -> None:
+        """
+        Apply the pending allocation that was queued in copilot mode.
+
+        No-op if there is no pending allocation.
+        """
+        if self._pending_allocation is not None:
+            self._log.info(
+                "copilot_approved",
+                allocations={k: str(v) for k, v in self._pending_allocation.items()},
+            )
+            await self._apply_allocations(self._pending_allocation, _bypass_copilot=True)
+            self._pending_allocation = None
+            self._pending_reasoning = None
+
+    async def reject_pending(self) -> None:
+        """
+        Discard the pending allocation. The last applied allocation remains in force.
+        """
+        if self._pending_allocation is not None:
+            self._log.info(
+                "copilot_rejected",
+                allocations={k: str(v) for k, v in self._pending_allocation.items()},
+            )
+            self._pending_allocation = None
+            self._pending_reasoning = None
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -274,16 +312,39 @@ class Conductor:
     # Allocation application
     # ------------------------------------------------------------------
 
-    async def _apply_allocations(self, allocations: dict[str, Decimal]) -> None:
+    async def _apply_allocations(
+        self,
+        allocations: dict[str, Decimal],
+        _bypass_copilot: bool = False,
+    ) -> None:
         """
         Apply allocation percentages to strategy portfolios.
+
+        When copilot_mode is True (and _bypass_copilot is False), the allocation
+        is queued as pending instead of applied immediately. The human must call
+        approve_pending() via the dashboard to commit the change (DEC-DASH-003).
 
         Calls registry.get_portfolio(name).adjust_balance() to redistribute
         capital. Saves allocations as fallback for API failure recovery.
 
         Args:
             allocations: Dict of strategy_name → allocation_pct (0–100).
+            _bypass_copilot: Internal flag — set True by approve_pending() so
+                             the approval path actually applies the allocation.
         """
+        if self.copilot_mode and not _bypass_copilot:
+            # Queue for human approval — overwrite any previous pending proposal
+            self._pending_allocation = dict(allocations)
+            self._pending_reasoning = (
+                f"Triggered at regime={self._latest_regime} "
+                f"confidence={self._latest_regime_confidence}"
+            )
+            self._log.info(
+                "copilot_allocation_queued",
+                allocations={k: str(v) for k, v in allocations.items()},
+            )
+            return
+
         self._last_allocations = dict(allocations)
         total_capital = self._allocator._total_capital
 
