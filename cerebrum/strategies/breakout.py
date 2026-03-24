@@ -123,7 +123,7 @@ class BreakoutStrategy:
 
 
 # StrategyConfig instance for use with StrategyRegistry (DEC-STRAT-009).
-# Parameters derived from BreakoutStrategy defaults. Capital is 1/3 of $10k.
+# Parameters derived from BreakoutStrategy defaults. Capital is 1/4 of $10k.
 from cerebrum.strategies.base import StrategyConfig  # noqa: E402 (below class def intentional)
 
 BREAKOUT_CONFIG = StrategyConfig(
@@ -148,6 +148,6 @@ BREAKOUT_CONFIG = StrategyConfig(
         "tp_multiplier": "1.5",
         "min_tp_percent": "0.5",
     },
-    initial_balance=Decimal("3333.33"),
+    initial_balance=Decimal("2500.00"),
     symbols=["BTC/USD", "ETH/USD"],
 )

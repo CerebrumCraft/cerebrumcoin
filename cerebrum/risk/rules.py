@@ -658,6 +658,7 @@ class SidewaysSuppressionRule(RiskRule):
         min_range_pct: Decimal,
         window_size: int,
         bus: "EventBus",
+        exempt_strategies: set[str] | None = None,
     ) -> None:
         """
         Initialize SIDEWAYS suppression rule.
@@ -667,10 +668,14 @@ class SidewaysSuppressionRule(RiskRule):
                            in SIDEWAYS regime. BUYs denied when (max-min)/min*100 < this.
             window_size: Number of recent price ticks to consider per symbol.
             bus: Event bus to subscribe to REGIME_CHANGE and MARKET_DATA events.
+            exempt_strategies: Set of strategy_id values that bypass this rule entirely.
+                               Range trading strategies need to trade in SIDEWAYS markets,
+                               so they must be exempted from suppression.
         """
         super().__init__("sideways_suppression")
         self._min_range_pct = min_range_pct
         self._window_size = window_size
+        self._exempt_strategies: set[str] = exempt_strategies or set()
         # Per-symbol regime tracking: symbol -> (regime, confidence)
         self._regimes: dict[str, tuple[str, Decimal]] = {}
         # Per-symbol rolling price windows for range calculation
@@ -728,7 +733,18 @@ class SidewaysSuppressionRule(RiskRule):
         SELL orders are always approved — exits must never be blocked.
         BULL/BEAR regimes are always approved — directional momentum makes TP reachable.
         Cold start (insufficient price data) approves to avoid blocking early trades.
+        Strategies in exempt_strategies bypass this rule — range trading strategies
+        are designed to profit in SIDEWAYS markets and must not be suppressed.
         """
+        # Exempt strategies bypass suppression entirely — range_trading is designed
+        # to operate in SIDEWAYS markets and must not be blocked by this rule.
+        if signal.strategy_id and signal.strategy_id in self._exempt_strategies:
+            return RuleResult(
+                decision=RuleDecision.APPROVE,
+                reason=f"Strategy {signal.strategy_id} exempt from sideways suppression",
+                risk_level=RiskLevel.LOW,
+            )
+
         # Never block exits — allows positions to close even in sideways+low-vol
         if order.side == Side.SELL:
             return RuleResult(
