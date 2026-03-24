@@ -280,3 +280,24 @@ class PortfolioTracker:
     def get_latest_price(self, symbol: Symbol) -> Price | None:
         """Get the latest known price for a symbol."""
         return self._latest_prices.get(symbol)
+
+    def adjust_balance(self, delta: Decimal) -> None:
+        """
+        Adjust cash balance by delta (positive = add, negative = remove).
+
+        Used by the Conductor to redistribute capital between strategy
+        portfolios when Darwinian allocation changes. Also updates peak equity
+        so drawdown calculations remain meaningful after capital injection.
+
+        Args:
+            delta: Amount to add (positive) or remove (negative) from cash.
+        """
+        self._cash_balance += delta
+        new_equity = self.get_total_equity()
+        if new_equity > self._peak_equity:
+            self._peak_equity = new_equity
+        self._log.debug(
+            "balance_adjusted",
+            delta=str(delta),
+            new_cash_balance=str(self._cash_balance),
+        )
