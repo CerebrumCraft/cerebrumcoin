@@ -1,0 +1,592 @@
+"""
+Tests for Phase 11E main.py multi-strategy wiring.
+
+@decision DEC-TEST-MAIN-001
+@title Test strategy_id filtering and config instances with real implementations
+@status accepted
+@rationale Sacred Practice #5: all tests use real implementations. No internal
+mocks. PortfolioTracker, StrategyRegistry, and CerebrumCoin._setup_* methods
+are exercised directly with in-memory EventBus instances and real Config loaded
+from paper.toml. bus.subscribe() calls asyncio.create_task(), so any test that
+constructs PortfolioTracker must run inside an async test (event loop present).
+
+Covers:
+1. PortfolioTracker strategy_id filtering (DEC-RISK-004) — prevents double-
+   counting fills across 3 strategy portfolios on a shared bus.
+2. MEAN_REVERSION_CONFIG and BREAKOUT_CONFIG are valid StrategyConfig instances
+   with correct parameter values.
+3. StrategyRegistry.register() / start_all() / stop_all() lifecycle with all
+   three configs.
+4. CerebrumCoin._setup_single_strategy() wires portfolio, risk_manager,
+   exit_monitor, signal_agg and leaves multi-strategy attrs None.
+5. CerebrumCoin._setup_multi_strategy() starts all three pipelines, sets
+   strategy_registry, allocator, conductor.
+"""
+
+import asyncio
+import uuid
+from decimal import Decimal
+from pathlib import Path
+from time import time
+
+import pytest
+
+from cerebrum.core.bus import EventBus
+from cerebrum.core.events import FillEvent
+from cerebrum.core.types import EventType, Side, SignalType
+from cerebrum.risk.portfolio import PortfolioTracker
+from cerebrum.strategies.base import StrategyConfig
+from cerebrum.strategies.breakout import BREAKOUT_CONFIG
+from cerebrum.strategies.mean_reversion import MEAN_REVERSION_CONFIG
+from cerebrum.strategies.momentum import MOMENTUM_CONFIG
+
+
+# ---------------------------------------------------------------------------
+# Fixtures / factories
+# ---------------------------------------------------------------------------
+
+def _load_config():
+    """Load real config from paper.toml (falls back to default.toml)."""
+    from cerebrum.core.config import Config
+    paper = Path(__file__).parents[2] / "config" / "paper.toml"
+    default = Path(__file__).parents[2] / "config" / "default.toml"
+    return Config.from_toml(paper if paper.exists() else default)
+
+
+def _make_fill(strategy_id: str | None, symbol: str = "BTC/USD") -> FillEvent:
+    """Build a real FillEvent with the given strategy_id."""
+    return FillEvent(
+        event_type=EventType.FILL,
+        timestamp=time(),
+        order_id=str(uuid.uuid4()),
+        symbol=symbol,
+        side=Side.BUY,
+        filled_amount=Decimal("0.1"),
+        fill_price=Decimal("50000"),
+        commission=Decimal("5"),
+        commission_asset="USD",
+        strategy_id=strategy_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# PortfolioTracker strategy_id filtering (DEC-RISK-004)
+# ---------------------------------------------------------------------------
+
+class TestPortfolioTrackerStrategyIdFilter:
+    """strategy_id=None accepts all fills; strategy_id='x' accepts only x's fills."""
+
+    @pytest.mark.asyncio
+    async def test_no_strategy_id_accepts_all_fills(self):
+        bus = EventBus()
+        await bus.start()
+        try:
+            portfolio = PortfolioTracker(bus, initial_balance=Decimal("10000"), strategy_id=None)
+            await bus.publish(_make_fill("momentum"))
+            await asyncio.sleep(0.05)
+            pos = portfolio.get_position("BTC/USD")
+            assert pos is not None, "strategy_id=None tracker must accept all fills"
+            assert pos.amount == Decimal("0.1")
+        finally:
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_matching_strategy_id_accepts_fill(self):
+        bus = EventBus()
+        await bus.start()
+        try:
+            portfolio = PortfolioTracker(bus, initial_balance=Decimal("10000"), strategy_id="momentum")
+            await bus.publish(_make_fill("momentum"))
+            await asyncio.sleep(0.05)
+            pos = portfolio.get_position("BTC/USD")
+            assert pos is not None
+            assert pos.amount == Decimal("0.1")
+        finally:
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_mismatched_strategy_id_ignores_fill(self):
+        bus = EventBus()
+        await bus.start()
+        try:
+            portfolio = PortfolioTracker(bus, initial_balance=Decimal("10000"), strategy_id="mean_reversion")
+            await bus.publish(_make_fill("momentum"))  # different strategy
+            await asyncio.sleep(0.05)
+            pos = portfolio.get_position("BTC/USD")
+            assert pos is None, "Mismatched strategy_id fill must be ignored"
+        finally:
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_three_portfolios_no_cross_contamination(self):
+        """Each of three strategy portfolios processes only its own fills."""
+        bus = EventBus()
+        await bus.start()
+        try:
+            p_momentum = PortfolioTracker(bus, initial_balance=Decimal("3333"), strategy_id="momentum")
+            p_mean_rev = PortfolioTracker(bus, initial_balance=Decimal("3333"), strategy_id="mean_reversion")
+            p_breakout = PortfolioTracker(bus, initial_balance=Decimal("3333"), strategy_id="breakout")
+
+            for name in ("momentum", "mean_reversion", "breakout"):
+                await bus.publish(_make_fill(name))
+            await asyncio.sleep(0.1)
+
+            expected_cash = Decimal("3333") - Decimal("0.1") * Decimal("50000") - Decimal("5")
+            for portfolio, name in (
+                (p_momentum, "momentum"),
+                (p_mean_rev, "mean_reversion"),
+                (p_breakout, "breakout"),
+            ):
+                pos = portfolio.get_position("BTC/USD")
+                assert pos is not None, f"{name}: position must exist"
+                assert pos.amount == Decimal("0.1"), f"{name}: double-counting detected"
+                assert portfolio.get_cash_balance() == expected_cash, (
+                    f"{name}: cash wrong — cross-fill contamination detected"
+                )
+        finally:
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_fill_without_strategy_id_accepted_by_unfiltered_portfolio(self):
+        """Legacy fills without strategy_id are accepted by strategy_id=None portfolio."""
+        bus = EventBus()
+        await bus.start()
+        try:
+            portfolio = PortfolioTracker(bus, initial_balance=Decimal("10000"), strategy_id=None)
+            # No strategy_id keyword — defaults to None
+            fill = FillEvent(
+                event_type=EventType.FILL,
+                timestamp=time(),
+                order_id=str(uuid.uuid4()),
+                symbol="ETH/USD",
+                side=Side.BUY,
+                filled_amount=Decimal("1.0"),
+                fill_price=Decimal("3000"),
+                commission=Decimal("3"),
+                commission_asset="USD",
+            )
+            await bus.publish(fill)
+            await asyncio.sleep(0.05)
+            assert portfolio.get_position("ETH/USD") is not None
+        finally:
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_filtered_portfolio_ignores_fill_with_no_strategy_id(self):
+        """A filtered portfolio ignores fills where strategy_id is absent/None."""
+        bus = EventBus()
+        await bus.start()
+        try:
+            portfolio = PortfolioTracker(bus, initial_balance=Decimal("10000"), strategy_id="momentum")
+            fill = FillEvent(
+                event_type=EventType.FILL,
+                timestamp=time(),
+                order_id=str(uuid.uuid4()),
+                symbol="ETH/USD",
+                side=Side.BUY,
+                filled_amount=Decimal("1.0"),
+                fill_price=Decimal("3000"),
+                commission=Decimal("3"),
+                commission_asset="USD",
+                # strategy_id defaults to None — should be ignored by "momentum" portfolio
+            )
+            await bus.publish(fill)
+            await asyncio.sleep(0.05)
+            assert portfolio.get_position("ETH/USD") is None
+        finally:
+            await bus.stop()
+
+
+# ---------------------------------------------------------------------------
+# Strategy config instances
+# ---------------------------------------------------------------------------
+
+class TestStrategyConfigs:
+    """MOMENTUM_CONFIG, MEAN_REVERSION_CONFIG, BREAKOUT_CONFIG correctness."""
+
+    def test_all_are_strategy_config_instances(self):
+        for cfg in (MOMENTUM_CONFIG, MEAN_REVERSION_CONFIG, BREAKOUT_CONFIG):
+            assert isinstance(cfg, StrategyConfig), f"{cfg.name} must be a StrategyConfig"
+
+    def test_correct_names(self):
+        assert MOMENTUM_CONFIG.name == "momentum"
+        assert MEAN_REVERSION_CONFIG.name == "mean_reversion"
+        assert BREAKOUT_CONFIG.name == "breakout"
+
+    def test_momentum_has_full_balance(self):
+        """MOMENTUM_CONFIG carries full $10k for single-strategy backward compat."""
+        assert MOMENTUM_CONFIG.initial_balance == Decimal("10000.0")
+
+    def test_mean_reversion_and_breakout_have_third_balance(self):
+        """New strategy configs each start at ~1/3 of $10k for 3-way split."""
+        assert MEAN_REVERSION_CONFIG.initial_balance == Decimal("3333.33")
+        assert BREAKOUT_CONFIG.initial_balance == Decimal("3333.33")
+
+    def test_mean_reversion_has_tighter_tp(self):
+        """Mean reversion targets small range-bound moves."""
+        assert MEAN_REVERSION_CONFIG.exit_config["take_profit_percent"] == "1.5"
+
+    def test_breakout_has_wider_tp(self):
+        """Breakout rides trend moves — needs wider TP."""
+        assert BREAKOUT_CONFIG.exit_config["take_profit_percent"] == "4.0"
+
+    def test_mean_reversion_threshold_lower_than_momentum(self):
+        """Range-bound signals are inherently weaker; lower threshold needed."""
+        assert MEAN_REVERSION_CONFIG.aggregator_threshold < MOMENTUM_CONFIG.aggregator_threshold
+
+    def test_breakout_threshold_higher_than_momentum(self):
+        """Breakout requires strong conviction to avoid false breakouts."""
+        assert BREAKOUT_CONFIG.aggregator_threshold > MOMENTUM_CONFIG.aggregator_threshold
+
+    def test_all_have_btc_eth_symbols(self):
+        for cfg in (MOMENTUM_CONFIG, MEAN_REVERSION_CONFIG, BREAKOUT_CONFIG):
+            assert "BTC/USD" in cfg.symbols
+            assert "ETH/USD" in cfg.symbols
+
+    def test_all_have_technical_weight(self):
+        for cfg in (MOMENTUM_CONFIG, MEAN_REVERSION_CONFIG, BREAKOUT_CONFIG):
+            assert SignalType.TECHNICAL in cfg.aggregator_weights
+
+    def test_configs_are_immutable(self):
+        """frozen=True prevents accidental runtime mutation via normal attribute assignment."""
+        # Python's frozen dataclass raises FrozenInstanceError (subclass of AttributeError)
+        # on normal attribute assignment. We test that — not object.__setattr__ which bypasses.
+        with pytest.raises(AttributeError):
+            MEAN_REVERSION_CONFIG.aggregator_threshold = Decimal("0.99")  # type: ignore[misc]
+
+    def test_breakout_config_independent_of_mean_reversion(self):
+        """Configs are separate objects — mutating one does not affect the other."""
+        assert BREAKOUT_CONFIG.name != MEAN_REVERSION_CONFIG.name
+        assert BREAKOUT_CONFIG.aggregator_threshold != MEAN_REVERSION_CONFIG.aggregator_threshold
+
+
+# ---------------------------------------------------------------------------
+# StrategyRegistry lifecycle with all three configs
+# ---------------------------------------------------------------------------
+
+class TestStrategyRegistryAllConfigs:
+    """Registry starts, accesses, and stops all three strategy pipelines."""
+
+    def _three_equal_configs(self) -> list[StrategyConfig]:
+        """Return three StrategyConfig instances with equal $3333 balances."""
+        return [
+            StrategyConfig(
+                name="momentum",
+                aggregator_weights=MOMENTUM_CONFIG.aggregator_weights,
+                aggregator_threshold=MOMENTUM_CONFIG.aggregator_threshold,
+                risk_overrides=MOMENTUM_CONFIG.risk_overrides,
+                exit_config=MOMENTUM_CONFIG.exit_config,
+                initial_balance=Decimal("3333.33"),
+                symbols=MOMENTUM_CONFIG.symbols,
+            ),
+            MEAN_REVERSION_CONFIG,
+            BREAKOUT_CONFIG,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_register_all_three(self):
+        from cerebrum.strategies.registry import StrategyRegistry
+        bus = EventBus()
+        config = _load_config()
+        registry = StrategyRegistry(bus=bus, config=config)
+        for cfg in self._three_equal_configs():
+            registry.register(cfg)
+        assert set(registry.list_strategies()) == {"momentum", "mean_reversion", "breakout"}
+
+    @pytest.mark.asyncio
+    async def test_start_all_creates_pipelines(self):
+        from cerebrum.strategies.registry import StrategyRegistry
+        bus = EventBus()
+        await bus.start()
+        try:
+            config = _load_config()
+            registry = StrategyRegistry(bus=bus, config=config)
+            for cfg in self._three_equal_configs():
+                registry.register(cfg)
+            await registry.start_all(shared_global_rules=[])
+            assert set(registry.active_strategy_names()) == {"momentum", "mean_reversion", "breakout"}
+        finally:
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_each_strategy_gets_own_portfolio(self):
+        from cerebrum.strategies.registry import StrategyRegistry
+        bus = EventBus()
+        await bus.start()
+        try:
+            config = _load_config()
+            registry = StrategyRegistry(bus=bus, config=config)
+            for cfg in self._three_equal_configs():
+                registry.register(cfg)
+            await registry.start_all()
+
+            portfolios = [registry.get_portfolio(n) for n in ("momentum", "mean_reversion", "breakout")]
+            assert all(p is not None for p in portfolios), "All portfolios must exist"
+            # Each portfolio is a distinct object
+            assert portfolios[0] is not portfolios[1]
+            assert portfolios[1] is not portfolios[2]
+            assert portfolios[0] is not portfolios[2]
+        finally:
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_global_portfolio_sums_balances(self):
+        from cerebrum.strategies.registry import StrategyRegistry
+        bus = EventBus()
+        await bus.start()
+        try:
+            config = _load_config()
+            registry = StrategyRegistry(bus=bus, config=config)
+            for cfg in self._three_equal_configs():
+                registry.register(cfg)
+            await registry.start_all()
+
+            gp = registry.global_portfolio
+            total = gp.get_total_equity()
+            expected = Decimal("3333.33") * 3
+            assert total == expected
+        finally:
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_all_clears_pipelines(self):
+        from cerebrum.strategies.registry import StrategyRegistry
+        bus = EventBus()
+        await bus.start()
+        try:
+            config = _load_config()
+            registry = StrategyRegistry(bus=bus, config=config)
+            for cfg in self._three_equal_configs():
+                registry.register(cfg)
+            await registry.start_all()
+            assert len(registry.active_strategy_names()) == 3
+            await registry.stop_all()
+            assert len(registry.active_strategy_names()) == 0
+        finally:
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_registration_raises(self):
+        from cerebrum.strategies.registry import StrategyRegistry
+        bus = EventBus()
+        config = _load_config()
+        registry = StrategyRegistry(bus=bus, config=config)
+        registry.register(MEAN_REVERSION_CONFIG)
+        with pytest.raises(ValueError, match="already registered"):
+            registry.register(MEAN_REVERSION_CONFIG)
+
+    @pytest.mark.asyncio
+    async def test_per_strategy_portfolios_filtered_by_strategy_id(self):
+        """After start_all, each portfolio only sees its own fills (DEC-RISK-004)."""
+        from cerebrum.strategies.registry import StrategyRegistry
+        bus = EventBus()
+        await bus.start()
+        try:
+            config = _load_config()
+            registry = StrategyRegistry(bus=bus, config=config)
+            for cfg in self._three_equal_configs():
+                registry.register(cfg)
+            await registry.start_all()
+
+            # Publish one fill tagged "momentum"
+            await bus.publish(_make_fill("momentum"))
+            await asyncio.sleep(0.1)
+
+            # Only momentum portfolio should have a position
+            assert registry.get_portfolio("momentum").get_position("BTC/USD") is not None
+            assert registry.get_portfolio("mean_reversion").get_position("BTC/USD") is None
+            assert registry.get_portfolio("breakout").get_position("BTC/USD") is None
+        finally:
+            await bus.stop()
+
+
+# ---------------------------------------------------------------------------
+# CerebrumCoin._setup_single_strategy
+# ---------------------------------------------------------------------------
+
+class TestSetupSingleStrategy:
+    """Single-strategy path wires the legacy pipeline, leaves multi-strategy attrs None."""
+
+    @pytest.mark.asyncio
+    async def test_wires_portfolio_risk_manager_exit_monitor_signal_agg(self):
+        from cerebrum.main import CerebrumCoin
+        bus = EventBus()
+        await bus.start()
+        try:
+            config = _load_config()
+            app = CerebrumCoin(config)
+            app.bus = bus
+            app._setup_single_strategy()
+
+            assert app.portfolio is not None
+            assert app.risk_manager is not None
+            assert app.exit_monitor is not None
+            assert app.signal_agg is not None
+        finally:
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_multi_strategy_attrs_remain_none(self):
+        from cerebrum.main import CerebrumCoin
+        bus = EventBus()
+        await bus.start()
+        try:
+            config = _load_config()
+            app = CerebrumCoin(config)
+            app.bus = bus
+            app._setup_single_strategy()
+
+            assert app.strategy_registry is None
+            assert app.allocator is None
+            assert app.conductor is None
+            assert app.web_dashboard is None
+        finally:
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_portfolio_accepts_all_fills_no_strategy_id_filter(self):
+        """Single-strategy portfolio uses strategy_id=None — accepts every fill."""
+        from cerebrum.main import CerebrumCoin
+        bus = EventBus()
+        await bus.start()
+        try:
+            config = _load_config()
+            app = CerebrumCoin(config)
+            app.bus = bus
+            app._setup_single_strategy()
+
+            assert app.portfolio._strategy_id is None
+        finally:
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_portfolio_initial_balance_matches_config(self):
+        from cerebrum.main import CerebrumCoin
+        bus = EventBus()
+        await bus.start()
+        try:
+            config = _load_config()
+            app = CerebrumCoin(config)
+            app.bus = bus
+            app._setup_single_strategy()
+
+            expected = Decimal(str(config.paper.initial_balance_usd))
+            assert app.portfolio.get_cash_balance() == expected
+        finally:
+            await bus.stop()
+
+
+# ---------------------------------------------------------------------------
+# CerebrumCoin._setup_multi_strategy
+# ---------------------------------------------------------------------------
+
+class TestSetupMultiStrategy:
+    """Multi-strategy path starts all three pipelines, sets registry/allocator/conductor."""
+
+    @pytest.mark.asyncio
+    async def test_registry_allocator_conductor_created(self):
+        from cerebrum.main import CerebrumCoin
+        bus = EventBus()
+        await bus.start()
+        try:
+            config = _load_config()
+            app = CerebrumCoin(config)
+            app.bus = bus
+            await app._setup_multi_strategy()
+
+            assert app.strategy_registry is not None
+            assert app.allocator is not None
+            assert app.conductor is not None
+        finally:
+            if app.conductor:
+                await app.conductor.stop()
+            if app.web_dashboard:
+                await app.web_dashboard.stop()
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_all_three_pipelines_active(self):
+        from cerebrum.main import CerebrumCoin
+        bus = EventBus()
+        await bus.start()
+        try:
+            config = _load_config()
+            app = CerebrumCoin(config)
+            app.bus = bus
+            await app._setup_multi_strategy()
+
+            active = set(app.strategy_registry.active_strategy_names())
+            assert active == {"momentum", "mean_reversion", "breakout"}
+        finally:
+            if app.conductor:
+                await app.conductor.stop()
+            if app.web_dashboard:
+                await app.web_dashboard.stop()
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_single_strategy_attrs_remain_none_in_multi_mode(self):
+        """Multi-strategy setup must not populate legacy single-strategy attrs."""
+        from cerebrum.main import CerebrumCoin
+        bus = EventBus()
+        await bus.start()
+        try:
+            config = _load_config()
+            app = CerebrumCoin(config)
+            app.bus = bus
+            await app._setup_multi_strategy()
+
+            assert app.portfolio is None
+            assert app.risk_manager is None
+            assert app.exit_monitor is None
+            assert app.signal_agg is None
+        finally:
+            if app.conductor:
+                await app.conductor.stop()
+            if app.web_dashboard:
+                await app.web_dashboard.stop()
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_allocator_knows_all_three_strategies(self):
+        from cerebrum.main import CerebrumCoin
+        bus = EventBus()
+        await bus.start()
+        try:
+            config = _load_config()
+            app = CerebrumCoin(config)
+            app.bus = bus
+            await app._setup_multi_strategy()
+
+            assert set(app.allocator._strategies) == {"momentum", "mean_reversion", "breakout"}
+        finally:
+            if app.conductor:
+                await app.conductor.stop()
+            if app.web_dashboard:
+                await app.web_dashboard.stop()
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_web_dashboard_created_if_fastapi_available(self):
+        """WebDashboard is created when fastapi is installed; None otherwise."""
+        from cerebrum.main import CerebrumCoin
+        bus = EventBus()
+        await bus.start()
+        try:
+            config = _load_config()
+            app = CerebrumCoin(config)
+            app.bus = bus
+            await app._setup_multi_strategy()
+
+            try:
+                from cerebrum.dashboard.web import WebDashboard
+                assert app.web_dashboard is not None
+                assert isinstance(app.web_dashboard, WebDashboard)
+            except ImportError:
+                assert app.web_dashboard is None
+        finally:
+            if app.web_dashboard:
+                await app.web_dashboard.stop()
+            if app.conductor:
+                await app.conductor.stop()
+            await bus.stop()

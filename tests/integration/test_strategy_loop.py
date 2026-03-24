@@ -36,29 +36,32 @@ async def test_full_strategy_loop():
     try:
         # Setup components
         candle_agg = CandleAggregator(bus, interval_seconds=5, window_size=50)
-        
+
         portfolio = PortfolioTracker(bus, initial_balance=Decimal("10000.0"))
-        
+
         signal_agg = SignalAggregator(
             bus,
             threshold=Decimal("0.3"),
             window_seconds=5,
         )
-        
+
         risk_rules = [
             PositionSizingRule(position_size_percent=Decimal("2.0")),
             MinSignalStrengthRule(min_strength=Decimal("0.3")),
         ]
         risk_manager = RiskManager(bus, portfolio, rules=risk_rules)
-        
+
         from pathlib import Path
+        state_file = Path("/tmp/test_paper_state.json")
+        # Remove stale state so each run starts fresh
+        state_file.unlink(missing_ok=True)
         paper_adapter = PaperTradingAdapter(
             bus,
             {},
             initial_balance=Decimal("10000.0"),
             commission_percent=Decimal("0.1"),
             slippage_percent=Decimal("0.05"),
-            state_file=Path("/tmp/test_paper_state.json"),
+            state_file=state_file,
         )
         await paper_adapter.connect()
         
@@ -167,15 +170,18 @@ async def test_strategy_loop_rejects_weak_signals():
         
         risk_rules = [MinSignalStrengthRule(min_strength=Decimal("0.5"))]
         risk_manager = RiskManager(bus, portfolio, rules=risk_rules)
-        
+
         from pathlib import Path
+        state_file = Path("/tmp/test_paper_state2.json")
+        # Remove stale state so each run starts fresh
+        state_file.unlink(missing_ok=True)
         paper_adapter = PaperTradingAdapter(
             bus,
             {},
             initial_balance=Decimal("10000.0"),
             commission_percent=Decimal("0.1"),
             slippage_percent=Decimal("0.05"),
-            state_file=Path("/tmp/test_paper_state2.json"),
+            state_file=state_file,
         )
         await paper_adapter.connect()
         

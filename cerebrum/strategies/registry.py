@@ -278,10 +278,11 @@ class StrategyRegistry:
             strategy_id=cfg.name,
         )
 
-        # --- PortfolioTracker ---
+        # --- PortfolioTracker (strategy_id-filtered — DEC-RISK-004) ---
         portfolio = PortfolioTracker(
             bus=self._bus,
             initial_balance=cfg.initial_balance,
+            strategy_id=cfg.name,
         )
 
         # --- ExitMonitor — apply exit_config overrides ---

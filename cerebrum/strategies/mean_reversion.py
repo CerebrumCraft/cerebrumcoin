@@ -12,6 +12,16 @@ indicators like MACD. Tighter take-profit targets since price moves are smaller.
 (session 5). Mean reversion explicitly configures the system for range-bound
 conditions: boost BB/RSI weights, suppress MACD, use tighter TP, and enable
 support/resistance signals for bounce detection.
+
+@decision DEC-STRAT-008
+@title MEAN_REVERSION_CONFIG as StrategyConfig for StrategyRegistry wiring
+@status accepted
+@rationale The StrategyRegistry expects StrategyConfig instances (pure data
+objects). MeanReversionStrategy was implemented as a custom dataclass — useful
+for documentation but not directly consumable by the registry. MEAN_REVERSION_CONFIG
+bridges the two: it extracts the tuned parameters from MeanReversionStrategy and
+packages them as a StrategyConfig. Capital allocation is 1/3 of $10k ($3,333) for
+equal-split 3-strategy mode.
 """
 
 from dataclasses import dataclass, field
@@ -102,3 +112,35 @@ class MeanReversionStrategy:
             weights[SignalType.SENTIMENT] = weights[SignalType.SENTIMENT] * Decimal("0.5")
 
         return weights
+
+
+# StrategyConfig instance for use with StrategyRegistry (DEC-STRAT-008).
+# Parameters derived from MeanReversionStrategy defaults tuned through Session 6.
+# Capital is 1/3 of $10k — the 3-strategy equal-split starting point.
+from cerebrum.strategies.base import StrategyConfig  # noqa: E402 (below class def intentional)
+
+MEAN_REVERSION_CONFIG = StrategyConfig(
+    name="mean_reversion",
+    aggregator_weights={
+        SignalType.TECHNICAL: Decimal("1.2"),
+        SignalType.SENTIMENT: Decimal("0.3"),
+        SignalType.NEWS: Decimal("0.2"),
+        SignalType.REGIME: Decimal("0.5"),
+    },
+    aggregator_threshold=Decimal("0.3"),
+    risk_overrides={
+        "min_signal_strength": "0.5",
+        "position_size_percent": "3.0",
+        "post_fill_cooldown_seconds": 600,
+    },
+    exit_config={
+        "stop_loss_percent": "1.0",
+        "take_profit_percent": "1.5",
+        "max_position_age_minutes": 90,
+        "adaptive_tp": True,
+        "tp_multiplier": "1.2",
+        "min_tp_percent": "0.2",
+    },
+    initial_balance=Decimal("3333.33"),
+    symbols=["BTC/USD", "ETH/USD"],
+)
