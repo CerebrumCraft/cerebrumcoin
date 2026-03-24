@@ -147,3 +147,106 @@ def test_event_with_metadata():
     )
 
     assert event.metadata == metadata
+
+
+# ---------------------------------------------------------------------------
+# Tests: strategy_id on SignalEvent, OrderEvent, FillEvent (multi-strategy prep)
+# ---------------------------------------------------------------------------
+
+
+def test_signal_event_strategy_id_defaults_to_none():
+    """SignalEvent without strategy_id must default to None (backward compat)."""
+    event = SignalEvent(
+        event_type=EventType.SIGNAL,
+        timestamp=time(),
+        signal_type=SignalType.TECHNICAL,
+        symbol="BTC/USD",
+        action=SignalAction.BUY,
+        strength=Decimal("0.8"),
+        confidence=Decimal("0.9"),
+    )
+
+    assert event.strategy_id is None
+
+
+def test_signal_event_strategy_id_set():
+    """SignalEvent must carry an explicit strategy_id when provided."""
+    event = SignalEvent(
+        event_type=EventType.SIGNAL,
+        timestamp=time(),
+        signal_type=SignalType.TECHNICAL,
+        symbol="BTC/USD",
+        action=SignalAction.BUY,
+        strength=Decimal("0.8"),
+        confidence=Decimal("0.9"),
+        strategy_id="momentum",
+    )
+
+    assert event.strategy_id == "momentum"
+
+
+def test_order_event_strategy_id_propagation():
+    """OrderEvent must carry strategy_id for downstream routing."""
+    event = OrderEvent(
+        event_type=EventType.ORDER,
+        timestamp=time(),
+        order_id="order_456",
+        symbol="ETH/USD",
+        side=Side.BUY,
+        order_type=OrderType.MARKET,
+        amount=Decimal("1.0"),
+        strategy_id="mean_reversion",
+    )
+
+    assert event.strategy_id == "mean_reversion"
+
+
+def test_order_event_strategy_id_none_by_default():
+    """OrderEvent without strategy_id must default to None."""
+    event = OrderEvent(
+        event_type=EventType.ORDER,
+        timestamp=time(),
+        order_id="order_789",
+        symbol="BTC/USD",
+        side=Side.SELL,
+        order_type=OrderType.MARKET,
+        amount=Decimal("0.05"),
+    )
+
+    assert event.strategy_id is None
+
+
+def test_fill_event_strategy_id_propagation():
+    """FillEvent must carry strategy_id so downstream consumers can route by strategy."""
+    event = FillEvent(
+        event_type=EventType.FILL,
+        timestamp=time(),
+        order_id="order_123",
+        symbol="BTC/USD",
+        side=Side.BUY,
+        filled_amount=Decimal("0.1"),
+        fill_price=Decimal("50000.0"),
+        commission=Decimal("5.0"),
+        commission_asset="USD",
+        exchange_order_id="kraken_789",
+        strategy_id="momentum",
+    )
+
+    assert event.strategy_id == "momentum"
+
+
+def test_fill_event_strategy_id_none_by_default():
+    """FillEvent without strategy_id must default to None (backward compat)."""
+    event = FillEvent(
+        event_type=EventType.FILL,
+        timestamp=time(),
+        order_id="order_999",
+        symbol="ETH/USD",
+        side=Side.SELL,
+        filled_amount=Decimal("0.5"),
+        fill_price=Decimal("3000.0"),
+        commission=Decimal("1.5"),
+        commission_asset="USD",
+    )
+
+    assert event.strategy_id is None

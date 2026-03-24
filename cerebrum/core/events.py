@@ -68,6 +68,7 @@ class SignalEvent(Event):
     stop_loss: Price | None = None
     reason: str | None = None
     metadata: dict[str, Any] | None = None
+    strategy_id: str | None = None  # Optional strategy identifier for multi-strategy routing
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'event_type', EventType.SIGNAL)
@@ -85,6 +86,7 @@ class OrderEvent(Event):
     stop_price: Price | None = None
     status: OrderStatus = OrderStatus.PENDING
     metadata: dict[str, Any] | None = None
+    strategy_id: str | None = None  # Optional strategy identifier for multi-strategy routing
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'event_type', EventType.ORDER)
@@ -102,6 +104,7 @@ class FillEvent(Event):
     commission_asset: str
     exchange_order_id: str | None = None
     metadata: dict[str, Any] | None = None
+    strategy_id: str | None = None  # Optional strategy identifier for multi-strategy routing
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'event_type', EventType.FILL)

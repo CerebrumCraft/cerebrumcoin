@@ -341,3 +341,112 @@ async def test_paper_adapter_state_persistence(bus, temp_state_file):
     assert position2 == position1
 
     await adapter2.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Tests: strategy_id propagation from OrderEvent to FillEvent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_paper_adapter_propagates_strategy_id(bus, temp_state_file):
+    """OrderEvent with strategy_id must produce FillEvent with the same strategy_id."""
+    fills = []
+
+    async def fill_handler(event: FillEvent):
+        fills.append(event)
+
+    bus.subscribe(EventType.FILL, fill_handler, "test_strategy_id_fill_subscriber")
+
+    adapter = PaperTradingAdapter(
+        bus=bus,
+        config={},
+        initial_balance=Decimal("10000.0"),
+        commission_percent=Decimal("0.1"),
+        slippage_percent=Decimal("0.05"),
+        state_file=temp_state_file,
+    )
+
+    await adapter.connect()
+
+    # Seed market price
+    market_event = MarketDataEvent(
+        event_type=EventType.MARKET_DATA,
+        timestamp=time(),
+        symbol="BTC/USD",
+        price=Decimal("50000.0"),
+        volume=Decimal("100.0"),
+    )
+    await bus.publish(market_event)
+    await asyncio.sleep(0.1)
+
+    # Submit order with explicit strategy_id
+    order = OrderEvent(
+        event_type=EventType.ORDER,
+        timestamp=time(),
+        order_id="order_strat_001",
+        symbol="BTC/USD",
+        side=Side.BUY,
+        order_type=OrderType.MARKET,
+        amount=Decimal("0.1"),
+        strategy_id="momentum",
+    )
+    await bus.publish(order)
+    await asyncio.sleep(0.2)
+
+    assert len(fills) == 1
+    assert fills[0].strategy_id == "momentum"
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_paper_adapter_strategy_id_none_when_not_set(bus, temp_state_file):
+    """OrderEvent without strategy_id must produce FillEvent with strategy_id=None."""
+    fills = []
+
+    async def fill_handler(event: FillEvent):
+        fills.append(event)
+
+    bus.subscribe(EventType.FILL, fill_handler, "test_no_strategy_id_fill_subscriber")
+
+    adapter = PaperTradingAdapter(
+        bus=bus,
+        config={},
+        initial_balance=Decimal("10000.0"),
+        commission_percent=Decimal("0.1"),
+        slippage_percent=Decimal("0.05"),
+        state_file=temp_state_file,
+    )
+
+    await adapter.connect()
+
+    # Seed market price
+    market_event = MarketDataEvent(
+        event_type=EventType.MARKET_DATA,
+        timestamp=time(),
+        symbol="BTC/USD",
+        price=Decimal("50000.0"),
+        volume=Decimal("100.0"),
+    )
+    await bus.publish(market_event)
+    await asyncio.sleep(0.1)
+
+    # Submit order without strategy_id (backward-compat path)
+    order = OrderEvent(
+        event_type=EventType.ORDER,
+        timestamp=time(),
+        order_id="order_nostrat_001",
+        symbol="BTC/USD",
+        side=Side.BUY,
+        order_type=OrderType.MARKET,
+        amount=Decimal("0.1"),
+        # strategy_id not provided — should default to None
+    )
+    await bus.publish(order)
+    await asyncio.sleep(0.2)
+
+    assert len(fills) == 1
+    assert fills[0].strategy_id is None
+
+    await adapter.disconnect()

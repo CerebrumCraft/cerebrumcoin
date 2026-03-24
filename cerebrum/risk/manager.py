@@ -14,6 +14,7 @@ rules because the manager is the single choke-point that sees every denial.
 Single-threaded asyncio means no locking is needed for the counter dict.
 """
 
+from dataclasses import replace
 from decimal import Decimal
 from time import time
 from uuid import uuid4
@@ -53,32 +54,48 @@ class RiskManager:
         bus: EventBus,
         portfolio: PortfolioTracker,
         rules: list[RiskRule] | None = None,
+        strategy_id: str | None = None,
     ) -> None:
         """
         Initialize risk manager.
-        
+
         Args:
             bus: Event bus
             portfolio: Portfolio tracker
             rules: List of risk rules to apply
+            strategy_id: Optional strategy identifier. When set, _on_signal
+                         filters out COMBINED signals whose strategy_id does not
+                         match, ensuring each strategy's RiskManager only acts on
+                         signals from its own aggregator (DEC-STRAT-005).
+                         None (default) processes all COMBINED signals — backward
+                         compatible with single-strategy and legacy callers.
         """
         self._bus = bus
         self._portfolio = portfolio
         self._rules = rules or []
-        self._log = logger.bind(component="risk_manager")
+        # DEC-STRAT-005: strategy_id used to filter COMBINED signals in _on_signal.
+        self._strategy_id = strategy_id
+        self._log = logger.bind(
+            component="risk_manager",
+            **({"strategy_id": strategy_id} if strategy_id else {}),
+        )
 
         # Per-rule denial counters — incremented each time a rule returns DENY.
         # Single-threaded asyncio means no lock needed.
         # @decision DEC-DENIAL-001: denial counters for rule observability
         self._denial_counts: dict[str, int] = {}
 
-        # Subscribe to combined signals only
+        # Use strategy-scoped subscriber name to avoid collisions when multiple
+        # RiskManagers share the same bus (multi-strategy mode).
+        subscriber_name = (
+            f"risk_manager_{strategy_id}" if strategy_id else "risk_manager"
+        )
         bus.subscribe(
             EventType.SIGNAL,
             self._on_signal,
-            subscriber_name="risk_manager",
+            subscriber_name=subscriber_name,
         )
-        
+
         self._log.info(
             "risk_manager_initialized",
             rule_count=len(self._rules),
@@ -89,11 +106,19 @@ class RiskManager:
         """Handle signals and apply risk checks."""
         if not isinstance(event, SignalEvent):
             return
-        
+
         # Only process combined signals (output of aggregator)
         if event.signal_type != SignalType.COMBINED:
             return
-        
+
+        # DEC-STRAT-005: strategy_id routing filter.
+        # When this manager owns a specific strategy, only process signals from
+        # that strategy's aggregator. Signals with a different strategy_id belong
+        # to a different pipeline and must be ignored here.
+        # If self._strategy_id is None, process all COMBINED signals (backward compat).
+        if self._strategy_id is not None and event.strategy_id != self._strategy_id:
+            return
+
         # Ignore HOLD and CLOSE actions
         if event.action not in (SignalAction.BUY, SignalAction.SELL):
             return
@@ -195,20 +220,11 @@ class RiskManager:
             elif result.decision == RuleDecision.MODIFY:
                 # Modify order parameters
                 if result.modified_amount is not None:
-                    # Create modified order (OrderEvent is frozen)
-                    current_order = OrderEvent(
-                        event_type=current_order.event_type,
-                        timestamp=current_order.timestamp,
-                        order_id=current_order.order_id,
-                        symbol=current_order.symbol,
-                        side=current_order.side,
-                        order_type=current_order.order_type,
-                        amount=result.modified_amount,
-                        price=current_order.price,
-                        stop_price=current_order.stop_price,
-                        status=current_order.status,
-                        metadata=current_order.metadata,
-                    )
+                    # Create modified order using replace() — forward-compatible with new fields
+                    # @decision DEC-RISK-MGR-002: use dataclasses.replace() for frozen OrderEvent mutation
+                    # Rationale: listing all fields manually breaks whenever a new field is added
+                    # (e.g. strategy_id). replace() copies all unspecified fields automatically.
+                    current_order = replace(current_order, amount=result.modified_amount)
                 
                 self._log.debug(
                     "rule_modified_order",

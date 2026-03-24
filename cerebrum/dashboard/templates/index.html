@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CerebrumCoin — Multi-Strategy Agent Swarm</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg:       #0d0d0d;
+      --bg2:      #141414;
+      --bg3:      #1a1a1a;
+      --border:   #2a2a2a;
+      --text:     #c8c8c8;
+      --dim:      #666;
+      --green:    #00c853;
+      --red:      #ff1744;
+      --yellow:   #ffd600;
+      --orange:   #ff6d00;
+      --blue:     #2979ff;
+      --cyan:     #00e5ff;
+      --purple:   #d500f9;
+      --font:     'Courier New', Courier, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    a { color: var(--cyan); text-decoration: none; }
+
+    /* ── Layout ────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+    }
+    header h1 {
+      font-size: 15px;
+      letter-spacing: 0.12em;
+      color: var(--cyan);
+      text-transform: uppercase;
+    }
+    header .meta { color: var(--dim); font-size: 11px; }
+    .grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      grid-template-rows: auto auto auto;
+      gap: 1px;
+      background: var(--border);
+      padding-bottom: 28px;
+    }
+    .panel {
+      background: var(--bg2);
+      padding: 14px 16px;
+    }
+    .panel-title {
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--dim);
+      margin-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 6px;
+    }
+    .full-width { grid-column: 1 / -1; }
+
+    /* ── Regime badge ───────────────────────────────────────── */
+    #regime-badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 3px;
+      font-size: 12px;
+      font-weight: bold;
+      letter-spacing: 0.1em;
+    }
+    .regime-BULL     { background: var(--green);  color: #000; }
+    .regime-BEAR     { background: var(--red);    color: #fff; }
+    .regime-SIDEWAYS { background: var(--yellow); color: #000; }
+    .regime-VOLATILE { background: var(--orange); color: #000; }
+    .regime-UNKNOWN  { background: var(--dim);    color: #fff; }
+
+    /* ── Confidence meter ───────────────────────────────────── */
+    .confidence-bar-wrap {
+      background: var(--bg3);
+      border-radius: 2px;
+      height: 6px;
+      margin-top: 6px;
+      width: 160px;
+    }
+    #confidence-bar {
+      height: 6px;
+      border-radius: 2px;
+      background: var(--cyan);
+      transition: width 0.4s ease;
+      width: 0%;
+    }
+
+    /* ── Strategy allocation bars ───────────────────────────── */
+    .strategy-row {
+      margin-bottom: 14px;
+      cursor: pointer;
+    }
+    .strategy-row:last-child { margin-bottom: 0; }
+    .strat-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 4px;
+    }
+    .strat-name  { color: var(--cyan); font-weight: bold; font-size: 12px; }
+    .strat-stats { color: var(--dim);  font-size: 11px; }
+    .alloc-bar-wrap {
+      background: var(--bg3);
+      border-radius: 2px;
+      height: 8px;
+    }
+    .alloc-bar {
+      height: 8px;
+      border-radius: 2px;
+      transition: width 0.6s ease;
+    }
+    .strat-details {
+      display: none;
+      margin-top: 8px;
+      padding: 8px;
+      background: var(--bg3);
+      border-left: 2px solid var(--cyan);
+      font-size: 11px;
+    }
+    .strategy-row.expanded .strat-details { display: block; }
+
+    /* ── P&L numbers ────────────────────────────────────────── */
+    .pnl-pos { color: var(--green); }
+    .pnl-neg { color: var(--red); }
+    .pnl-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 3px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .pnl-row:last-child { border-bottom: none; }
+
+    /* ── Equity chart ───────────────────────────────────────── */
+    #equity-chart-wrap { height: 140px; margin-top: 8px; }
+
+    /* ── Denial table ───────────────────────────────────────── */
+    table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    th {
+      color: var(--dim);
+      text-align: left;
+      padding: 3px 6px;
+      border-bottom: 1px solid var(--border);
+    }
+    td { padding: 3px 6px; border-bottom: 1px solid #1e1e1e; }
+    tr:hover td { background: var(--bg3); }
+    .count { color: var(--orange); font-weight: bold; }
+
+    /* ── Conductor log ──────────────────────────────────────── */
+    #conductor-log {
+      max-height: 180px;
+      overflow-y: auto;
+      font-size: 11px;
+    }
+    .log-entry {
+      padding: 5px 6px;
+      border-bottom: 1px solid var(--border);
+    }
+    .log-time { color: var(--dim); float: right; font-size: 10px; }
+
+    /* ── Copilot panel ──────────────────────────────────────── */
+    #copilot-panel { display: none; }
+    #copilot-panel.visible { display: block; }
+    .copilot-alloc {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 8px 0;
+    }
+    .copilot-alloc-item {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      border-radius: 3px;
+      font-size: 12px;
+    }
+    .btn {
+      padding: 6px 16px;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      font-family: var(--font);
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      margin-right: 8px;
+    }
+    .btn-approve { background: var(--green);  color: #000; font-weight: bold; }
+    .btn-reject  { background: var(--red);    color: #fff; font-weight: bold; }
+    .btn-toggle  { background: var(--bg3); color: var(--cyan); border: 1px solid var(--cyan); }
+    .btn-toggle.active { background: var(--cyan); color: #000; }
+
+    /* ── Status bar ─────────────────────────────────────────── */
+    #status-bar {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: var(--bg2);
+      border-top: 1px solid var(--border);
+      padding: 4px 16px;
+      font-size: 11px;
+      color: var(--dim);
+      display: flex;
+      justify-content: space-between;
+    }
+    #ws-status { color: var(--red); }
+    #ws-status.connected { color: var(--green); }
+
+    /* ── Flash animation ────────────────────────────────────── */
+    @keyframes flash-green { 0%,100%{background:transparent} 50%{background:rgba(0,200,83,.15)} }
+    @keyframes flash-red   { 0%,100%{background:transparent} 50%{background:rgba(255,23,68,.15)} }
+    .flash-buy  { animation: flash-green 0.5s ease; }
+    .flash-sell { animation: flash-red   0.5s ease; }
+
+    /* ── Scrollbar ──────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ── Responsive ─────────────────────────────────────────── */
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+      .full-width { grid-column: 1; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ────────────────────────────────────────────── -->
+<header>
+  <h1>CerebrumCoin &mdash; Multi-Strategy Agent Swarm</h1>
+  <div style="display:flex;align-items:center;gap:16px;">
+    <div>
+      <span id="regime-badge" class="regime-UNKNOWN">UNKNOWN</span>
+      <div class="confidence-bar-wrap">
+        <div id="confidence-bar"></div>
+      </div>
+    </div>
+    <button class="btn btn-toggle" id="copilot-toggle-btn"
+            onclick="toggleCopilot()">
+      Copilot: OFF
+    </button>
+    <span class="meta" id="global-equity">$0.00</span>
+  </div>
+</header>
+
+<!-- ── Main grid ─────────────────────────────────────────── -->
+<div class="grid">
+
+  <!-- Strategy Arena -->
+  <div class="panel">
+    <div class="panel-title">Strategy Arena — Capital Allocation</div>
+    <div id="strategy-arena"></div>
+  </div>
+
+  <!-- P&L Panel -->
+  <div class="panel">
+    <div class="panel-title">Portfolio P&amp;L</div>
+    <div id="pnl-panel">
+      <div class="pnl-row">
+        <span style="color:var(--dim)">Global Equity</span>
+        <span id="pnl-global">$0.00</span>
+      </div>
+      <div class="pnl-row">
+        <span style="color:var(--dim)">Drawdown</span>
+        <span id="pnl-drawdown">0.00%</span>
+      </div>
+      <div id="pnl-strategies"></div>
+    </div>
+    <div id="equity-chart-wrap">
+      <canvas id="equity-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Guard Denials -->
+  <div class="panel">
+    <div class="panel-title">Guard Denials</div>
+    <div id="denials-panel">
+      <span style="color:var(--dim)">Loading…</span>
+    </div>
+  </div>
+
+  <!-- Conductor Log -->
+  <div class="panel">
+    <div class="panel-title">Conductor Log</div>
+    <div id="conductor-log"></div>
+  </div>
+
+  <!-- Copilot Panel (full width, shown when copilot mode enabled) -->
+  <div class="panel full-width" id="copilot-panel">
+    <div class="panel-title">Copilot Mode — Pending Allocation</div>
+    <div id="copilot-content"></div>
+    <div style="margin-top:10px;">
+      <button class="btn btn-approve"
+              hx-post="/api/copilot/approve"
+              hx-trigger="click"
+              hx-target="#copilot-content"
+              onclick="handleCopilotApprove()">
+        Approve
+      </button>
+      <button class="btn btn-reject"
+              hx-post="/api/copilot/reject"
+              hx-trigger="click"
+              hx-target="#copilot-content"
+              onclick="handleCopilotReject()">
+        Reject
+      </button>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Status bar ─────────────────────────────────────────── -->
+<div id="status-bar">
+  <span>CerebrumCoin v2 &mdash; Phase 11D</span>
+  <span id="ws-status">WS: disconnected</span>
+  <span id="last-update">—</span>
+</div>
+
+<script>
+// ── Sanitise helper (prevent XSS on any server-sourced strings) ──
+function esc(str) {
+  const d = document.createElement('span');
+  d.textContent = String(str);
+  return d.innerHTML;
+}
+
+// ── State ─────────────────────────────────────────────────
+const state = {
+  copilotMode: false,
+};
+
+// ── Equity Chart ──────────────────────────────────────────
+const ctx = document.getElementById('equity-chart').getContext('2d');
+const equityChart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [{
+      label: 'Equity',
+      data: [],
+      borderColor: '#00e5ff',
+      backgroundColor: 'rgba(0,229,255,0.06)',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      fill: true,
+      tension: 0.3,
+    }]
+  },
+  options: {
+    animation: false,
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { display: false },
+      y: {
+        grid: { color: '#1e1e1e' },
+        ticks: { color: '#666', font: { family: 'Courier New', size: 10 } },
+      }
+    }
+  }
+});
+
+function pushEquityPoint(ts, value) {
+  const label = new Date(ts * 1000).toLocaleTimeString();
+  equityChart.data.labels.push(label);
+  equityChart.data.datasets[0].data.push(value);
+  if (equityChart.data.labels.length > 200) {
+    equityChart.data.labels.shift();
+    equityChart.data.datasets[0].data.shift();
+  }
+  equityChart.update('none');
+}
+
+// ── Colour palette ────────────────────────────────────────
+const STRAT_COLORS = {
+  momentum:       '#00e5ff',
+  mean_reversion: '#d500f9',
+  breakout:       '#ffd600',
+};
+function colorFor(name) { return STRAT_COLORS[name] || '#2979ff'; }
+
+// ── Number formatters ─────────────────────────────────────
+function fmtUsd(val) {
+  const abs = Math.abs(val).toFixed(2);
+  return (val < 0 ? '-$' : '+$') + abs;
+}
+function pnlColor(val) { return val >= 0 ? 'var(--green)' : 'var(--red)'; }
+
+// ── Strategy Arena — built with DOM APIs (no innerHTML of untrusted data) ──
+function buildStrategyRow(name, s) {
+  const pct   = (s.allocation_pct || 0).toFixed(1);
+  const pnl   = s.pnl || 0;
+  const color = colorFor(name);
+
+  const row = document.createElement('div');
+  row.className = 'strategy-row';
+  row.dataset.strategy = name;
+  row.addEventListener('click', () => row.classList.toggle('expanded'));
+
+  // Header
+  const header = document.createElement('div');
+  header.className = 'strat-header';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'strat-name';
+  nameEl.style.color = color;
+  nameEl.textContent = name;
+
+  const statsEl = document.createElement('span');
+  statsEl.className = 'strat-stats';
+  const pnlSpan = document.createElement('span');
+  pnlSpan.style.color = pnlColor(pnl);
+  pnlSpan.textContent = fmtUsd(pnl);
+  statsEl.appendChild(pnlSpan);
+  statsEl.appendChild(document.createTextNode(' | ' + pct + '% capital | $' + (s.equity || 0).toFixed(2)));
+
+  header.appendChild(nameEl);
+  header.appendChild(statsEl);
+
+  // Allocation bar
+  const barWrap = document.createElement('div');
+  barWrap.className = 'alloc-bar-wrap';
+  const bar = document.createElement('div');
+  bar.className = 'alloc-bar';
+  bar.style.width = pct + '%';
+  bar.style.background = color;
+  barWrap.appendChild(bar);
+
+  // Details (collapsed by default)
+  const details = document.createElement('div');
+  details.className = 'strat-details';
+
+  const topD = topDenialText(s.denials);
+  details.textContent =
+    'Cash: $' + (s.cash || 0).toFixed(2) +
+    '  Equity: $' + (s.equity || 0).toFixed(2) +
+    '  P&L: ' + fmtUsd(pnl) +
+    '  Top denial: ' + topD;
+
+  row.appendChild(header);
+  row.appendChild(barWrap);
+  row.appendChild(details);
+  return row;
+}
+
+function topDenialText(denials) {
+  if (!denials || !Object.keys(denials).length) return 'none';
+  const top = Object.entries(denials).sort((a, b) => b[1] - a[1])[0];
+  return top[0] + ': ' + top[1];
+}
+
+function renderStrategies(data) {
+  const arena = document.getElementById('strategy-arena');
+  const pnlStrategies = document.getElementById('pnl-strategies');
+
+  // Clear existing rows
+  while (arena.firstChild) arena.removeChild(arena.firstChild);
+  while (pnlStrategies.firstChild) pnlStrategies.removeChild(pnlStrategies.firstChild);
+
+  const strategies = data.strategies || {};
+  if (!Object.keys(strategies).length) {
+    const msg = document.createElement('span');
+    msg.style.color = 'var(--dim)';
+    msg.textContent = 'No strategies active.';
+    arena.appendChild(msg);
+    return;
+  }
+
+  for (const [name, s] of Object.entries(strategies)) {
+    arena.appendChild(buildStrategyRow(name, s));
+
+    // P&L row
+    const pnl = s.pnl || 0;
+    const row = document.createElement('div');
+    row.className = 'pnl-row';
+    const nameEl = document.createElement('span');
+    nameEl.style.color = colorFor(name);
+    nameEl.textContent = name;
+    const valEl = document.createElement('span');
+    valEl.style.color = pnlColor(pnl);
+    valEl.textContent = fmtUsd(pnl);
+    row.appendChild(nameEl);
+    row.appendChild(valEl);
+    pnlStrategies.appendChild(row);
+  }
+
+  // Global equity + drawdown
+  const ge = data.global_equity || 0;
+  const dd = data.global_drawdown_pct || 0;
+  document.getElementById('global-equity').textContent = '$' + ge.toFixed(2);
+  document.getElementById('pnl-global').textContent = '$' + ge.toFixed(2);
+  const ddEl = document.getElementById('pnl-drawdown');
+  ddEl.textContent = dd.toFixed(2) + '%';
+  ddEl.style.color = dd > 0.1 ? 'var(--red)' : 'var(--dim)';
+}
+
+// ── Denials table — DOM-safe ──────────────────────────────
+function renderDenials(data) {
+  const panel = document.getElementById('denials-panel');
+  while (panel.firstChild) panel.removeChild(panel.firstChild);
+  if (!data || !data.denials || !Object.keys(data.denials).length) {
+    const msg = document.createElement('span');
+    msg.style.color = 'var(--dim)';
+    msg.textContent = 'No denials yet.';
+    panel.appendChild(msg);
+    return;
+  }
+
+  const table = document.createElement('table');
+  const headerRow = document.createElement('tr');
+  ['Strategy', 'Rule', 'Count'].forEach(txt => {
+    const th = document.createElement('th');
+    th.textContent = txt;
+    headerRow.appendChild(th);
+  });
+  table.appendChild(headerRow);
+
+  for (const [strat, rules] of Object.entries(data.denials)) {
+    for (const [rule, count] of Object.entries(rules)) {
+      const tr = document.createElement('tr');
+      const tdS = document.createElement('td');
+      tdS.style.color = colorFor(strat);
+      tdS.textContent = strat;
+      const tdR = document.createElement('td');
+      tdR.textContent = rule;
+      const tdC = document.createElement('td');
+      tdC.className = 'count';
+      tdC.textContent = count;
+      tr.appendChild(tdS);
+      tr.appendChild(tdR);
+      tr.appendChild(tdC);
+      table.appendChild(tr);
+    }
+  }
+  panel.appendChild(table);
+}
+
+// ── Conductor Log — DOM-safe ──────────────────────────────
+function addConductorEntry(action, reasoning, allocations) {
+  const log = document.getElementById('conductor-log');
+  const now = new Date().toLocaleTimeString();
+
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+
+  const timeEl = document.createElement('span');
+  timeEl.className = 'log-time';
+  timeEl.textContent = now;
+
+  const actionEl = document.createElement('span');
+  actionEl.style.color = 'var(--cyan)';
+  actionEl.style.fontWeight = 'bold';
+  actionEl.textContent = action;
+
+  entry.appendChild(timeEl);
+  entry.appendChild(actionEl);
+
+  if (reasoning) {
+    const reasonEl = document.createElement('div');
+    reasonEl.style.color = 'var(--text)';
+    reasonEl.style.marginTop = '2px';
+    reasonEl.textContent = reasoning;
+    entry.appendChild(reasonEl);
+  }
+
+  if (allocations && Object.keys(allocations).length) {
+    const allocEl = document.createElement('div');
+    allocEl.style.color = 'var(--cyan)';
+    allocEl.style.fontSize = '10px';
+    allocEl.style.marginTop = '2px';
+    allocEl.textContent = Object.entries(allocations)
+      .map(([k, v]) => k + ':' + parseFloat(v).toFixed(1) + '%')
+      .join(' ');
+    entry.appendChild(allocEl);
+  }
+
+  log.insertBefore(entry, log.firstChild);
+  while (log.children.length > 10) log.removeChild(log.lastChild);
+}
+
+// ── Regime update ─────────────────────────────────────────
+function updateRegime(regime, confidence) {
+  const badge = document.getElementById('regime-badge');
+  const safeRegime = ['BULL','BEAR','SIDEWAYS','VOLATILE','UNKNOWN'].includes(regime)
+    ? regime : 'UNKNOWN';
+  badge.textContent = safeRegime;
+  badge.className = 'regime-' + safeRegime;
+  const confPct = Math.min(100, Math.max(0, parseFloat(confidence) * 100));
+  document.getElementById('confidence-bar').style.width = confPct + '%';
+}
+
+// ── Copilot mode ──────────────────────────────────────────
+async function toggleCopilot() {
+  try {
+    const resp = await fetch('/api/copilot/toggle', { method: 'POST' });
+    const data = await resp.json();
+    state.copilotMode = data.copilot_mode;
+  } catch(e) {
+    state.copilotMode = !state.copilotMode;
+  }
+  const btn = document.getElementById('copilot-toggle-btn');
+  btn.textContent = 'Copilot: ' + (state.copilotMode ? 'ON' : 'OFF');
+  btn.classList.toggle('active', state.copilotMode);
+  document.getElementById('copilot-panel').classList.toggle('visible', state.copilotMode);
+}
+
+function updateCopilotPanel(pending, reasoning, allocations) {
+  const panel = document.getElementById('copilot-content');
+  while (panel.firstChild) panel.removeChild(panel.firstChild);
+
+  if (!pending) {
+    const msg = document.createElement('span');
+    msg.style.color = 'var(--dim)';
+    msg.textContent = 'No pending proposal.';
+    panel.appendChild(msg);
+    return;
+  }
+
+  if (allocations && Object.keys(allocations).length) {
+    const wrap = document.createElement('div');
+    wrap.className = 'copilot-alloc';
+    for (const [k, v] of Object.entries(allocations)) {
+      const item = document.createElement('div');
+      item.className = 'copilot-alloc-item';
+      item.textContent = k + ': ';
+      const val = document.createElement('span');
+      val.style.color = 'var(--cyan)';
+      val.textContent = parseFloat(v).toFixed(1) + '%';
+      item.appendChild(val);
+      wrap.appendChild(item);
+    }
+    panel.appendChild(wrap);
+  }
+
+  if (reasoning) {
+    const r = document.createElement('div');
+    r.style.color = 'var(--dim)';
+    r.style.fontSize = '11px';
+    r.style.marginTop = '4px';
+    r.textContent = reasoning;
+    panel.appendChild(r);
+  }
+}
+
+function handleCopilotApprove() {
+  addConductorEntry('APPROVED', 'Human approved allocation', null);
+  updateCopilotPanel(false, null, null);
+}
+
+function handleCopilotReject() {
+  addConductorEntry('REJECTED', 'Human rejected allocation', null);
+  updateCopilotPanel(false, null, null);
+}
+
+// ── WebSocket ─────────────────────────────────────────────
+let ws = null;
+let wsReconnectTimer = null;
+
+function connectWS() {
+  const wsUrl = 'ws://' + window.location.host + '/ws';
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = function() {
+    document.getElementById('ws-status').textContent = 'WS: connected';
+    document.getElementById('ws-status').classList.add('connected');
+    if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  };
+
+  ws.onclose = function() {
+    document.getElementById('ws-status').textContent = 'WS: disconnected';
+    document.getElementById('ws-status').classList.remove('connected');
+    wsReconnectTimer = setTimeout(connectWS, 3000);
+  };
+
+  ws.onerror = function() { if (ws) ws.close(); };
+
+  ws.onmessage = function(evt) {
+    let msg;
+    try { msg = JSON.parse(evt.data); } catch(e) { return; }
+    handleWsMessage(msg);
+    document.getElementById('last-update').textContent =
+      'Last: ' + new Date().toLocaleTimeString();
+  };
+}
+
+function handleWsMessage(msg) {
+  switch(msg.type) {
+    case 'init':
+    case 'strategy_update':
+      renderStrategies(msg.data);
+      break;
+
+    case 'regime_change':
+      updateRegime(msg.data.to, msg.data.confidence);
+      addConductorEntry(
+        'REGIME: ' + esc(msg.data.from) + ' \u2192 ' + esc(msg.data.to),
+        'Confidence: ' + parseFloat(msg.data.confidence || 0).toFixed(2),
+        null
+      );
+      break;
+
+    case 'fill': {
+      const side = (msg.data.side || '').toUpperCase();
+      const isBuy = side.includes('BUY');
+      document.body.classList.add(isBuy ? 'flash-buy' : 'flash-sell');
+      setTimeout(() => {
+        document.body.classList.remove('flash-buy', 'flash-sell');
+      }, 600);
+      addConductorEntry(
+        'FILL: ' + esc(side) + ' ' + esc(msg.data.symbol),
+        esc(msg.data.strategy) + ' @ $' + parseFloat(msg.data.price || 0).toFixed(2)
+          + '  qty: ' + parseFloat(msg.data.amount || 0).toFixed(6),
+        null
+      );
+      break;
+    }
+
+    case 'conductor_reasoning':
+      addConductorEntry(
+        esc(msg.data.action || 'conductor'),
+        esc(msg.data.reasoning || ''),
+        msg.data.allocations
+      );
+      if (state.copilotMode && msg.data.action === 'copilot_queued') {
+        updateCopilotPanel(true, msg.data.reasoning, msg.data.allocations);
+      }
+      break;
+
+    case 'guard_denial':
+      fetch('/api/denials')
+        .then(r => r.json())
+        .then(renderDenials)
+        .catch(() => {});
+      break;
+  }
+}
+
+// ── Periodic REST polling (fallback) ──────────────────────
+async function pollStrategies() {
+  try {
+    const r = await fetch('/api/strategies');
+    const data = await r.json();
+    renderStrategies(data);
+  } catch(e) {}
+}
+
+async function pollRegime() {
+  try {
+    const r = await fetch('/api/regime');
+    const data = await r.json();
+    updateRegime(data.regime, data.confidence);
+  } catch(e) {}
+}
+
+async function pollCopilot() {
+  if (!state.copilotMode) return;
+  try {
+    const r = await fetch('/api/copilot/status');
+    const data = await r.json();
+    if (data.has_pending) {
+      updateCopilotPanel(true, data.pending_reasoning, data.pending_allocation);
+    }
+  } catch(e) {}
+}
+
+async function pollDenials() {
+  try {
+    const r = await fetch('/api/denials');
+    const data = await r.json();
+    renderDenials(data);
+  } catch(e) {}
+}
+
+async function pollEquityHistory() {
+  try {
+    const r = await fetch('/api/equity_history');
+    const data = await r.json();
+    for (const pt of (data.history || [])) {
+      pushEquityPoint(pt.ts, pt.equity);
+    }
+  } catch(e) {}
+}
+
+// ── Boot ──────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', async function() {
+  connectWS();
+  await pollStrategies();
+  await pollRegime();
+  await pollDenials();
+  await pollEquityHistory();
+
+  setInterval(pollStrategies, 5000);
+  setInterval(pollRegime, 5000);
+  setInterval(pollDenials, 10000);
+  setInterval(pollCopilot, 3000);
+});
+</script>
+</body>
+</html>

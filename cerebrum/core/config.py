@@ -212,6 +212,18 @@ class SignalConfig(BaseSettings):
         default=5,
         description="Time window for signal aggregation"
     )
+    sr_pivot_lookback: int = Field(
+        default=5,
+        description="Candles on each side to confirm a pivot high/low for S/R detection"
+    )
+    sr_min_touches: int = Field(
+        default=2,
+        description="Minimum touch count for a valid support/resistance level"
+    )
+    sr_proximity_pct: float = Field(
+        default=0.3,
+        description="Price distance (%) to S/R level that triggers a signal"
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="SIGNAL_",

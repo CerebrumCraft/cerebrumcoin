@@ -1,4 +1,15 @@
-"""Tests for learning components."""
+"""
+Tests for learning components.
+
+@decision DEC-TEST-LEARN-001
+@title Test trade tracker lifecycle and sell-fill correlation fix
+@status accepted
+@rationale Covers the Session 6 bug (sell fills creating phantom shorts instead
+of closing matching open BUY trades). Tests prove: (1) BUY fill opens a trade,
+(2) subsequent SELL fill closes it via FIFO matching, (3) unmatched SELL fill is
+silently skipped and does NOT open a phantom SELL record that would corrupt the
+next BUY fill's matching. Real EventBus and in-memory SQLite — no mocks.
+"""
 
 import asyncio
 import tempfile
@@ -298,3 +309,143 @@ async def test_weight_adapter_respects_bounds(event_bus, state_manager):
     # Weight should be clamped to ceiling
     new_weight = updated_weights[(SignalType.TECHNICAL, "BULL")]
     assert new_weight <= Decimal("1.5")
+
+
+# ---------------------------------------------------------------------------
+# Tests: sell fill correlation fix (Session 6 bug)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tracker_sell_fill_closes_matching_buy_trade(event_bus, state_manager):
+    """A SELL fill should close the matching open BUY trade (FIFO).
+
+    This is the core behavior restored by the Session 6 fix: before the fix,
+    an unmatched SELL fill opened a phantom short, which then consumed the
+    next BUY fill and left the real long trade permanently OPEN in the DB.
+    """
+    closed_events = []
+
+    async def capture_closed(event):
+        closed_events.append(event)
+
+    event_bus.subscribe(EventType.TRADE_CLOSED, capture_closed, "test_closed_capture")
+
+    tracker = TradeTracker(event_bus, state_manager, "SIDEWAYS")
+    await tracker.start()
+    await asyncio.sleep(0.05)
+
+    # BUY fill — opens a long trade
+    buy_fill = FillEvent(
+        event_type=EventType.FILL,
+        timestamp=2000.0,
+        order_id="buy_order_1",
+        symbol="BTC/USDT",
+        side=Side.BUY,
+        filled_amount=Decimal("0.2"),
+        fill_price=Decimal("60000"),
+        commission=Decimal("12"),
+        commission_asset="USDT",
+    )
+    await event_bus.publish(buy_fill)
+
+    # Wait for open trade to land in DB
+    for _ in range(20):
+        await asyncio.sleep(0.1)
+        open_trades = await state_manager.get_open_trades("BTC/USDT")
+        if open_trades:
+            break
+
+    assert len(open_trades) == 1, "BUY fill must open a trade"
+    assert open_trades[0].entry_price == Decimal("60000")
+
+    # SELL fill — must close the BUY trade above
+    sell_fill = FillEvent(
+        event_type=EventType.FILL,
+        timestamp=2100.0,
+        order_id="sell_order_1",
+        symbol="BTC/USDT",
+        side=Side.SELL,
+        filled_amount=Decimal("0.2"),
+        fill_price=Decimal("61000"),
+        commission=Decimal("12"),
+        commission_asset="USDT",
+    )
+    await event_bus.publish(sell_fill)
+
+    # Wait for TradeClosedEvent
+    for _ in range(20):
+        await asyncio.sleep(0.1)
+        if closed_events:
+            break
+
+    assert len(closed_events) == 1, "SELL fill must produce one TradeClosedEvent"
+    assert isinstance(closed_events[0], TradeClosedEvent)
+
+    # Trade should be CLOSED in the DB — no open trades remain
+    open_trades_after = await state_manager.get_open_trades("BTC/USDT")
+    assert len(open_trades_after) == 0, "After SELL fill, no open trades should remain"
+
+    closed_trades = await state_manager.get_closed_trades()
+    assert len(closed_trades) == 1
+    assert closed_trades[0].exit_price == Decimal("61000")
+
+
+@pytest.mark.asyncio
+async def test_tracker_unmatched_sell_fill_is_skipped(event_bus, state_manager):
+    """An unmatched SELL fill (no open BUY trade) must be skipped, not create a phantom short.
+
+    Before the Session 6 fix, a SELL fill with no matching open trade would call
+    _open_trade() and create a phantom SELL record. The next BUY fill would then
+    'close' that phantom instead of opening a real long, leaving actual buys stuck
+    as OPEN forever. The fix: emit a warning and return without touching the DB.
+    """
+    tracker = TradeTracker(event_bus, state_manager, "BULL")
+    await tracker.start()
+    await asyncio.sleep(0.05)
+
+    # SELL fill with no preceding BUY — should be silently skipped
+    unmatched_sell = FillEvent(
+        event_type=EventType.FILL,
+        timestamp=3000.0,
+        order_id="orphan_sell_1",
+        symbol="ETH/USDT",
+        side=Side.SELL,
+        filled_amount=Decimal("1.0"),
+        fill_price=Decimal("3500"),
+        commission=Decimal("3.5"),
+        commission_asset="USDT",
+    )
+    await event_bus.publish(unmatched_sell)
+    await asyncio.sleep(0.3)
+
+    # No trades should exist in the DB (no phantom short opened)
+    open_trades = await state_manager.get_open_trades("ETH/USDT")
+    assert len(open_trades) == 0, "Unmatched SELL fill must not create a phantom short trade"
+
+    closed_trades = await state_manager.get_closed_trades()
+    assert len(closed_trades) == 0, "Unmatched SELL fill must not create any closed trade"
+
+    # Now submit a real BUY — it must open a fresh long, not 'close' the phantom
+    real_buy = FillEvent(
+        event_type=EventType.FILL,
+        timestamp=3100.0,
+        order_id="real_buy_1",
+        symbol="ETH/USDT",
+        side=Side.BUY,
+        filled_amount=Decimal("1.0"),
+        fill_price=Decimal("3600"),
+        commission=Decimal("3.6"),
+        commission_asset="USDT",
+    )
+    await event_bus.publish(real_buy)
+
+    for _ in range(20):
+        await asyncio.sleep(0.1)
+        open_trades = await state_manager.get_open_trades("ETH/USDT")
+        if open_trades:
+            break
+
+    assert len(open_trades) == 1, "BUY after unmatched SELL must open a new long trade"
+    assert open_trades[0].side == Side.BUY
+    assert open_trades[0].entry_price == Decimal("3600")
