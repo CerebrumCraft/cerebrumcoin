@@ -11,6 +11,14 @@ The base class handles event bus subscription and data accumulation.
 Base class accumulates MarketDataEvents per symbol, maintaining a sliding window.
 Subclasses implement generate_signal() which receives the accumulated data.
 This enables clean separation: data management in base, indicator logic in subclasses.
+
+@decision DEC-SIGNAL-002
+@title Source metadata injected by _create_signal
+@status accepted
+@rationale Range trading and other strategy aggregators need to filter incoming
+signals by originating generator (e.g., accept only SupportResistance signals).
+Injecting metadata["source"] = self._name in _create_signal() provides this at
+the single common creation point, so every subclass gets it for free.
 """
 
 from abc import ABC, abstractmethod
@@ -168,6 +176,7 @@ class SignalGenerator(ABC):
             strength=strength,
             confidence=confidence,
             reason=reason,
+            metadata={"source": self._name},
         )
 
     def get_data_count(self, symbol: Symbol) -> int:
