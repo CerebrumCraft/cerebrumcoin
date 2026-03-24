@@ -13,6 +13,15 @@ strategy capitalizes on these by boosting trend-following indicators (MACD, VWAP
 using wider TP to ride moves, and activating only when regime confirms a trend.
 Support/resistance signals are used inversely: a break *through* S/R triggers
 entry rather than a bounce off it.
+
+@decision DEC-STRAT-009
+@title BREAKOUT_CONFIG as StrategyConfig for StrategyRegistry wiring
+@status accepted
+@rationale Mirrors DEC-STRAT-008: BreakoutStrategy is a documentation dataclass;
+BREAKOUT_CONFIG is the StrategyConfig the registry consumes. Parameters match
+BreakoutStrategy defaults. Capital allocation is 1/3 of $10k ($3,333) for
+equal-split 3-strategy mode. Wider TP (4%) and SL (2%) reflect trend-following
+conviction and the room breakouts need to breathe before confirming direction.
 """
 
 from dataclasses import dataclass, field
@@ -111,3 +120,34 @@ class BreakoutStrategy:
                 weights[sig_type] = weights[sig_type] * Decimal("0.9")
 
         return weights
+
+
+# StrategyConfig instance for use with StrategyRegistry (DEC-STRAT-009).
+# Parameters derived from BreakoutStrategy defaults. Capital is 1/3 of $10k.
+from cerebrum.strategies.base import StrategyConfig  # noqa: E402 (below class def intentional)
+
+BREAKOUT_CONFIG = StrategyConfig(
+    name="breakout",
+    aggregator_weights={
+        SignalType.TECHNICAL: Decimal("1.3"),
+        SignalType.SENTIMENT: Decimal("0.6"),
+        SignalType.NEWS: Decimal("0.5"),
+        SignalType.REGIME: Decimal("0.9"),
+    },
+    aggregator_threshold=Decimal("0.5"),
+    risk_overrides={
+        "min_signal_strength": "0.6",
+        "position_size_percent": "5.0",
+        "post_fill_cooldown_seconds": 900,
+    },
+    exit_config={
+        "stop_loss_percent": "2.0",
+        "take_profit_percent": "4.0",
+        "max_position_age_minutes": 180,
+        "adaptive_tp": True,
+        "tp_multiplier": "1.5",
+        "min_tp_percent": "0.5",
+    },
+    initial_balance=Decimal("3333.33"),
+    symbols=["BTC/USD", "ETH/USD"],
+)

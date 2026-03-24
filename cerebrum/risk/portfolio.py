@@ -9,6 +9,15 @@ Maintains current positions, balances, and P&L for risk management decisions.
 @rationale Centralized position tracking enables position sizing, exposure limits,
 drawdown detection, and P&L calculations. Subscribes to FillEvents to maintain
 accurate state. Provides query interface for risk rules.
+
+@decision DEC-RISK-004
+@title strategy_id filtering in PortfolioTracker prevents double-counting in multi-strategy mode
+@status accepted
+@rationale In multi-strategy mode, each strategy has its own PortfolioTracker. All
+FillEvents share one event bus, so without filtering every PortfolioTracker would
+process every fill — causing triple-counting of positions and incorrect P&L. When
+strategy_id is provided at construction, _on_fill skips events whose strategy_id
+does not match. None means "accept all" (single-strategy backward compatibility).
 """
 
 import time as time_module
@@ -57,6 +66,7 @@ class PortfolioTracker:
         self,
         bus: EventBus,
         initial_balance: Decimal,
+        strategy_id: str | None = None,
     ) -> None:
         """
         Initialize portfolio tracker.
@@ -64,10 +74,14 @@ class PortfolioTracker:
         Args:
             bus: Event bus
             initial_balance: Starting cash balance
+            strategy_id: When provided, _on_fill ignores FillEvents whose
+                strategy_id does not match. None accepts all fills (single-
+                strategy backward-compatible mode). See DEC-RISK-004.
         """
         self._bus = bus
         self._cash_balance = initial_balance
         self._initial_balance = initial_balance
+        self._strategy_id = strategy_id
         self._positions: dict[Symbol, Position] = {}
         self._peak_equity = initial_balance
         self._total_realized_pnl = Decimal("0.0")
@@ -75,18 +89,33 @@ class PortfolioTracker:
         # Track latest prices for all symbols (needed for market order sizing)
         self._latest_prices: dict[Symbol, Price] = {}
 
-        self._log = logger.bind(component="portfolio_tracker")
+        self._log = logger.bind(
+            component="portfolio_tracker",
+            strategy_id=strategy_id or "global",
+        )
+
+        # Use a unique subscriber name so multiple PortfolioTrackers on the same
+        # bus do not collide. When strategy_id is None the legacy name is preserved
+        # for backward compatibility with tests that assert subscriber counts.
+        fill_sub_name = (
+            f"portfolio_tracker_{strategy_id}" if strategy_id else "portfolio_tracker"
+        )
+        price_sub_name = (
+            f"portfolio_tracker_prices_{strategy_id}"
+            if strategy_id
+            else "portfolio_tracker_prices"
+        )
 
         # Subscribe to fills and market data
         bus.subscribe(
             EventType.FILL,
             self._on_fill,
-            subscriber_name="portfolio_tracker",
+            subscriber_name=fill_sub_name,
         )
         bus.subscribe(
             EventType.MARKET_DATA,
             self._on_market_data,
-            subscriber_name="portfolio_tracker_prices",
+            subscriber_name=price_sub_name,
         )
 
         self._log.info("portfolio_tracker_initialized", initial_balance=str(initial_balance))
@@ -95,6 +124,14 @@ class PortfolioTracker:
         """Handle fill events to update positions."""
         if not isinstance(event, FillEvent):
             return
+
+        # DEC-RISK-004: In multi-strategy mode each PortfolioTracker must only
+        # process fills that belong to its own strategy. strategy_id=None means
+        # accept all (single-strategy backward-compat path).
+        if self._strategy_id is not None:
+            event_sid = getattr(event, "strategy_id", None)
+            if event_sid != self._strategy_id:
+                return
 
         symbol = event.symbol
         filled_amount = event.filled_amount

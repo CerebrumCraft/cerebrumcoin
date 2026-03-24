@@ -9,14 +9,29 @@ Orchestrates the entire trading system: event bus, adapters, signal pipeline.
 @rationale Proper cleanup on Ctrl+C prevents dangling WebSocket connections and ensures
 state persistence. asyncio signal handlers trigger bus.stop() which drains all queues
 before exiting. Paper trading state saves on shutdown.
+
+@decision DEC-MAIN-002
+@title Multi-strategy mode as default with single-strategy fallback
+@status accepted
+@rationale The multi-strategy pipeline (StrategyRegistry + DarwinianAllocator +
+Conductor + WebDashboard) is the Phase 11 target architecture. Single-strategy mode
+is preserved for backward compatibility — it produces behaviour identical to pre-Phase-11
+sessions (same paper.toml tuning, same risk rules). The mode is controlled by the
+CEREBRUM_MULTI_STRATEGY env var (default "true"). Shared global guards (regime halt,
+volatility gate, macro gate, sideways suppression, global rate limit) are constructed
+once and passed to StrategyRegistry.start_all() so they are shared by reference across
+all per-strategy RiskManagers — avoiding duplicate event bus subscriptions for guards
+that observe global market state (DEC-STRAT-003).
 """
 
 import argparse
 import asyncio
+import os
 import signal
 import sys
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -26,6 +41,7 @@ from cerebrum.core.bus import EventBus
 from cerebrum.core.config import Config
 from cerebrum.core.types import EventType, TradingMode
 from cerebrum.risk.exit_monitor import ExitMonitor
+from cerebrum.risk.global_trade_rate import GlobalTradeRateLimitRule
 from cerebrum.risk.manager import RiskManager
 from cerebrum.risk.portfolio import PortfolioTracker
 from cerebrum.risk.rules import (
@@ -59,6 +75,7 @@ from cerebrum.learning.tracker import TradeTracker
 from cerebrum.learning.scorer import SignalScorer
 from cerebrum.learning.adapter import WeightAdapter
 from cerebrum.monitoring.dashboard import Dashboard
+
 
 def _configure_logging(level: str = "INFO") -> None:
     """
@@ -96,7 +113,18 @@ logger = structlog.get_logger()
 
 
 class CerebrumCoin:
-    """Main application controller."""
+    """
+    Main application controller.
+
+    Supports two wiring modes:
+    - Multi-strategy (default): StrategyRegistry + DarwinianAllocator + Conductor
+      + WebDashboard. Three isolated strategy pipelines share global guards.
+    - Single-strategy (legacy): one SignalAggregator + RiskManager + PortfolioTracker,
+      behaviorally identical to pre-Phase-11 sessions. Activated by setting
+      CEREBRUM_MULTI_STRATEGY=false.
+
+    See DEC-MAIN-002 for the rationale.
+    """
 
     def __init__(self, config: Config) -> None:
         """
@@ -107,226 +135,130 @@ class CerebrumCoin:
         """
         self.config = config
         self.bus = EventBus()
+
+        # Shared infrastructure (both modes)
         self.kraken_adapter: KrakenAdapter | None = None
         self.paper_adapter: PaperTradingAdapter | None = None
         self.candle_agg: CandleAggregator | None = None
-        self.portfolio: PortfolioTracker | None = None
-        self.risk_manager: RiskManager | None = None
-        self.exit_monitor: ExitMonitor | None = None
-        self.signal_agg: SignalAggregator | None = None
-        self._signal_generators: list = []
-        self._intelligence_components: list = []
+        self._signal_generators: list[Any] = []
+        self._intelligence_components: list[Any] = []
         self.state_manager: StateManager | None = None
         self.trade_tracker: TradeTracker | None = None
         self.signal_scorer: SignalScorer | None = None
         self.weight_adapter: WeightAdapter | None = None
         self.dashboard: Dashboard | None = None
+
+        # Single-strategy mode components (legacy path)
+        self.portfolio: PortfolioTracker | None = None
+        self.risk_manager: RiskManager | None = None
+        self.exit_monitor: ExitMonitor | None = None
+        self.signal_agg: SignalAggregator | None = None
+
+        # Multi-strategy mode components
+        self.strategy_registry: Any | None = None   # StrategyRegistry
+        self.allocator: Any | None = None            # DarwinianAllocator
+        self.conductor: Any | None = None            # Conductor
+        self.web_dashboard: Any | None = None        # WebDashboard | None
+
         self._shutdown_event = asyncio.Event()
         self._log = logger.bind(component="main")
 
-    async def start(self) -> None:
-        """Start the trading system."""
-        self._log.info("cerebrumcoin_starting", mode=self.config.trading.mode.value)
+    # ------------------------------------------------------------------
+    # Shared setup helpers (both modes)
+    # ------------------------------------------------------------------
 
-        # Start event bus
-        await self.bus.start()
-
-        # Initialize Kraken adapter for market data
-        self.kraken_adapter = KrakenAdapter(
-            self.bus,
-            {
-                "api_key": self.config.exchange.api_key,
-                "api_secret": self.config.exchange.api_secret,
-                "rate_limit_per_minute": self.config.exchange.rate_limit_per_minute,
-            }
-        )
-        await self.kraken_adapter.connect()
-
-        # Initialize execution adapter based on trading mode
-        if self.config.trading.mode == TradingMode.LIVE:
-            self._log.warning(
-                "LIVE_MODE_ACTIVE",
-                message="*** REAL MONEY TRADING ENABLED — Orders will execute on live exchange ***",
-            )
-            # In live mode, Kraken handles both data AND execution
-            self.bus.subscribe(
-                EventType.ORDER,
-                self.kraken_adapter.execute_order,
-                "kraken_live_executor",
-            )
-        else:
-            # Paper mode (default) — use paper adapter for execution
-            self.paper_adapter = PaperTradingAdapter(
-                self.bus,
-                {},
-                initial_balance=self.config.paper.initial_balance_usd,
-                commission_percent=self.config.paper.commission_percent,
-                slippage_percent=self.config.paper.slippage_percent,
-                state_file=self.config.paper.state_file,
-            )
-            await self.paper_adapter.connect()
-
-        # Initialize candle aggregator
-        self.candle_agg = CandleAggregator(
-            self.bus,
-            interval_seconds=self.config.signals.candle_interval_seconds,
-        )
-
-        # Initialize portfolio tracker
-        self.portfolio = PortfolioTracker(
-            self.bus,
-            initial_balance=self.config.paper.initial_balance_usd,
-        )
-
-        # Initialize technical signal generators
-        self._signal_generators = [
+    def _build_signal_generators(self) -> list[Any]:
+        """Build the shared technical signal generators."""
+        config = self.config
+        return [
             RSISignal(
                 self.bus,
                 self.candle_agg,
-                period=self.config.signals.rsi_period,
-                oversold=self.config.signals.rsi_oversold,
-                overbought=self.config.signals.rsi_overbought,
+                period=config.signals.rsi_period,
+                oversold=config.signals.rsi_oversold,
+                overbought=config.signals.rsi_overbought,
             ),
             MACDSignal(
                 self.bus,
                 self.candle_agg,
-                fast=self.config.signals.macd_fast,
-                slow=self.config.signals.macd_slow,
-                signal=self.config.signals.macd_signal,
+                fast=config.signals.macd_fast,
+                slow=config.signals.macd_slow,
+                signal=config.signals.macd_signal,
             ),
             BollingerBandsSignal(
                 self.bus,
                 self.candle_agg,
-                period=self.config.signals.bb_period,
-                std_dev=self.config.signals.bb_std_dev,
+                period=config.signals.bb_period,
+                std_dev=config.signals.bb_std_dev,
             ),
             VWAPSignal(
                 self.bus,
                 self.candle_agg,
-                period=self.config.signals.vwap_period,
+                period=config.signals.vwap_period,
             ),
             SupportResistanceSignal(
                 self.bus,
                 self.candle_agg,
-                pivot_lookback=self.config.signals.sr_pivot_lookback,
-                min_touches=self.config.signals.sr_min_touches,
-                proximity_pct=self.config.signals.sr_proximity_pct,
+                pivot_lookback=config.signals.sr_pivot_lookback,
+                min_touches=config.signals.sr_min_touches,
+                proximity_pct=config.signals.sr_proximity_pct,
             ),
         ]
 
-        # Initialize signal aggregator
-        self.signal_agg = SignalAggregator(
-            self.bus,
-            threshold=self.config.signals.aggregation_threshold,
-            window_seconds=self.config.signals.aggregation_window_seconds,
-            buy_suppression_factor=self.config.regime.buy_suppression_factor,
-            buy_suppression_min_confidence=self.config.regime.buy_suppression_min_confidence,
-        )
+    async def _start_intelligence_components(self) -> None:
+        """Start news, LLM, fear/greed, FinBERT, and regime components."""
+        config = self.config
 
-        # Initialize intelligence layer components
         news_pipeline = NewsIngestionPipeline(
             self.bus,
-            cryptopanic_api_key=self.config.intelligence.cryptopanic_api_key,
-            cryptopanic_poll_interval=self.config.intelligence.cryptopanic_poll_interval_seconds,
-            newsapi_api_key=self.config.intelligence.newsapi_api_key,
-            newsapi_poll_interval=self.config.intelligence.newsapi_poll_interval_seconds,
+            cryptopanic_api_key=config.intelligence.cryptopanic_api_key,
+            cryptopanic_poll_interval=config.intelligence.cryptopanic_poll_interval_seconds,
+            newsapi_api_key=config.intelligence.newsapi_api_key,
+            newsapi_poll_interval=config.intelligence.newsapi_poll_interval_seconds,
         )
         await news_pipeline.start()
         self._intelligence_components.append(news_pipeline)
 
         llm_analyzer = LLMNewsAnalyzer(
             self.bus,
-            anthropic_api_key=self.config.llm.anthropic_api_key,
-            model=self.config.llm.model,
-            max_calls_per_hour=self.config.llm.max_calls_per_hour,
-            batch_size=self.config.llm.news_batch_size,
-            batch_window_seconds=self.config.llm.news_batch_window_seconds,
-            timeout_seconds=self.config.llm.timeout_seconds,
+            anthropic_api_key=config.llm.anthropic_api_key,
+            model=config.llm.model,
+            max_calls_per_hour=config.llm.max_calls_per_hour,
+            batch_size=config.llm.news_batch_size,
+            batch_window_seconds=config.llm.news_batch_window_seconds,
+            timeout_seconds=config.llm.timeout_seconds,
         )
         await llm_analyzer.start()
         self._intelligence_components.append(llm_analyzer)
 
         fear_greed = FearGreedSentiment(
             self.bus,
-            poll_interval=self.config.intelligence.fear_greed_poll_interval_seconds,
+            poll_interval=config.intelligence.fear_greed_poll_interval_seconds,
         )
         await fear_greed.start()
         self._intelligence_components.append(fear_greed)
 
-        if self.config.intelligence.enable_finbert:
-            finbert = FinBERTSentiment(
-                self.bus,
-                enabled=True,
-            )
+        if config.intelligence.enable_finbert:
+            finbert = FinBERTSentiment(self.bus, enabled=True)
             self._intelligence_components.append(finbert)
 
         regime_detector = RegimeDetector(
             self.bus,
-            window_size=self.config.regime.window_size,
-            update_interval=self.config.regime.update_interval,
-            use_hmm=self.config.intelligence.enable_hmm_regime,
-            cumulative_trend_threshold=self.config.regime.cumulative_trend_threshold,
-            ma_slope_threshold=self.config.regime.ma_slope_threshold,
-            mean_return_threshold=self.config.regime.mean_return_threshold,
-            volatility_threshold=self.config.regime.volatility_threshold,
-            ma_period=self.config.regime.ma_period,
-            long_window_size=self.config.regime.long_window_size,
-            long_cumulative_threshold=self.config.regime.long_cumulative_threshold,
+            window_size=config.regime.window_size,
+            update_interval=config.regime.update_interval,
+            use_hmm=config.intelligence.enable_hmm_regime,
+            cumulative_trend_threshold=config.regime.cumulative_trend_threshold,
+            ma_slope_threshold=config.regime.ma_slope_threshold,
+            mean_return_threshold=config.regime.mean_return_threshold,
+            volatility_threshold=config.regime.volatility_threshold,
+            ma_period=config.regime.ma_period,
+            long_window_size=config.regime.long_window_size,
+            long_cumulative_threshold=config.regime.long_cumulative_threshold,
         )
         self._intelligence_components.append(regime_detector)
 
-        # Initialize risk manager with rules
-        risk_rules = [
-            PositionSizingRule(self.config.risk.position_size_percent),
-            MaxPositionSizeRule(self.config.risk.max_position_size_usd),
-            MaxTotalExposureRule(self.config.risk.max_total_exposure_usd),
-            MaxDrawdownRule(self.config.risk.max_drawdown_percent),
-            MinSignalStrengthRule(self.config.risk.min_signal_strength),
-            RegimeTradeHaltRule(
-                min_confidence=Decimal(self.config.regime.bear_halt_min_confidence),
-                bus=self.bus,
-            ),
-            PostFillCooldownRule(
-                cooldown_seconds=self.config.risk.post_fill_cooldown_seconds,
-                bus=self.bus,
-            ),
-            VolatilityGateRule(
-                min_range_pct=self.config.risk.volatility_gate_min_range_pct,
-                window_size=self.config.risk.volatility_gate_window_size,
-                bus=self.bus,
-            ),
-            SidewaysSuppressionRule(
-                min_range_pct=self.config.risk.sideways_suppression_min_range_pct,
-                window_size=self.config.risk.sideways_suppression_window_size,
-                bus=self.bus,
-            ),
-            MacroVolatilityGateRule(
-                min_range_pct=self.config.risk.macro_volatility_min_range_pct,
-                window_size=self.config.risk.macro_volatility_window_size,
-                bus=self.bus,
-            ),
-        ]
-        self.risk_manager = RiskManager(
-            self.bus,
-            self.portfolio,
-            rules=risk_rules,
-        )
-
-        # Initialize exit monitor (stop-loss, take-profit, time-based exits)
-        self.exit_monitor = ExitMonitor(
-            self.bus,
-            self.portfolio,
-            stop_loss_percent=self.config.risk.stop_loss_percent,
-            take_profit_percent=self.config.risk.take_profit_percent,
-            max_position_age_minutes=self.config.risk.max_position_age_minutes,
-            adaptive_tp=self.config.risk.adaptive_tp,
-            tp_multiplier=self.config.risk.tp_multiplier,
-            min_tp_percent=self.config.risk.min_tp_percent,
-        )
-
-        # Initialize learning system
-        db_path = Path("data/cerebrum.db")
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+    async def _start_learning_system(self, db_path: Path) -> None:
+        """Start StateManager, TradeTracker, SignalScorer, WeightAdapter."""
         self.state_manager = StateManager(db_path)
         await self.state_manager.initialize()
 
@@ -336,48 +268,328 @@ class CerebrumCoin:
         self.signal_scorer = SignalScorer(self.bus, self.state_manager)
         await self.signal_scorer.start()
 
-        def weight_callback(signal_type, regime, weight):
-            self.signal_agg.set_regime_weight(signal_type, regime, weight)
+        # In single-strategy mode signal_agg is available for weight updates.
+        # In multi-strategy mode there is no single aggregator — weight updates
+        # are a no-op until per-strategy weight routing is implemented.
+        def weight_callback(signal_type: Any, regime: Any, weight: Any) -> None:
+            if self.signal_agg is not None:
+                self.signal_agg.set_regime_weight(signal_type, regime, weight)
 
         self.weight_adapter = WeightAdapter(self.bus, self.state_manager, weight_callback)
         await self.weight_adapter.start()
 
         self._log.info("learning_system_initialized", db_path=str(db_path))
 
-        # Initialize dashboard if enabled
-        if self.config.monitoring.dashboard_enabled:
+    # ------------------------------------------------------------------
+    # Single-strategy setup (legacy / backward-compat path)
+    # ------------------------------------------------------------------
+
+    def _setup_single_strategy(self) -> None:
+        """
+        Wire the single-strategy pipeline — behaviorally identical to pre-Phase-11.
+
+        Creates one SignalAggregator, PortfolioTracker, ExitMonitor, and
+        RiskManager using the paper.toml risk parameters directly.
+        """
+        config = self.config
+
+        self.portfolio = PortfolioTracker(
+            self.bus,
+            initial_balance=config.paper.initial_balance_usd,
+            # No strategy_id — accepts all fills (DEC-RISK-004 backward compat)
+        )
+
+        self.signal_agg = SignalAggregator(
+            self.bus,
+            threshold=config.signals.aggregation_threshold,
+            window_seconds=config.signals.aggregation_window_seconds,
+            buy_suppression_factor=config.regime.buy_suppression_factor,
+            buy_suppression_min_confidence=config.regime.buy_suppression_min_confidence,
+        )
+
+        risk_rules = [
+            PositionSizingRule(config.risk.position_size_percent),
+            MaxPositionSizeRule(config.risk.max_position_size_usd),
+            MaxTotalExposureRule(config.risk.max_total_exposure_usd),
+            MaxDrawdownRule(config.risk.max_drawdown_percent),
+            MinSignalStrengthRule(config.risk.min_signal_strength),
+            RegimeTradeHaltRule(
+                min_confidence=Decimal(str(config.regime.bear_halt_min_confidence)),
+                bus=self.bus,
+            ),
+            PostFillCooldownRule(
+                cooldown_seconds=config.risk.post_fill_cooldown_seconds,
+                bus=self.bus,
+            ),
+            VolatilityGateRule(
+                min_range_pct=config.risk.volatility_gate_min_range_pct,
+                window_size=config.risk.volatility_gate_window_size,
+                bus=self.bus,
+            ),
+            SidewaysSuppressionRule(
+                min_range_pct=config.risk.sideways_suppression_min_range_pct,
+                window_size=config.risk.sideways_suppression_window_size,
+                bus=self.bus,
+            ),
+            MacroVolatilityGateRule(
+                min_range_pct=config.risk.macro_volatility_min_range_pct,
+                window_size=config.risk.macro_volatility_window_size,
+                bus=self.bus,
+            ),
+        ]
+        self.risk_manager = RiskManager(
+            self.bus,
+            self.portfolio,
+            rules=risk_rules,
+        )
+
+        self.exit_monitor = ExitMonitor(
+            self.bus,
+            self.portfolio,
+            stop_loss_percent=config.risk.stop_loss_percent,
+            take_profit_percent=config.risk.take_profit_percent,
+            max_position_age_minutes=config.risk.max_position_age_minutes,
+            adaptive_tp=config.risk.adaptive_tp,
+            tp_multiplier=config.risk.tp_multiplier,
+            min_tp_percent=config.risk.min_tp_percent,
+        )
+
+        self._log.info(
+            "single_strategy_pipeline_wired",
+            risk_rules=len(risk_rules),
+        )
+
+    # ------------------------------------------------------------------
+    # Multi-strategy setup (Phase 11 default path)
+    # ------------------------------------------------------------------
+
+    async def _setup_multi_strategy(self) -> None:
+        """
+        Wire the multi-strategy pipeline.
+
+        Creates shared global guards (one instance per guard type, shared by
+        reference across all strategy RiskManagers via StrategyRegistry.start_all).
+        Registers three strategies: momentum, mean_reversion, breakout.
+        Creates DarwinianAllocator, Conductor, and WebDashboard.
+
+        See DEC-MAIN-002, DEC-STRAT-003.
+        """
+        from cerebrum.strategies.registry import StrategyRegistry
+        from cerebrum.strategies.momentum import MOMENTUM_CONFIG
+        from cerebrum.strategies.mean_reversion import MEAN_REVERSION_CONFIG
+        from cerebrum.strategies.breakout import BREAKOUT_CONFIG
+        from cerebrum.conductor.allocator import DarwinianAllocator
+        from cerebrum.conductor.conductor import Conductor
+
+        config = self.config
+
+        # --- Shared global guards (constructed once, shared across all strategies) ---
+        # Each guard subscribes to bus events exactly once — no duplicate subscriptions.
+        global_guards = [
+            RegimeTradeHaltRule(
+                min_confidence=Decimal(str(config.regime.bear_halt_min_confidence)),
+                bus=self.bus,
+            ),
+            VolatilityGateRule(
+                min_range_pct=config.risk.volatility_gate_min_range_pct,
+                window_size=config.risk.volatility_gate_window_size,
+                bus=self.bus,
+            ),
+            MacroVolatilityGateRule(
+                min_range_pct=config.risk.macro_volatility_min_range_pct,
+                window_size=config.risk.macro_volatility_window_size,
+                bus=self.bus,
+            ),
+            SidewaysSuppressionRule(
+                min_range_pct=config.risk.sideways_suppression_min_range_pct,
+                window_size=config.risk.sideways_suppression_window_size,
+                bus=self.bus,
+            ),
+            # ~10 trades/hour per strategy * 3 strategies = 30 global cap
+            GlobalTradeRateLimitRule(
+                max_trades_per_hour=30,
+                bus=self.bus,
+            ),
+        ]
+
+        # --- StrategyRegistry ---
+        self.strategy_registry = StrategyRegistry(bus=self.bus, config=config)
+        self.strategy_registry.register(MOMENTUM_CONFIG)
+        self.strategy_registry.register(MEAN_REVERSION_CONFIG)
+        self.strategy_registry.register(BREAKOUT_CONFIG)
+
+        # Build and start all strategy pipelines, injecting shared global guards
+        await self.strategy_registry.start_all(shared_global_rules=global_guards)
+
+        active = self.strategy_registry.active_strategy_names()
+        if not active:
+            raise RuntimeError(
+                "No strategy pipelines started successfully — cannot continue."
+            )
+
+        # --- DarwinianAllocator ---
+        self.allocator = DarwinianAllocator(
+            strategy_names=active,
+            total_capital=Decimal(str(config.paper.initial_balance_usd)),
+        )
+
+        # --- Conductor ---
+        anthropic_key = getattr(config, "llm", None)
+        anthropic_key = anthropic_key.anthropic_api_key if anthropic_key else None
+
+        self.conductor = Conductor(
+            bus=self.bus,
+            registry=self.strategy_registry,
+            allocator=self.allocator,
+            anthropic_api_key=anthropic_key,
+        )
+        await self.conductor.start()
+
+        # --- WebDashboard (optional — requires fastapi/uvicorn) ---
+        try:
+            from cerebrum.dashboard.web import WebDashboard
+            self.web_dashboard = WebDashboard(
+                bus=self.bus,
+                registry=self.strategy_registry,
+                conductor=self.conductor,
+                global_portfolio=self.strategy_registry.global_portfolio,
+            )
+            await self.web_dashboard.start()
+            self._log.info("web_dashboard_started", url="http://127.0.0.1:8080")
+        except ImportError:
+            self._log.warning(
+                "web_dashboard_unavailable",
+                reason="fastapi/uvicorn not installed — run: pip install cerebrumcoin[dashboard]",
+            )
+            self.web_dashboard = None
+
+        self._log.info(
+            "multi_strategy_pipeline_wired",
+            active_strategies=active,
+            global_guards=len(global_guards),
+        )
+
+    # ------------------------------------------------------------------
+    # Main lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        """Start the trading system."""
+        config = self.config
+        self._log.info("cerebrumcoin_starting", mode=config.trading.mode.value)
+
+        # Start event bus
+        await self.bus.start()
+
+        # Initialize Kraken adapter for market data
+        self.kraken_adapter = KrakenAdapter(
+            self.bus,
+            {
+                "api_key": config.exchange.api_key,
+                "api_secret": config.exchange.api_secret,
+                "rate_limit_per_minute": config.exchange.rate_limit_per_minute,
+            },
+        )
+        await self.kraken_adapter.connect()
+
+        # Initialize execution adapter based on trading mode
+        if config.trading.mode == TradingMode.LIVE:
+            self._log.warning(
+                "LIVE_MODE_ACTIVE",
+                message="*** REAL MONEY TRADING ENABLED — Orders will execute on live exchange ***",
+            )
+            self.bus.subscribe(
+                EventType.ORDER,
+                self.kraken_adapter.execute_order,
+                "kraken_live_executor",
+            )
+        else:
+            self.paper_adapter = PaperTradingAdapter(
+                self.bus,
+                {},
+                initial_balance=config.paper.initial_balance_usd,
+                commission_percent=config.paper.commission_percent,
+                slippage_percent=config.paper.slippage_percent,
+                state_file=config.paper.state_file,
+            )
+            await self.paper_adapter.connect()
+
+        # Candle aggregator is shared across all strategies
+        self.candle_agg = CandleAggregator(
+            self.bus,
+            interval_seconds=config.signals.candle_interval_seconds,
+        )
+
+        # Technical signal generators are shared — they emit raw signals to the
+        # bus; each strategy's SignalAggregator subscribes independently.
+        self._signal_generators = self._build_signal_generators()
+
+        # Intelligence layer (shared regime + news + sentiment)
+        await self._start_intelligence_components()
+
+        # Strategy pipeline — multi or single depending on env var
+        multi_strategy = (
+            os.environ.get("CEREBRUM_MULTI_STRATEGY", "true").lower() == "true"
+        )
+
+        if multi_strategy:
+            self._log.info("startup_mode", mode="multi_strategy")
+            await self._setup_multi_strategy()
+        else:
+            self._log.info("startup_mode", mode="single_strategy_legacy")
+            self._setup_single_strategy()
+
+        # Learning system (shared — tracks signals and outcomes)
+        db_path = Path("data/cerebrum.db")
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        await self._start_learning_system(db_path)
+
+        # Legacy terminal dashboard (single-strategy mode only — it needs a
+        # single RiskManager reference; multi-strategy uses WebDashboard)
+        if not multi_strategy and config.monitoring.dashboard_enabled:
             self.dashboard = Dashboard(
                 self.bus,
                 self.state_manager,
-                update_interval_seconds=self.config.monitoring.update_interval_seconds,
-                initial_balance=self.config.paper.initial_balance_usd,
+                update_interval_seconds=config.monitoring.update_interval_seconds,
+                initial_balance=config.paper.initial_balance_usd,
                 risk_manager=self.risk_manager,
             )
             await self.dashboard.start()
-            self._log.info("dashboard_started")
+            self._log.info("terminal_dashboard_started")
 
-        # Subscribe to market data
-        await self.kraken_adapter.subscribe_market_data(self.config.trading.symbols)
+        # Subscribe to market data (after all components are set up)
+        await self.kraken_adapter.subscribe_market_data(config.trading.symbols)
 
         self._log.info(
             "cerebrumcoin_started",
-            symbols=self.config.trading.symbols,
-            initial_balance=str(self.config.paper.initial_balance_usd),
+            symbols=config.trading.symbols,
+            initial_balance=str(config.paper.initial_balance_usd),
             signal_generators=len(self._signal_generators),
-            risk_rules=len(risk_rules),
+            multi_strategy=multi_strategy,
         )
 
         # Wait for shutdown signal
         await self._shutdown_event.wait()
 
     async def stop(self) -> None:
-        """Stop the trading system gracefully."""
+        """Stop the trading system gracefully (reverse startup order)."""
         self._log.info("cerebrumcoin_stopping")
 
-        # Stop dashboard
+        # Stop WebDashboard first (closes HTTP server / WS connections)
+        if self.web_dashboard is not None:
+            await self.web_dashboard.stop()
+
+        # Stop Conductor (cancels poll task)
+        if self.conductor is not None:
+            await self.conductor.stop()
+
+        # Stop strategy registry (logs each pipeline stopped)
+        if self.strategy_registry is not None:
+            await self.strategy_registry.stop_all()
+
+        # Stop legacy terminal dashboard
         if self.dashboard:
             await self.dashboard.stop()
-
 
         # Close learning system
         if self.state_manager:
@@ -385,7 +597,7 @@ class CerebrumCoin:
 
         # Stop intelligence components
         for component in self._intelligence_components:
-            if hasattr(component, 'stop'):
+            if hasattr(component, "stop"):
                 await component.stop()
 
         # Disconnect adapters
@@ -412,17 +624,14 @@ async def async_main(config_path: Path) -> None:
     Args:
         config_path: Path to TOML configuration file
     """
-    # Load configuration
     config = Config.from_toml(config_path)
 
     # Reconfigure logging with user's preferred level from config.
     # This supersedes the module-level INFO default.
     _configure_logging(config.logging.level)
 
-    # Create application
     app = CerebrumCoin(config)
 
-    # Setup signal handlers for graceful shutdown
     loop = asyncio.get_running_loop()
 
     def signal_handler(sig: int) -> None:
@@ -445,22 +654,20 @@ def main() -> None:
         "--config",
         type=Path,
         default=Path("config/default.toml"),
-        help="Path to configuration file (default: config/default.toml)"
+        help="Path to configuration file (default: config/default.toml)",
     )
     parser.add_argument(
         "--mode",
         choices=["paper", "live", "backtest"],
         default="paper",
-        help="Trading mode (default: paper)"
+        help="Trading mode (default: paper)",
     )
 
     args = parser.parse_args()
 
-    # Override config path based on mode
     if args.mode == "paper" and args.config == Path("config/default.toml"):
         args.config = Path("config/paper.toml")
 
-    # Run async main
     try:
         asyncio.run(async_main(args.config))
     except KeyboardInterrupt:

@@ -13,8 +13,9 @@ a shared EventBus.
 from cerebrum.strategies.base import StrategyConfig
 from cerebrum.strategies.registry import StrategyRegistry
 from cerebrum.strategies.global_portfolio import GlobalPortfolio
-from cerebrum.strategies.mean_reversion import MeanReversionStrategy
-from cerebrum.strategies.breakout import BreakoutStrategy
+from cerebrum.strategies.mean_reversion import MeanReversionStrategy, MEAN_REVERSION_CONFIG
+from cerebrum.strategies.breakout import BreakoutStrategy, BREAKOUT_CONFIG
+from cerebrum.strategies.momentum import MOMENTUM_CONFIG
 
 __all__ = [
     "StrategyConfig",
@@ -22,4 +23,7 @@ __all__ = [
     "GlobalPortfolio",
     "MeanReversionStrategy",
     "BreakoutStrategy",
+    "MOMENTUM_CONFIG",
+    "MEAN_REVERSION_CONFIG",
+    "BREAKOUT_CONFIG",
 ]
