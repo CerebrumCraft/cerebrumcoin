@@ -460,3 +460,69 @@ async def test_regime_transition_resumes_trading(bus):
     assert approved.decision == RuleDecision.APPROVE, (
         f"Expected APPROVE after regime transition to BULL, got {approved.decision}: {approved.reason}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 12: Exempt strategy bypasses SIDEWAYS suppression
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exempt_strategy_approved_in_sideways(bus):
+    """
+    Strategy in exempt_strategies bypasses sideways suppression.
+
+    The range_trading strategy is designed to profit in SIDEWAYS markets —
+    it must not be blocked by SidewaysSuppressionRule. A non-exempt strategy
+    (e.g. momentum) under the same conditions must still be denied.
+    """
+    rule = SidewaysSuppressionRule(
+        min_range_pct=Decimal("1.0"),
+        window_size=10,
+        bus=bus,
+        exempt_strategies={"range_trading"},
+    )
+
+    # Set regime to SIDEWAYS
+    await rule._on_regime_change(_make_regime_event("BTC/USD", "SIDEWAYS"))
+
+    # Publish flat prices — range = 0%, would deny any non-exempt BUY
+    flat_prices = [Decimal("50000")] * 10
+    await _publish_prices(bus, "BTC/USD", flat_prices)
+
+    order = _make_buy_order("BTC/USD")
+
+    # range_trading is exempt — must be APPROVED even in SIDEWAYS+flat
+    exempt_signal = SignalEvent(
+        event_type=EventType.SIGNAL,
+        timestamp=time.time(),
+        signal_type=SignalType.TECHNICAL,
+        symbol="BTC/USD",
+        action=SignalAction.BUY,
+        strength=Decimal("0.8"),
+        confidence=Decimal("0.7"),
+        strategy_id="range_trading",
+    )
+    exempt_result = rule.evaluate(exempt_signal, order, portfolio=None)  # type: ignore[arg-type]
+    assert exempt_result.decision == RuleDecision.APPROVE, (
+        f"Expected APPROVE for exempt strategy 'range_trading', "
+        f"got {exempt_result.decision}: {exempt_result.reason}"
+    )
+    assert "range_trading" in exempt_result.reason
+
+    # momentum is NOT exempt — must be DENIED under same SIDEWAYS+flat conditions
+    non_exempt_signal = SignalEvent(
+        event_type=EventType.SIGNAL,
+        timestamp=time.time(),
+        signal_type=SignalType.TECHNICAL,
+        symbol="BTC/USD",
+        action=SignalAction.BUY,
+        strength=Decimal("0.8"),
+        confidence=Decimal("0.7"),
+        strategy_id="momentum",
+    )
+    non_exempt_result = rule.evaluate(non_exempt_signal, order, portfolio=None)  # type: ignore[arg-type]
+    assert non_exempt_result.decision == RuleDecision.DENY, (
+        f"Expected DENY for non-exempt strategy 'momentum', "
+        f"got {non_exempt_result.decision}: {non_exempt_result.reason}"
+    )
