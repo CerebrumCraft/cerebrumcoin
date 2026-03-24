@@ -64,6 +64,7 @@ class SignalAggregator:
         buy_suppression_factor: str = "0.2",
         buy_suppression_min_confidence: str = "0.8",
         strategy_id: str | None = None,
+        signal_source_filter: str | None = None,
     ) -> None:
         """
         Initialize signal aggregator.
@@ -79,6 +80,10 @@ class SignalAggregator:
                          SignalEvents are tagged with this strategy_id so the matching
                          RiskManager can filter signals to only its own pipeline
                          (DEC-STRAT-005). None preserves backward-compatible behaviour.
+            signal_source_filter: When set, only signals whose metadata["source"]
+                         matches this string are admitted to the buffer. All other
+                         signals are silently dropped before aggregation. None
+                         disables filtering (default, backward-compatible).
         """
         self._bus = bus
         self._threshold = threshold
@@ -89,6 +94,10 @@ class SignalAggregator:
         # strategy_id is stored and stamped onto every COMBINED signal emitted.
         # DEC-STRAT-005: None means no filtering — backward compatible.
         self._strategy_id = strategy_id
+
+        # Source filter: when set, only signals from the named generator are accepted.
+        # DEC-SIGNAL-002: metadata["source"] is injected by SignalGenerator._create_signal().
+        self._signal_source_filter = signal_source_filter
         
         # Default weights: technical signals weighted higher
         self._weights: dict[SignalType, Decimal] = weights or {
@@ -151,6 +160,7 @@ class SignalAggregator:
             weights={k.value: str(v) for k, v in self._weights.items()},
             threshold=str(threshold),
             window_seconds=window_seconds,
+            signal_source_filter=signal_source_filter,
         )
     
     async def _on_signal(self, event: Event) -> None:
@@ -161,6 +171,12 @@ class SignalAggregator:
         # CRITICAL: Ignore our own combined signals to prevent feedback loop
         if event.signal_type == SignalType.COMBINED:
             return
+
+        # Filter by signal source if configured (e.g., range_trading only wants S/R signals)
+        if self._signal_source_filter:
+            source = event.metadata.get("source") if event.metadata else None
+            if source != self._signal_source_filter:
+                return
 
         symbol = event.symbol
         current_time = time()

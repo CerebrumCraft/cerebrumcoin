@@ -1,8 +1,11 @@
 """
-Unit tests for source metadata in signal events.
+Unit tests for source metadata in signal events and aggregator source filtering.
 
 Verifies that _create_signal() always stamps metadata["source"] with the
 generator's name, and that caller-supplied metadata keys are preserved.
+
+Also verifies that SignalAggregator with signal_source_filter drops signals
+from non-matching sources and accepts signals from matching sources.
 
 @decision DEC-SIGNAL-002
 @title Signal source metadata injection
@@ -13,13 +16,16 @@ The base class _create_signal() is the single injection point, ensuring all
 subclasses get this for free without any per-subclass changes.
 """
 
+import asyncio
 from decimal import Decimal
 from time import time
 
 import pytest
 
 from cerebrum.core.bus import EventBus
-from cerebrum.core.types import SignalAction, SignalType
+from cerebrum.core.events import SignalEvent
+from cerebrum.core.types import EventType, SignalAction, SignalType
+from cerebrum.signals.aggregator import SignalAggregator
 from cerebrum.signals.base import SignalGenerator
 
 
@@ -119,3 +125,76 @@ async def test_default_name_is_class_name(bus):
         timestamp=time(),
     )
     assert signal.metadata["source"] == "AutoNamedGenerator"
+
+
+@pytest.fixture
+async def started_bus():
+    """EventBus fixture that is started and stopped around each test."""
+    b = EventBus()
+    await b.start()
+    yield b
+    await b.stop()
+
+
+@pytest.mark.asyncio
+async def test_aggregator_filters_by_source(started_bus):
+    """Aggregator with signal_source_filter should drop non-matching signals.
+
+    Only signals whose metadata["source"] equals the configured filter value
+    should be admitted to the _signal_buffer.  All other sources must be
+    silently dropped before aggregation (DEC-SIGNAL-002).
+    """
+    # Create aggregator that only accepts SupportResistance signals.
+    # Subscriptions are registered in __init__ on the already-started bus.
+    agg = SignalAggregator(
+        started_bus,
+        signal_source_filter="SupportResistance",
+        # Low threshold so any accepted signal would aggregate normally
+        threshold=Decimal("0.1"),
+    )
+
+    # --- Signal from a non-matching source: should be dropped ---
+    # Use time() (stdlib wall-clock) to match the aggregator's _clean_old_signals logic,
+    # which also calls time().  Using asyncio.get_event_loop().time() would produce a
+    # loop-relative timestamp that is much smaller than time() and would cause the
+    # signal to be pruned immediately by the 5-second window cleanup.
+    rsi_signal = SignalEvent(
+        event_type=EventType.SIGNAL,
+        timestamp=time(),
+        signal_type=SignalType.TECHNICAL,
+        symbol="BTC/USD",
+        action=SignalAction.BUY,
+        strength=Decimal("0.8"),
+        confidence=Decimal("0.9"),
+        reason="rsi buy",
+        metadata={"source": "RSI"},
+    )
+    await started_bus.publish(rsi_signal)
+    await asyncio.sleep(0.1)
+
+    # Buffer must remain empty — RSI signal filtered out
+    assert len(agg._signal_buffer["BTC/USD"]) == 0, (
+        f"RSI signal should have been filtered, buffer has "
+        f"{len(agg._signal_buffer['BTC/USD'])} entries"
+    )
+
+    # --- Signal from the matching source: should be accepted ---
+    sr_signal = SignalEvent(
+        event_type=EventType.SIGNAL,
+        timestamp=time(),
+        signal_type=SignalType.TECHNICAL,
+        symbol="BTC/USD",
+        action=SignalAction.BUY,
+        strength=Decimal("0.8"),
+        confidence=Decimal("0.9"),
+        reason="support bounce",
+        metadata={"source": "SupportResistance"},
+    )
+    await started_bus.publish(sr_signal)
+    await asyncio.sleep(0.1)
+
+    # Buffer should now contain exactly one signal
+    assert len(agg._signal_buffer["BTC/USD"]) == 1, (
+        f"SupportResistance signal should have been accepted, buffer has "
+        f"{len(agg._signal_buffer['BTC/USD'])} entries"
+    )

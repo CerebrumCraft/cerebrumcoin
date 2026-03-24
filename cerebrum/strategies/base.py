@@ -65,6 +65,14 @@ class StrategyConfig:
         symbols: Trading symbols this strategy is active on. Used for
               position tracking and exit monitoring. Defaults to BTC/USD
               and ETH/USD (the current paper trading symbols).
+        signal_source_filter: When set, the strategy's SignalAggregator will
+              only accept signals whose metadata["source"] matches this value.
+              For example, "SupportResistance" causes the aggregator to ignore
+              RSI, MACD, and other signal sources. None = accept all sources
+              (backward-compatible default).
+        exit_monitor_factory: Optional callable that produces a custom
+              ExitMonitor for this strategy. Signature: (bus, config, portfolio)
+              -> ExitMonitor. None = use the default ExitMonitor construction.
     """
 
     name: str
@@ -74,3 +82,5 @@ class StrategyConfig:
     exit_config: dict[str, Any] = field(default_factory=dict)
     initial_balance: Decimal = Decimal("3333.33")
     symbols: list[str] = field(default_factory=lambda: ["BTC/USD", "ETH/USD"])
+    signal_source_filter: str | None = None  # Only accept signals with this metadata.source
+    exit_monitor_factory: Any = None  # Optional callable to create custom ExitMonitor
