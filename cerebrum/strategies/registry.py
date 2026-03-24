@@ -276,6 +276,7 @@ class StrategyRegistry:
             buy_suppression_factor=self._config.regime.buy_suppression_factor,
             buy_suppression_min_confidence=self._config.regime.buy_suppression_min_confidence,
             strategy_id=cfg.name,
+            signal_source_filter=cfg.signal_source_filter,
         )
 
         # --- PortfolioTracker (strategy_id-filtered — DEC-RISK-004) ---
@@ -285,35 +286,43 @@ class StrategyRegistry:
             strategy_id=cfg.name,
         )
 
-        # --- ExitMonitor — apply exit_config overrides ---
-        exit_overrides = cfg.exit_config
-        exit_monitor = ExitMonitor(
-            bus=self._bus,
-            portfolio=portfolio,
-            stop_loss_percent=Decimal(
-                exit_overrides.get("stop_loss_percent",
-                                   str(self._config.risk.stop_loss_percent))
-            ),
-            take_profit_percent=Decimal(
-                exit_overrides.get("take_profit_percent",
-                                   str(self._config.risk.take_profit_percent))
-            ),
-            max_position_age_minutes=int(
-                exit_overrides.get("max_position_age_minutes",
-                                   self._config.risk.max_position_age_minutes)
-            ),
-            adaptive_tp=bool(
-                exit_overrides.get("adaptive_tp", self._config.risk.adaptive_tp)
-            ),
-            tp_multiplier=Decimal(
-                exit_overrides.get("tp_multiplier",
-                                   str(self._config.risk.tp_multiplier))
-            ),
-            min_tp_percent=Decimal(
-                exit_overrides.get("min_tp_percent",
-                                   str(self._config.risk.min_tp_percent))
-            ),
-        )
+        # --- ExitMonitor — use factory if provided, else default ---
+        if cfg.exit_monitor_factory is not None:
+            exit_monitor = cfg.exit_monitor_factory(
+                bus=self._bus,
+                portfolio=portfolio,
+                config=cfg,
+                app_config=self._config,
+            )
+        else:
+            exit_overrides = cfg.exit_config
+            exit_monitor = ExitMonitor(
+                bus=self._bus,
+                portfolio=portfolio,
+                stop_loss_percent=Decimal(
+                    exit_overrides.get("stop_loss_percent",
+                                       str(self._config.risk.stop_loss_percent))
+                ),
+                take_profit_percent=Decimal(
+                    exit_overrides.get("take_profit_percent",
+                                       str(self._config.risk.take_profit_percent))
+                ),
+                max_position_age_minutes=int(
+                    exit_overrides.get("max_position_age_minutes",
+                                       self._config.risk.max_position_age_minutes)
+                ),
+                adaptive_tp=bool(
+                    exit_overrides.get("adaptive_tp", self._config.risk.adaptive_tp)
+                ),
+                tp_multiplier=Decimal(
+                    exit_overrides.get("tp_multiplier",
+                                       str(self._config.risk.tp_multiplier))
+                ),
+                min_tp_percent=Decimal(
+                    exit_overrides.get("min_tp_percent",
+                                       str(self._config.risk.min_tp_percent))
+                ),
+            )
 
         # --- Per-strategy risk rules ---
         overrides = cfg.risk_overrides

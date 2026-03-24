@@ -369,7 +369,7 @@ class CerebrumCoin:
 
         Creates shared global guards (one instance per guard type, shared by
         reference across all strategy RiskManagers via StrategyRegistry.start_all).
-        Registers three strategies: momentum, mean_reversion, breakout.
+        Registers four strategies: momentum, mean_reversion, breakout, range_trading.
         Creates DarwinianAllocator, Conductor, and WebDashboard.
 
         See DEC-MAIN-002, DEC-STRAT-003.
@@ -378,6 +378,7 @@ class CerebrumCoin:
         from cerebrum.strategies.momentum import MOMENTUM_CONFIG
         from cerebrum.strategies.mean_reversion import MEAN_REVERSION_CONFIG
         from cerebrum.strategies.breakout import BREAKOUT_CONFIG
+        from cerebrum.strategies.range_trading import RANGE_TRADING_CONFIG
         from cerebrum.conductor.allocator import DarwinianAllocator
         from cerebrum.conductor.conductor import Conductor
 
@@ -404,10 +405,13 @@ class CerebrumCoin:
                 min_range_pct=config.risk.sideways_suppression_min_range_pct,
                 window_size=config.risk.sideways_suppression_window_size,
                 bus=self.bus,
+                # range_trading targets SIDEWAYS — exempt so it can enter when
+                # other strategies are suppressed (DEC-RANGE-006).
+                exempt_strategies={"range_trading"},
             ),
-            # ~10 trades/hour per strategy * 3 strategies = 30 global cap
+            # ~10 trades/hour per strategy * 4 strategies = 40 global cap
             GlobalTradeRateLimitRule(
-                max_trades_per_hour=30,
+                max_trades_per_hour=40,
                 bus=self.bus,
             ),
         ]
@@ -417,6 +421,7 @@ class CerebrumCoin:
         self.strategy_registry.register(MOMENTUM_CONFIG)
         self.strategy_registry.register(MEAN_REVERSION_CONFIG)
         self.strategy_registry.register(BREAKOUT_CONFIG)
+        self.strategy_registry.register(RANGE_TRADING_CONFIG)
 
         # Build and start all strategy pipelines, injecting shared global guards
         await self.strategy_registry.start_all(shared_global_rules=global_guards)

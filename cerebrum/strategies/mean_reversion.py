@@ -116,7 +116,7 @@ class MeanReversionStrategy:
 
 # StrategyConfig instance for use with StrategyRegistry (DEC-STRAT-008).
 # Parameters derived from MeanReversionStrategy defaults tuned through Session 6.
-# Capital is 1/3 of $10k — the 3-strategy equal-split starting point.
+# Capital is 1/4 of $10k — the 4-strategy equal-split starting point.
 from cerebrum.strategies.base import StrategyConfig  # noqa: E402 (below class def intentional)
 
 MEAN_REVERSION_CONFIG = StrategyConfig(
@@ -141,6 +141,6 @@ MEAN_REVERSION_CONFIG = StrategyConfig(
         "tp_multiplier": "1.2",
         "min_tp_percent": "0.2",
     },
-    initial_balance=Decimal("3333.33"),
+    initial_balance=Decimal("2500.00"),
     symbols=["BTC/USD", "ETH/USD"],
 )

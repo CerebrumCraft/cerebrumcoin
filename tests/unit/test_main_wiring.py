@@ -39,6 +39,7 @@ from cerebrum.strategies.base import StrategyConfig
 from cerebrum.strategies.breakout import BREAKOUT_CONFIG
 from cerebrum.strategies.mean_reversion import MEAN_REVERSION_CONFIG
 from cerebrum.strategies.momentum import MOMENTUM_CONFIG
+from cerebrum.strategies.range_trading import RANGE_TRADING_CONFIG
 
 
 # ---------------------------------------------------------------------------
@@ -217,10 +218,10 @@ class TestStrategyConfigs:
         """MOMENTUM_CONFIG carries full $10k for single-strategy backward compat."""
         assert MOMENTUM_CONFIG.initial_balance == Decimal("10000.0")
 
-    def test_mean_reversion_and_breakout_have_third_balance(self):
-        """New strategy configs each start at ~1/3 of $10k for 3-way split."""
-        assert MEAN_REVERSION_CONFIG.initial_balance == Decimal("3333.33")
-        assert BREAKOUT_CONFIG.initial_balance == Decimal("3333.33")
+    def test_mean_reversion_and_breakout_have_quarter_balance(self):
+        """New strategy configs each start at 1/4 of $10k for 4-way split."""
+        assert MEAN_REVERSION_CONFIG.initial_balance == Decimal("2500.00")
+        assert BREAKOUT_CONFIG.initial_balance == Decimal("2500.00")
 
     def test_mean_reversion_has_tighter_tp(self):
         """Mean reversion targets small range-bound moves."""
@@ -259,6 +260,32 @@ class TestStrategyConfigs:
         assert BREAKOUT_CONFIG.name != MEAN_REVERSION_CONFIG.name
         assert BREAKOUT_CONFIG.aggregator_threshold != MEAN_REVERSION_CONFIG.aggregator_threshold
 
+    def test_range_trading_is_strategy_config_instance(self):
+        assert isinstance(RANGE_TRADING_CONFIG, StrategyConfig)
+        assert RANGE_TRADING_CONFIG.name == "range_trading"
+
+    def test_range_trading_has_quarter_balance(self):
+        """Range trading uses 1/4 of $10k — equal split with other 3 strategies."""
+        assert RANGE_TRADING_CONFIG.initial_balance == Decimal("2500.00")
+
+    def test_range_trading_filters_to_support_resistance(self):
+        """Only S/R signals feed range trading — other sources are excluded."""
+        assert RANGE_TRADING_CONFIG.signal_source_filter == "SupportResistance"
+
+    def test_range_trading_has_exit_monitor_factory(self):
+        """Range trading uses structural exits — factory must be callable."""
+        assert RANGE_TRADING_CONFIG.exit_monitor_factory is not None
+        assert callable(RANGE_TRADING_CONFIG.exit_monitor_factory)
+
+    def test_range_trading_suppresses_sentiment_and_news(self):
+        """S/R-only strategy sets sentiment/news weights to 0."""
+        assert RANGE_TRADING_CONFIG.aggregator_weights[SignalType.SENTIMENT] == Decimal("0.0")
+        assert RANGE_TRADING_CONFIG.aggregator_weights[SignalType.NEWS] == Decimal("0.0")
+
+    def test_range_trading_low_aggregator_threshold(self):
+        """Lower threshold (0.2) because S/R signals are the only source."""
+        assert RANGE_TRADING_CONFIG.aggregator_threshold == Decimal("0.2")
+
 
 # ---------------------------------------------------------------------------
 # StrategyRegistry lifecycle with all three configs
@@ -268,7 +295,12 @@ class TestStrategyRegistryAllConfigs:
     """Registry starts, accesses, and stops all three strategy pipelines."""
 
     def _three_equal_configs(self) -> list[StrategyConfig]:
-        """Return three StrategyConfig instances with equal $3333 balances."""
+        """Return three StrategyConfig instances for registry lifecycle tests.
+
+        Uses a $3333.33 momentum copy so this fixture's totals don't change
+        when multi-strategy splits evolve. mean_reversion and breakout use
+        their real configs ($2500 each after 4-way split).
+        """
         return [
             StrategyConfig(
                 name="momentum",
@@ -343,7 +375,8 @@ class TestStrategyRegistryAllConfigs:
 
             gp = registry.global_portfolio
             total = gp.get_total_equity()
-            expected = Decimal("3333.33") * 3
+            # momentum=$3333.33 (test fixture) + mean_reversion=$2500 + breakout=$2500
+            expected = Decimal("3333.33") + Decimal("2500.00") + Decimal("2500.00")
             assert total == expected
         finally:
             await bus.stop()
@@ -505,7 +538,7 @@ class TestSetupMultiStrategy:
             await bus.stop()
 
     @pytest.mark.asyncio
-    async def test_all_three_pipelines_active(self):
+    async def test_all_four_pipelines_active(self):
         from cerebrum.main import CerebrumCoin
         bus = EventBus()
         await bus.start()
@@ -516,7 +549,7 @@ class TestSetupMultiStrategy:
             await app._setup_multi_strategy()
 
             active = set(app.strategy_registry.active_strategy_names())
-            assert active == {"momentum", "mean_reversion", "breakout"}
+            assert active == {"momentum", "mean_reversion", "breakout", "range_trading"}
         finally:
             if app.conductor:
                 await app.conductor.stop()
@@ -558,7 +591,7 @@ class TestSetupMultiStrategy:
             app.bus = bus
             await app._setup_multi_strategy()
 
-            assert set(app.allocator._strategies) == {"momentum", "mean_reversion", "breakout"}
+            assert set(app.allocator._strategies) == {"momentum", "mean_reversion", "breakout", "range_trading"}
         finally:
             if app.conductor:
                 await app.conductor.stop()
