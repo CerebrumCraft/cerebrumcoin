@@ -756,3 +756,94 @@ async def test_risk_manager_replace_preserves_strategy_id(bus, portfolio):
     assert approved.order_id is not None
     assert approved.symbol == "BTC/USD"
     assert approved.side == Side.BUY
+
+
+# ---------------------------------------------------------------------------
+# adjust_balance peak-equity correction tests (DEC-RISK-005)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_adjust_balance_negative_resets_peak(bus):
+    """
+    Capital withdrawal via adjust_balance must lower _peak_equity so the
+    drawdown calculation stays relative to actual allocated capital, not a
+    transient Conductor spike.
+
+    Scenario: inject +$5,000 (peak goes to $7,500), then withdraw -$5,000.
+    After withdrawal peak must be $2,500 (back to original), not $7,500.
+    """
+    tracker = PortfolioTracker(bus, initial_balance=Decimal("2500"))
+
+    # Inject $5,000 — peak should rise to $7,500
+    tracker.adjust_balance(Decimal("5000"))
+    assert tracker._peak_equity == Decimal("7500"), (
+        f"Peak should be 7500 after injection, got {tracker._peak_equity}"
+    )
+
+    # Withdraw $5,000 — peak must fall back to $2,500
+    tracker.adjust_balance(Decimal("-5000"))
+    assert tracker._peak_equity == Decimal("2500"), (
+        f"Peak should be 2500 after withdrawal, got {tracker._peak_equity}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_adjust_balance_inject_then_withdraw_no_false_drawdown(bus):
+    """
+    After inject-then-withdraw cycle, drawdown must be ~0%, not 66.7%.
+
+    This is the exact Session 9 bug: range_trading was permanently blocked
+    because _peak_equity held the transient $7,500 spike after reversion to $2,500.
+    """
+    tracker = PortfolioTracker(bus, initial_balance=Decimal("2500"))
+
+    tracker.adjust_balance(Decimal("5000"))   # Conductor injects
+    tracker.adjust_balance(Decimal("-5000"))  # Conductor reverts
+
+    drawdown = tracker.get_drawdown_percent()
+    assert drawdown < Decimal("1"), (
+        f"Drawdown after inject-then-withdraw should be ~0%, got {drawdown}%"
+    )
+
+
+@pytest.mark.asyncio
+async def test_adjust_balance_preserves_trading_drawdown(bus):
+    """
+    Capital injection then withdrawal must NOT mask a real trading loss.
+
+    Scenario:
+    - Start $2,500
+    - Inject $5,000 -> equity $7,500, peak $7,500
+    - Simulate $500 trading loss (reduce cash by $500) -> equity $7,000
+    - Withdraw $5,000 -> equity $2,000, peak adjusted to $2,500 (7500 + (-5000))
+    - Drawdown should reflect the $500 loss: ($2,500 - $2,000) / $2,500 = 20%
+    """
+    tracker = PortfolioTracker(bus, initial_balance=Decimal("2500"))
+
+    # Conductor injects capital
+    tracker.adjust_balance(Decimal("5000"))
+    assert tracker._peak_equity == Decimal("7500")
+
+    # Trading loss: directly reduce cash (simulates unrealized loss or commission bleed)
+    tracker._cash_balance -= Decimal("500")
+
+    # Conductor withdraws capital
+    tracker.adjust_balance(Decimal("-5000"))
+
+    # Peak should be 7500 + (-5000) = 2500, equity = 7500 - 500 - 5000 = 2000
+    expected_peak = Decimal("2500")
+    expected_equity = Decimal("2000")
+    expected_drawdown = (expected_peak - expected_equity) / expected_peak * 100
+
+    assert tracker._peak_equity == expected_peak, (
+        f"Peak should be {expected_peak}, got {tracker._peak_equity}"
+    )
+    assert tracker.get_total_equity() == expected_equity, (
+        f"Equity should be {expected_equity}, got {tracker.get_total_equity()}"
+    )
+
+    actual_drawdown = tracker.get_drawdown_percent()
+    assert abs(actual_drawdown - expected_drawdown) < Decimal("0.01"), (
+        f"Drawdown should be ~{expected_drawdown}%, got {actual_drawdown}%"
+    )

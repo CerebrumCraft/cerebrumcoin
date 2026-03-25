@@ -431,3 +431,58 @@ async def test_valid_haiku_response_applied(bus, mock_registry, allocator, clock
     assert result["momentum"] == Decimal("60")
     assert result["mean_reversion"] == Decimal("25")
     assert result["breakout"] == Decimal("15")
+
+
+# ---------------------------------------------------------------------------
+# Test 9: 50% single-strategy allocation cap (DEC-CONDUCTOR-004)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_allocation_cap_50_percent(bus, mock_registry, allocator, clock):
+    """
+    _apply_allocations must clamp any single strategy to MAX_SINGLE_ALLOCATION_PCT
+    (50%) and redistribute the excess proportionally to remaining strategies.
+
+    This prevents the root trigger of the false-drawdown bug: Haiku returning
+    75% to range_trading, which injected $5,000 into a $2,500 portfolio and
+    set _peak_equity to $7,500. After reversion the strategy was permanently
+    stuck at 66.7% drawdown.
+    """
+    conductor = _make_conductor(bus, mock_registry, allocator, api_key=None, clock=clock)
+
+    # Simulate Haiku returning 75% to one strategy (over the 50% cap)
+    over_limit_allocs = {
+        "momentum": Decimal("75"),      # exceeds 50% cap
+        "mean_reversion": Decimal("15"),
+        "breakout": Decimal("10"),
+    }
+
+    await conductor._apply_allocations(over_limit_allocs)
+
+    # Collect what adjust_balance was called with
+    applied: dict[str, Decimal] = {}
+    for name, p in mock_registry._portfolios.items():
+        if p.adjust_balance.called:
+            # reconstruct target pct from: target_balance = total_capital * pct / 100
+            # delta = target_balance - current_balance (current_balance = TOTAL_CAPITAL / 3)
+            call_args = p.adjust_balance.call_args[0][0]  # first positional arg
+            current = TOTAL_CAPITAL / 3
+            target = current + call_args
+            pct = target / TOTAL_CAPITAL * 100
+            applied[name] = pct
+        else:
+            # balance unchanged — target == current == TOTAL_CAPITAL / 3
+            applied[name] = TOTAL_CAPITAL / 3 / TOTAL_CAPITAL * 100
+
+    # No single strategy should exceed 50%
+    for name, pct in applied.items():
+        assert pct <= Decimal("50") + Decimal("0.01"), (
+            f"Strategy '{name}' got {pct}% allocation, exceeds 50% cap"
+        )
+
+    # Allocations must still sum to ~100%
+    total = sum(applied.values())
+    assert abs(total - Decimal("100")) < Decimal("1"), (
+        f"Allocations sum to {total}%, expected ~100%"
+    )

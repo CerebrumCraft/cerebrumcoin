@@ -627,10 +627,12 @@ class TestConductorCopilotMode:
     async def test_approve_applies_allocation(self, conductor):
         conductor.copilot_mode = True
 
+        # Use allocations within the 50% single-strategy cap (DEC-CONDUCTOR-004)
+        # so the values pass through unmodified and the assertion is exact.
         allocations = {
-            "momentum": Decimal("60"),
-            "mean_reversion": Decimal("25"),
-            "breakout": Decimal("15"),
+            "momentum": Decimal("50"),
+            "mean_reversion": Decimal("30"),
+            "breakout": Decimal("20"),
         }
         await conductor._apply_allocations(allocations)
         assert conductor._pending_allocation is not None
@@ -639,7 +641,7 @@ class TestConductorCopilotMode:
 
         assert conductor._pending_allocation is None
         assert conductor._pending_reasoning is None
-        assert conductor._last_allocations["momentum"] == Decimal("60")
+        assert conductor._last_allocations["momentum"] == Decimal("50")
 
     @pytest.mark.asyncio
     async def test_reject_clears_without_applying(self, conductor):
