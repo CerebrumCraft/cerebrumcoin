@@ -476,6 +476,29 @@ class CerebrumCoin:
         # Build and start all strategy pipelines, injecting shared global guards
         await self.strategy_registry.start_all(shared_global_rules=global_guards)
 
+        # --- Per-strategy state restore (DEC-PERSIST-001) ---
+        # After pipelines are started, restore each strategy's PortfolioTracker
+        # from the saved snapshot (if any). Then register the live portfolios
+        # so _save_state() embeds v2 snapshots on every subsequent trade.
+        # New strategies (no snapshot) start fresh at their configured balance.
+        # Removed strategies (snapshot exists but not in registry) are ignored.
+        if self.paper_adapter is not None:
+            portfolios: dict[str, PortfolioTracker] = {}
+            for name in self.strategy_registry.active_strategy_names():
+                portfolio = self.strategy_registry.get_portfolio(name)
+                if portfolio is None:
+                    continue
+                snapshot = self.paper_adapter.get_strategy_snapshot(name)
+                if snapshot is not None:
+                    portfolio.restore_snapshot(snapshot)
+                    self._log.info(
+                        "strategy_portfolio_restored",
+                        strategy=name,
+                        cash_balance=snapshot.get("cash_balance"),
+                    )
+                portfolios[name] = portfolio
+            self.paper_adapter.set_strategy_portfolios(portfolios)
+
         active = self.strategy_registry.active_strategy_names()
         if not active:
             raise RuntimeError(
