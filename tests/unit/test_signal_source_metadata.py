@@ -103,10 +103,11 @@ async def test_source_metadata_does_not_overwrite_existing_keys(bus):
         timestamp=time(),
     )
 
-    # source must be present
+    # source and timeframe must be present (DEC-SIGNAL-002, DEC-SIGNAL-003)
     assert signal.metadata["source"] == "Bollinger"
-    # No other metadata keys were added — just source
-    assert set(signal.metadata.keys()) == {"source"}
+    assert signal.metadata["timeframe"] == "1m"  # default timeframe
+    # Only the two base-injected keys should be present — nothing else
+    assert set(signal.metadata.keys()) == {"source", "timeframe"}
 
 
 @pytest.mark.asyncio

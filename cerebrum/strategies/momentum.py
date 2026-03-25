@@ -63,6 +63,6 @@ MOMENTUM_CONFIG = StrategyConfig(
         "tp_multiplier": "1.5",
         "min_tp_percent": "0.3",
     },
-    initial_balance=Decimal("2500.00"),  # 1/4 of $10k for 4-strategy split
+    initial_balance=Decimal("2000.00"),  # 1/5 of $10k for 5-strategy split
     symbols=["BTC/USD", "ETH/USD"],
 )

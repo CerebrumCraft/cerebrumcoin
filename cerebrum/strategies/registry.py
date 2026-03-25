@@ -277,6 +277,7 @@ class StrategyRegistry:
             buy_suppression_min_confidence=self._config.regime.buy_suppression_min_confidence,
             strategy_id=cfg.name,
             signal_source_filter=cfg.signal_source_filter,
+            signal_timeframe_filter=cfg.signal_timeframe_filter,
         )
 
         # --- PortfolioTracker (strategy_id-filtered — DEC-RISK-004) ---

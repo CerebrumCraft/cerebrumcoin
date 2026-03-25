@@ -141,6 +141,6 @@ MEAN_REVERSION_CONFIG = StrategyConfig(
         "tp_multiplier": "1.2",
         "min_tp_percent": "0.2",
     },
-    initial_balance=Decimal("2500.00"),
+    initial_balance=Decimal("2000.00"),  # 1/5 of $10k for 5-strategy split
     symbols=["BTC/USD", "ETH/USD"],
 )

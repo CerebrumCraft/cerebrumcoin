@@ -49,18 +49,22 @@ class RSISignal(SignalGenerator):
         period: int = 14,
         oversold: int = 30,
         overbought: int = 70,
+        timeframe: str = "1m",
     ) -> None:
         """
         Initialize RSI signal generator.
-        
+
         Args:
             bus: Event bus
             candle_agg: Candle aggregator for OHLCV data
             period: RSI calculation period
             oversold: Oversold threshold (buy signal)
             overbought: Overbought threshold (sell signal)
+            timeframe: Bar timeframe this generator operates on (e.g. "1m", "1h").
+                       Stamped into every signal's metadata for downstream filtering.
+                       Default "1m" preserves backward compatibility.
         """
-        super().__init__(bus, SignalType.TECHNICAL, window_size=period + 50, name="RSI")
+        super().__init__(bus, SignalType.TECHNICAL, window_size=period + 50, name="RSI", timeframe=timeframe)
         self._candle_agg = candle_agg
         self._period = period
         self._oversold = oversold
@@ -147,18 +151,22 @@ class MACDSignal(SignalGenerator):
         fast: int = 12,
         slow: int = 26,
         signal: int = 9,
+        timeframe: str = "1m",
     ) -> None:
         """
         Initialize MACD signal generator.
-        
+
         Args:
             bus: Event bus
             candle_agg: Candle aggregator
             fast: Fast EMA period
             slow: Slow EMA period
             signal: Signal line period
+            timeframe: Bar timeframe this generator operates on (e.g. "1m", "1h").
+                       Stamped into every signal's metadata for downstream filtering.
+                       Default "1m" preserves backward compatibility.
         """
-        super().__init__(bus, SignalType.TECHNICAL, window_size=slow + signal + 50, name="MACD")
+        super().__init__(bus, SignalType.TECHNICAL, window_size=slow + signal + 50, name="MACD", timeframe=timeframe)
         self._candle_agg = candle_agg
         self._fast = fast
         self._slow = slow
@@ -237,17 +245,21 @@ class BollingerBandsSignal(SignalGenerator):
         candle_agg: CandleAggregator,
         period: int = 20,
         std_dev: float = 2.0,
+        timeframe: str = "1m",
     ) -> None:
         """
         Initialize Bollinger Bands signal generator.
-        
+
         Args:
             bus: Event bus
             candle_agg: Candle aggregator
             period: Moving average period
             std_dev: Standard deviation multiplier
+            timeframe: Bar timeframe this generator operates on (e.g. "1m", "1h").
+                       Stamped into every signal's metadata for downstream filtering.
+                       Default "1m" preserves backward compatibility.
         """
-        super().__init__(bus, SignalType.TECHNICAL, window_size=period + 50, name="BollingerBands")
+        super().__init__(bus, SignalType.TECHNICAL, window_size=period + 50, name="BollingerBands", timeframe=timeframe)
         self._candle_agg = candle_agg
         self._period = period
         self._std_dev = std_dev
@@ -336,16 +348,20 @@ class VWAPSignal(SignalGenerator):
         bus: EventBus,
         candle_agg: CandleAggregator,
         period: int = 20,
+        timeframe: str = "1m",
     ) -> None:
         """
         Initialize VWAP signal generator.
-        
+
         Args:
             bus: Event bus
             candle_agg: Candle aggregator
             period: VWAP calculation period
+            timeframe: Bar timeframe this generator operates on (e.g. "1m", "1h").
+                       Stamped into every signal's metadata for downstream filtering.
+                       Default "1m" preserves backward compatibility.
         """
-        super().__init__(bus, SignalType.TECHNICAL, window_size=period + 50, name="VWAP")
+        super().__init__(bus, SignalType.TECHNICAL, window_size=period + 50, name="VWAP", timeframe=timeframe)
         self._candle_agg = candle_agg
         self._period = period
         self._log = logger.bind(component="signal_vwap")

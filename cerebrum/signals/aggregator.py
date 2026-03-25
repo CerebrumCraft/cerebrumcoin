@@ -65,6 +65,7 @@ class SignalAggregator:
         buy_suppression_min_confidence: str = "0.8",
         strategy_id: str | None = None,
         signal_source_filter: str | None = None,
+        signal_timeframe_filter: str | None = None,
     ) -> None:
         """
         Initialize signal aggregator.
@@ -84,6 +85,10 @@ class SignalAggregator:
                          matches this string are admitted to the buffer. All other
                          signals are silently dropped before aggregation. None
                          disables filtering (default, backward-compatible).
+            signal_timeframe_filter: When set, only signals whose metadata["timeframe"]
+                         matches this string are admitted to the buffer. Signals
+                         from generators with a different timeframe are silently
+                         dropped. None disables filtering (default, backward-compatible).
         """
         self._bus = bus
         self._threshold = threshold
@@ -98,6 +103,10 @@ class SignalAggregator:
         # Source filter: when set, only signals from the named generator are accepted.
         # DEC-SIGNAL-002: metadata["source"] is injected by SignalGenerator._create_signal().
         self._signal_source_filter = signal_source_filter
+
+        # Timeframe filter: when set, only signals with matching metadata["timeframe"] accepted.
+        # DEC-SIGNAL-003: metadata["timeframe"] is injected by SignalGenerator._create_signal().
+        self._signal_timeframe_filter = signal_timeframe_filter
         
         # Default weights: technical signals weighted higher
         self._weights: dict[SignalType, Decimal] = weights or {
@@ -161,6 +170,7 @@ class SignalAggregator:
             threshold=str(threshold),
             window_seconds=window_seconds,
             signal_source_filter=signal_source_filter,
+            signal_timeframe_filter=signal_timeframe_filter,
         )
     
     async def _on_signal(self, event: Event) -> None:
@@ -176,6 +186,12 @@ class SignalAggregator:
         if self._signal_source_filter:
             source = event.metadata.get("source") if event.metadata else None
             if source != self._signal_source_filter:
+                return
+
+        # Filter by timeframe if configured (e.g., swing strategy only wants 1h signals)
+        if self._signal_timeframe_filter:
+            tf = event.metadata.get("timeframe") if event.metadata else None
+            if tf != self._signal_timeframe_filter:
                 return
 
         symbol = event.symbol

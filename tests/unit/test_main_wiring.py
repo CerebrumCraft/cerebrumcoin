@@ -40,6 +40,7 @@ from cerebrum.strategies.breakout import BREAKOUT_CONFIG
 from cerebrum.strategies.mean_reversion import MEAN_REVERSION_CONFIG
 from cerebrum.strategies.momentum import MOMENTUM_CONFIG
 from cerebrum.strategies.range_trading import RANGE_TRADING_CONFIG
+from cerebrum.strategies.swing_trading import SWING_TRADING_CONFIG
 
 
 # ---------------------------------------------------------------------------
@@ -214,14 +215,14 @@ class TestStrategyConfigs:
         assert MEAN_REVERSION_CONFIG.name == "mean_reversion"
         assert BREAKOUT_CONFIG.name == "breakout"
 
-    def test_momentum_has_quarter_balance(self):
-        """MOMENTUM_CONFIG uses 1/4 of $10k for the 4-strategy equal split."""
-        assert MOMENTUM_CONFIG.initial_balance == Decimal("2500.00")
+    def test_momentum_has_fifth_balance(self):
+        """MOMENTUM_CONFIG uses 1/5 of $10k for the 5-strategy equal split."""
+        assert MOMENTUM_CONFIG.initial_balance == Decimal("2000.00")
 
-    def test_mean_reversion_and_breakout_have_quarter_balance(self):
-        """New strategy configs each start at 1/4 of $10k for 4-way split."""
-        assert MEAN_REVERSION_CONFIG.initial_balance == Decimal("2500.00")
-        assert BREAKOUT_CONFIG.initial_balance == Decimal("2500.00")
+    def test_mean_reversion_and_breakout_have_fifth_balance(self):
+        """New strategy configs each start at 1/5 of $10k for 5-way split."""
+        assert MEAN_REVERSION_CONFIG.initial_balance == Decimal("2000.00")
+        assert BREAKOUT_CONFIG.initial_balance == Decimal("2000.00")
 
     def test_mean_reversion_has_tighter_tp(self):
         """Mean reversion targets small range-bound moves."""
@@ -264,9 +265,9 @@ class TestStrategyConfigs:
         assert isinstance(RANGE_TRADING_CONFIG, StrategyConfig)
         assert RANGE_TRADING_CONFIG.name == "range_trading"
 
-    def test_range_trading_has_quarter_balance(self):
-        """Range trading uses 1/4 of $10k — equal split with other 3 strategies."""
-        assert RANGE_TRADING_CONFIG.initial_balance == Decimal("2500.00")
+    def test_range_trading_has_fifth_balance(self):
+        """Range trading uses 1/5 of $10k — equal split with other 4 strategies."""
+        assert RANGE_TRADING_CONFIG.initial_balance == Decimal("2000.00")
 
     def test_range_trading_filters_to_support_resistance(self):
         """Only S/R signals feed range trading — other sources are excluded."""
@@ -285,6 +286,30 @@ class TestStrategyConfigs:
     def test_range_trading_low_aggregator_threshold(self):
         """Lower threshold (0.2) because S/R signals are the only source."""
         assert RANGE_TRADING_CONFIG.aggregator_threshold == Decimal("0.2")
+
+    def test_swing_trading_is_strategy_config_instance(self):
+        assert isinstance(SWING_TRADING_CONFIG, StrategyConfig)
+        assert SWING_TRADING_CONFIG.name == "swing_trading"
+
+    def test_swing_trading_has_fifth_balance(self):
+        """Swing trading uses 1/5 of $10k — equal split with other 4 strategies."""
+        assert SWING_TRADING_CONFIG.initial_balance == Decimal("2000.00")
+
+    def test_swing_trading_filters_1h_timeframe(self):
+        """Only 1h signals feed swing trading — 1m scalp signals are excluded."""
+        assert SWING_TRADING_CONFIG.signal_timeframe_filter == "1h"
+
+    def test_swing_trading_wider_tp_and_longer_hold(self):
+        """Wider TP (5%) and longer max age (480 min) match the 1h trading rhythm."""
+        assert SWING_TRADING_CONFIG.exit_config["take_profit_percent"] == "5.0"
+        assert SWING_TRADING_CONFIG.exit_config["max_position_age_minutes"] == 480
+
+    def test_swing_trading_technical_weight_higher_than_sentiment(self):
+        """Technical signals drive 1h swing decisions; sentiment is noise at this scale."""
+        assert (
+            SWING_TRADING_CONFIG.aggregator_weights[SignalType.TECHNICAL]
+            > SWING_TRADING_CONFIG.aggregator_weights[SignalType.SENTIMENT]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -375,8 +400,8 @@ class TestStrategyRegistryAllConfigs:
 
             gp = registry.global_portfolio
             total = gp.get_total_equity()
-            # momentum=$3333.33 (test fixture) + mean_reversion=$2500 + breakout=$2500
-            expected = Decimal("3333.33") + Decimal("2500.00") + Decimal("2500.00")
+            # momentum=$3333.33 (test fixture) + mean_reversion=$2000 + breakout=$2000
+            expected = Decimal("3333.33") + Decimal("2000.00") + Decimal("2000.00")
             assert total == expected
         finally:
             await bus.stop()
@@ -538,7 +563,7 @@ class TestSetupMultiStrategy:
             await bus.stop()
 
     @pytest.mark.asyncio
-    async def test_all_four_pipelines_active(self):
+    async def test_all_five_pipelines_active(self):
         from cerebrum.main import CerebrumCoin
         bus = EventBus()
         await bus.start()
@@ -549,7 +574,7 @@ class TestSetupMultiStrategy:
             await app._setup_multi_strategy()
 
             active = set(app.strategy_registry.active_strategy_names())
-            assert active == {"momentum", "mean_reversion", "breakout", "range_trading"}
+            assert active == {"momentum", "mean_reversion", "breakout", "range_trading", "swing_trading"}
         finally:
             if app.conductor:
                 await app.conductor.stop()
@@ -591,7 +616,7 @@ class TestSetupMultiStrategy:
             app.bus = bus
             await app._setup_multi_strategy()
 
-            assert set(app.allocator._strategies) == {"momentum", "mean_reversion", "breakout", "range_trading"}
+            assert set(app.allocator._strategies) == {"momentum", "mean_reversion", "breakout", "range_trading", "swing_trading"}
         finally:
             if app.conductor:
                 await app.conductor.stop()

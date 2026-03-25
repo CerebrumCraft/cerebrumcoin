@@ -140,6 +140,7 @@ class CerebrumCoin:
         self.kraken_adapter: KrakenAdapter | None = None
         self.paper_adapter: PaperTradingAdapter | None = None
         self.candle_agg: CandleAggregator | None = None
+        self.candle_agg_1h: CandleAggregator | None = None
         self._signal_generators: list[Any] = []
         self._intelligence_components: list[Any] = []
         self.state_manager: StateManager | None = None
@@ -202,6 +203,49 @@ class CerebrumCoin:
                 pivot_lookback=config.signals.sr_pivot_lookback,
                 min_touches=config.signals.sr_min_touches,
                 proximity_pct=config.signals.sr_proximity_pct,
+            ),
+        ]
+
+    def _build_signal_generators_1h(self) -> list[Any]:
+        """
+        Build 1-hour technical signal generators for the swing trading strategy.
+
+        These are parallel to the 1m generators but consume the 1h CandleAggregator
+        and stamp metadata["timeframe"] = "1h" on every emitted signal. The swing
+        trading SignalAggregator filters for this tag via signal_timeframe_filter="1h",
+        so 1h signals feed only swing_trading while 1m signals feed the other four
+        strategies (DEC-SWING-001).
+        """
+        config = self.config
+        return [
+            RSISignal(
+                self.bus,
+                self.candle_agg_1h,
+                period=config.signals.rsi_period,
+                oversold=config.signals.rsi_oversold,
+                overbought=config.signals.rsi_overbought,
+                timeframe="1h",
+            ),
+            MACDSignal(
+                self.bus,
+                self.candle_agg_1h,
+                fast=config.signals.macd_fast,
+                slow=config.signals.macd_slow,
+                signal=config.signals.macd_signal,
+                timeframe="1h",
+            ),
+            BollingerBandsSignal(
+                self.bus,
+                self.candle_agg_1h,
+                period=config.signals.bb_period,
+                std_dev=config.signals.bb_std_dev,
+                timeframe="1h",
+            ),
+            VWAPSignal(
+                self.bus,
+                self.candle_agg_1h,
+                period=config.signals.vwap_period,
+                timeframe="1h",
             ),
         ]
 
@@ -369,7 +413,7 @@ class CerebrumCoin:
 
         Creates shared global guards (one instance per guard type, shared by
         reference across all strategy RiskManagers via StrategyRegistry.start_all).
-        Registers four strategies: momentum, mean_reversion, breakout, range_trading.
+        Registers five strategies: momentum, mean_reversion, breakout, range_trading, swing_trading.
         Creates DarwinianAllocator, Conductor, and WebDashboard.
 
         See DEC-MAIN-002, DEC-STRAT-003.
@@ -379,6 +423,7 @@ class CerebrumCoin:
         from cerebrum.strategies.mean_reversion import MEAN_REVERSION_CONFIG
         from cerebrum.strategies.breakout import BREAKOUT_CONFIG
         from cerebrum.strategies.range_trading import RANGE_TRADING_CONFIG
+        from cerebrum.strategies.swing_trading import SWING_TRADING_CONFIG
         from cerebrum.conductor.allocator import DarwinianAllocator
         from cerebrum.conductor.conductor import Conductor
 
@@ -409,7 +454,9 @@ class CerebrumCoin:
                 # other strategies are suppressed (DEC-RANGE-006).
                 exempt_strategies={"range_trading"},
             ),
-            # ~10 trades/hour per strategy * 4 strategies = 40 global cap
+            # ~10 trades/hour per strategy * 5 strategies = 50 global cap
+            # swing_trading targets ~2-4 trades/day so the 1h strategy contributes
+            # very few; the cap is kept at 40 to maintain pre-swing budget.
             GlobalTradeRateLimitRule(
                 max_trades_per_hour=40,
                 bus=self.bus,
@@ -422,6 +469,7 @@ class CerebrumCoin:
         self.strategy_registry.register(MEAN_REVERSION_CONFIG)
         self.strategy_registry.register(BREAKOUT_CONFIG)
         self.strategy_registry.register(RANGE_TRADING_CONFIG)
+        self.strategy_registry.register(SWING_TRADING_CONFIG)
 
         # Build and start all strategy pipelines, injecting shared global guards
         await self.strategy_registry.start_all(shared_global_rules=global_guards)
@@ -519,15 +567,29 @@ class CerebrumCoin:
             )
             await self.paper_adapter.connect()
 
-        # Candle aggregator is shared across all strategies
+        # 1m candle aggregator — shared across all non-swing strategies
         self.candle_agg = CandleAggregator(
             self.bus,
             interval_seconds=config.signals.candle_interval_seconds,
         )
 
-        # Technical signal generators are shared — they emit raw signals to the
-        # bus; each strategy's SignalAggregator subscribes independently.
+        # 1h candle aggregator — dedicated to swing trading strategy (DEC-SWING-001).
+        # Independent of candle_agg: separate state, separate interval boundary.
+        self.candle_agg_1h = CandleAggregator(
+            self.bus,
+            interval_seconds=3600,
+        )
+
+        # 1m technical signal generators — shared across momentum/mean_reversion/
+        # breakout/range_trading strategies. Each generator stamps metadata["timeframe"]
+        # = "1m" so swing_trading's aggregator (filter="1h") ignores them.
         self._signal_generators = self._build_signal_generators()
+
+        # 1h technical signal generators — exclusively consumed by swing_trading.
+        # Stamp metadata["timeframe"] = "1h" on every emitted signal so other
+        # strategy aggregators (no timeframe filter, or filter != "1h") ignore them.
+        signal_generators_1h = self._build_signal_generators_1h()
+        self._signal_generators.extend(signal_generators_1h)
 
         # Intelligence layer (shared regime + news + sentiment)
         await self._start_intelligence_components()
