@@ -19,6 +19,16 @@ This enables clean separation: data management in base, indicator logic in subcl
 signals by originating generator (e.g., accept only SupportResistance signals).
 Injecting metadata["source"] = self._name in _create_signal() provides this at
 the single common creation point, so every subclass gets it for free.
+
+@decision DEC-SIGNAL-003
+@title Timeframe metadata injected by _create_signal
+@status accepted
+@rationale Multi-timeframe swing trading strategies need to distinguish signals
+produced from different bar sizes (e.g., 1-minute scalp signals vs 1-hour swing
+signals). Injecting metadata["timeframe"] = self._timeframe in _create_signal()
+at the base level means every subclass carries timeframe context for free.
+The default "1m" preserves backward compatibility with all existing generators
+that do not specify a timeframe.
 """
 
 from abc import ABC, abstractmethod
@@ -52,6 +62,7 @@ class SignalGenerator(ABC):
         signal_type: SignalType,
         window_size: int = 100,
         name: str | None = None,
+        timeframe: str = "1m",
     ) -> None:
         """
         Initialize signal generator.
@@ -61,11 +72,16 @@ class SignalGenerator(ABC):
             signal_type: Type of signal this generator produces
             window_size: Number of market data points to retain per symbol
             name: Human-readable name for logging
+            timeframe: Bar timeframe this generator operates on (e.g. "1m", "1h",
+                       "4h", "1d"). Stamped into every signal's metadata so
+                       downstream aggregators can filter by timeframe.
+                       Default "1m" preserves backward compatibility.
         """
         self._bus = bus
         self._signal_type = signal_type
         self._window_size = window_size
         self._name = name or self.__class__.__name__
+        self._timeframe = timeframe
 
         # Per-symbol data accumulation: symbol -> deque of MarketDataEvents
         self._data: dict[Symbol, Deque[MarketDataEvent]] = defaultdict(
@@ -176,7 +192,7 @@ class SignalGenerator(ABC):
             strength=strength,
             confidence=confidence,
             reason=reason,
-            metadata={"source": self._name},
+            metadata={"source": self._name, "timeframe": self._timeframe},
         )
 
     def get_data_count(self, symbol: Symbol) -> int:
