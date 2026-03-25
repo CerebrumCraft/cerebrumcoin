@@ -80,7 +80,7 @@ RANGE_TRADING_CONFIG = StrategyConfig(
         "tp_multiplier": "1.5",
         "min_tp_percent": "0.2",
     },
-    initial_balance=Decimal("1666.67"),  # 1/6 of $10k for 6-strategy split
+    initial_balance=Decimal("2500"),  # 1/4 of $10k for 4-strategy equal split
     symbols=["BTC/USD", "ETH/USD"],
     exit_monitor_factory=_create_range_exit_monitor,
 )
