@@ -312,6 +312,24 @@ class Conductor:
     # Allocation application
     # ------------------------------------------------------------------
 
+    # Maximum allocation any single strategy may receive (inclusive).
+    # Prevents a single large LLM override from creating a transient capital
+    # spike that permanently elevates _peak_equity and triggers the max-drawdown
+    # circuit-breaker after the capital is later withdrawn (Session 9 root cause).
+    #
+    # @decision DEC-CONDUCTOR-004
+    # @title 50% single-strategy allocation cap to prevent peak-equity spikes
+    # @status accepted
+    # @rationale Haiku returned 75% to range_trading at T+90s, injecting $5,000
+    # into a $2,500 portfolio. When Haiku reverted at T+3:44, the portfolio's
+    # _peak_equity held $7,500, producing a permanent 66.7% false drawdown that
+    # exceeded the 5% circuit-breaker for the rest of the session (787 denials,
+    # zero trades). Capping at 50% limits the worst-case transient spike to 2x
+    # the base allocation, keeping false drawdown well below any reasonable
+    # circuit-breaker threshold. Excess above the cap is redistributed
+    # proportionally to the remaining strategies so capital is fully deployed.
+    MAX_SINGLE_ALLOCATION_PCT: Decimal = Decimal("50")
+
     async def _apply_allocations(
         self,
         allocations: dict[str, Decimal],
@@ -323,6 +341,12 @@ class Conductor:
         When copilot_mode is True (and _bypass_copilot is False), the allocation
         is queued as pending instead of applied immediately. The human must call
         approve_pending() via the dashboard to commit the change (DEC-DASH-003).
+
+        Before applying, any single strategy that exceeds MAX_SINGLE_ALLOCATION_PCT
+        is clamped and the excess redistributed proportionally to the remaining
+        strategies. This prevents transient peak-equity spikes that would
+        trigger a false max-drawdown circuit-breaker after reversion
+        (DEC-CONDUCTOR-004).
 
         Calls registry.get_portfolio(name).adjust_balance() to redistribute
         capital. Saves allocations as fallback for API failure recovery.
@@ -344,6 +368,9 @@ class Conductor:
                 allocations={k: str(v) for k, v in allocations.items()},
             )
             return
+
+        # --- Apply 50% single-strategy cap (DEC-CONDUCTOR-004) ---
+        allocations = self._cap_allocations(allocations)
 
         self._last_allocations = dict(allocations)
         total_capital = self._allocator._total_capital
@@ -367,6 +394,68 @@ class Conductor:
                     target_balance=str(round(target_balance, 2)),
                     delta=str(round(delta, 2)),
                 )
+
+    def _cap_allocations(
+        self, allocations: dict[str, Decimal]
+    ) -> dict[str, Decimal]:
+        """
+        Clamp any single strategy at MAX_SINGLE_ALLOCATION_PCT and redistribute
+        excess proportionally to remaining strategies.
+
+        If after redistribution a recipient would itself exceed the cap, a
+        second pass is applied (iterative until stable or max 10 rounds).
+        Strategies with zero uncapped weight receive no redistribution.
+
+        Args:
+            allocations: Raw allocation dict (strategy → pct, sum ~100).
+
+        Returns:
+            Capped allocation dict with the same keys, sum preserved.
+        """
+        cap = self.MAX_SINGLE_ALLOCATION_PCT
+        result = {k: v for k, v in allocations.items()}
+
+        for _ in range(10):  # safety: at most 10 redistribution passes
+            over = {k: v for k, v in result.items() if v > cap}
+            if not over:
+                break
+
+            # Collect total excess and identify uncapped recipients
+            total_excess = sum(v - cap for v in over.values())
+            under = {k: v for k, v in result.items() if v <= cap}
+
+            if not under:
+                # Edge case: every strategy is over the cap — just clamp all
+                n = Decimal(str(len(result)))
+                result = {k: cap for k in result}
+                self._log.warning(
+                    "allocation_cap_all_over",
+                    message="All strategies exceed cap; clamped equally.",
+                )
+                break
+
+            total_under_weight = sum(under.values())
+
+            for k in over:
+                result[k] = cap
+
+            if total_under_weight > Decimal("0"):
+                for k, v in under.items():
+                    share = v / total_under_weight
+                    result[k] = v + total_excess * share
+            else:
+                # Distribute evenly if all uncapped strategies have zero weight
+                per_strategy = total_excess / Decimal(str(len(under)))
+                for k in under:
+                    result[k] += per_strategy
+
+            self._log.info(
+                "allocation_cap_applied",
+                capped_strategies=list(over.keys()),
+                total_excess=str(round(total_excess, 2)),
+            )
+
+        return result
 
     # ------------------------------------------------------------------
     # LLM calls

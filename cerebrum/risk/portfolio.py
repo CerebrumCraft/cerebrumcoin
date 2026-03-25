@@ -323,18 +323,54 @@ class PortfolioTracker:
         Adjust cash balance by delta (positive = add, negative = remove).
 
         Used by the Conductor to redistribute capital between strategy
-        portfolios when Darwinian allocation changes. Also updates peak equity
-        so drawdown calculations remain meaningful after capital injection.
+        portfolios when Darwinian allocation changes. Updates peak equity
+        so drawdown calculations remain meaningful after capital flows.
+
+        Peak equity treatment by direction:
+
+        - Injection (delta > 0): peak rises normally — we now have more capital
+          at risk and the high-water mark should reflect that.
+        - Withdrawal (delta < 0): peak is *also lowered* by the withdrawal
+          amount (floored at new equity). This prevents a transient Conductor
+          spike from leaving a permanently elevated peak that triggers a false
+          max-drawdown circuit-breaker.
+
+          Example (Session 9 root cause):
+            T+90s  inject +$5,000  -> cash=$7,500, peak=$7,500
+            T+3m   withdraw -$5,000 -> cash=$2,500
+            Without this fix: peak stays at $7,500, drawdown = 66.7% -> circuit
+            breaker fires, strategy dead for entire session.
+            With this fix: peak lowers to max($2,500, $7,500-$5,000) = $2,500
+            -> drawdown = 0%, trading resumes normally.
+
+        Real trading losses (which also reduce equity) are still captured: the
+        max(new_equity, ...) floor ensures peak never drops below current
+        equity, so a genuine loss component within the same withdrawal is
+        preserved.
+
+        @decision DEC-RISK-005
+        @title Peak equity lowered on capital withdrawal to prevent false drawdown
+        @status accepted
+        @rationale Conductor reallocation injects then later withdraws capital.
+        Without peak-lowering on withdrawal, _peak_equity holds a transient high
+        and the drawdown calculation permanently exceeds the circuit-breaker
+        threshold, blocking all trading. The fix: on negative delta, lower peak
+        by the same amount (floor at new equity so real losses are preserved).
 
         Args:
             delta: Amount to add (positive) or remove (negative) from cash.
         """
         self._cash_balance += delta
         new_equity = self.get_total_equity()
+        if delta < Decimal("0"):
+            # Capital withdrawal: lower peak proportionally so drawdown stays
+            # relative to actual allocated capital, not a transient spike.
+            self._peak_equity = max(new_equity, self._peak_equity + delta)
         if new_equity > self._peak_equity:
             self._peak_equity = new_equity
         self._log.debug(
             "balance_adjusted",
             delta=str(delta),
             new_cash_balance=str(self._cash_balance),
+            new_peak_equity=str(self._peak_equity),
         )
