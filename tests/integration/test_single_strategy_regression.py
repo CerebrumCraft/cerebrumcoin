@@ -67,9 +67,9 @@ def config():
 class TestMomentumConfigValues:
     """MOMENTUM_CONFIG matches paper.toml values exactly."""
 
-    def test_initial_balance_is_fifth_paper_balance(self):
-        """MOMENTUM_CONFIG.initial_balance = 1/5 of $10k for 5-strategy split."""
-        assert MOMENTUM_CONFIG.initial_balance == Decimal("2000.00")
+    def test_initial_balance_is_sixth_paper_balance(self):
+        """MOMENTUM_CONFIG.initial_balance = 1/6 of $10k for 6-strategy split."""
+        assert MOMENTUM_CONFIG.initial_balance == Decimal("1666.67")
 
     def test_aggregator_threshold_matches_paper_toml(self):
         """Threshold 0.4 matches paper.toml aggregation_threshold."""
@@ -123,7 +123,7 @@ class TestSingleStrategyPipelineEquivalence:
         portfolio = registry.get_portfolio("momentum")
         assert portfolio is not None
         # 1/5 of $10k — equal split across 5 strategies
-        assert portfolio.get_cash_balance() == Decimal("2000.00")
+        assert portfolio.get_cash_balance() == Decimal("1666.67")
 
     async def test_aggregator_uses_correct_threshold(self, bus, config):
         """Aggregator threshold matches paper.toml aggregation_threshold."""

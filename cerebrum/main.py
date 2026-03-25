@@ -413,7 +413,7 @@ class CerebrumCoin:
 
         Creates shared global guards (one instance per guard type, shared by
         reference across all strategy RiskManagers via StrategyRegistry.start_all).
-        Registers five strategies: momentum, mean_reversion, breakout, range_trading, swing_trading.
+        Registers six strategies: momentum, mean_reversion, breakout, range_trading, swing_trading, news_driven.
         Creates DarwinianAllocator, Conductor, and WebDashboard.
 
         See DEC-MAIN-002, DEC-STRAT-003.
@@ -424,6 +424,7 @@ class CerebrumCoin:
         from cerebrum.strategies.breakout import BREAKOUT_CONFIG
         from cerebrum.strategies.range_trading import RANGE_TRADING_CONFIG
         from cerebrum.strategies.swing_trading import SWING_TRADING_CONFIG
+        from cerebrum.strategies.news_driven import NEWS_DRIVEN_CONFIG
         from cerebrum.conductor.allocator import DarwinianAllocator
         from cerebrum.conductor.conductor import Conductor
 
@@ -470,6 +471,7 @@ class CerebrumCoin:
         self.strategy_registry.register(BREAKOUT_CONFIG)
         self.strategy_registry.register(RANGE_TRADING_CONFIG)
         self.strategy_registry.register(SWING_TRADING_CONFIG)
+        self.strategy_registry.register(NEWS_DRIVEN_CONFIG)
 
         # Build and start all strategy pipelines, injecting shared global guards
         await self.strategy_registry.start_all(shared_global_rules=global_guards)
