@@ -148,6 +148,6 @@ BREAKOUT_CONFIG = StrategyConfig(
         "tp_multiplier": "1.5",
         "min_tp_percent": "0.5",
     },
-    initial_balance=Decimal("2500"),  # 1/4 of $10k for 4-strategy equal split
+    initial_balance=Decimal("1666.67"),  # 1/6 of $10k for 6-strategy split
     symbols=["BTC/USD", "ETH/USD"],
 )
