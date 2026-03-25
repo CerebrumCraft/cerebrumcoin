@@ -204,6 +204,46 @@ async def test_aggregator_no_timeframe_filter_accepts_all(bus):
 
 
 @pytest.mark.asyncio
+async def test_1h_candle_aggregator_independent(bus):
+    """1h and 1m CandleAggregators produce candles independently."""
+    from cerebrum.signals.candles import CandleAggregator
+    from cerebrum.core.events import MarketDataEvent
+
+    agg_1m = CandleAggregator(bus, interval_seconds=60)
+    agg_1h = CandleAggregator(bus, interval_seconds=3600)
+
+    # Feed a market data event
+    event = MarketDataEvent(
+        event_type=None, timestamp=time(),
+        symbol="BTC/USD", price=Decimal("70000"),
+        bid=Decimal("69999"), ask=Decimal("70001"),
+        volume=Decimal("1.0"),
+    )
+    await bus.publish(event)
+    await asyncio.sleep(0.05)
+
+    # Both aggregators maintain separate state (no shared candle data structures)
+    assert agg_1m._interval == 60
+    assert agg_1h._interval == 3600
+
+    # They are separate objects — not sharing state
+    assert agg_1m is not agg_1h
+    assert agg_1m._current_candles is not agg_1h._current_candles
+    assert agg_1m._completed_candles is not agg_1h._completed_candles
+
+    # Both should have received the event and started tracking the symbol
+    candles_1m = agg_1m.get_candles("BTC/USD")
+    candles_1h = agg_1h.get_candles("BTC/USD")
+
+    # Completed candles are empty (no interval boundary crossed with a single tick)
+    # but current_candles should be populated
+    assert len(candles_1m) == 0  # no completed candle yet (no boundary crossing)
+    assert len(candles_1h) == 0  # same
+    assert agg_1m._current_candles["BTC/USD"] is not None
+    assert agg_1h._current_candles["BTC/USD"] is not None
+
+
+@pytest.mark.asyncio
 async def test_aggregator_drops_signal_with_no_metadata_when_timeframe_filter_set(bus):
     """Signal with no metadata is dropped when timeframe filter is active."""
     agg = SignalAggregator(
