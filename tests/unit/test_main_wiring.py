@@ -215,14 +215,14 @@ class TestStrategyConfigs:
         assert MEAN_REVERSION_CONFIG.name == "mean_reversion"
         assert BREAKOUT_CONFIG.name == "breakout"
 
-    def test_momentum_has_fifth_balance(self):
-        """MOMENTUM_CONFIG uses 1/5 of $10k for the 5-strategy equal split."""
-        assert MOMENTUM_CONFIG.initial_balance == Decimal("2000.00")
+    def test_momentum_has_sixth_balance(self):
+        """MOMENTUM_CONFIG uses 1/6 of $10k for the 6-strategy equal split."""
+        assert MOMENTUM_CONFIG.initial_balance == Decimal("1666.67")
 
-    def test_mean_reversion_and_breakout_have_fifth_balance(self):
-        """New strategy configs each start at 1/5 of $10k for 5-way split."""
-        assert MEAN_REVERSION_CONFIG.initial_balance == Decimal("2000.00")
-        assert BREAKOUT_CONFIG.initial_balance == Decimal("2000.00")
+    def test_mean_reversion_and_breakout_have_sixth_balance(self):
+        """New strategy configs each start at 1/6 of $10k for 6-way split."""
+        assert MEAN_REVERSION_CONFIG.initial_balance == Decimal("1666.67")
+        assert BREAKOUT_CONFIG.initial_balance == Decimal("1666.67")
 
     def test_mean_reversion_has_tighter_tp(self):
         """Mean reversion targets small range-bound moves."""
@@ -265,9 +265,9 @@ class TestStrategyConfigs:
         assert isinstance(RANGE_TRADING_CONFIG, StrategyConfig)
         assert RANGE_TRADING_CONFIG.name == "range_trading"
 
-    def test_range_trading_has_fifth_balance(self):
-        """Range trading uses 1/5 of $10k — equal split with other 4 strategies."""
-        assert RANGE_TRADING_CONFIG.initial_balance == Decimal("2000.00")
+    def test_range_trading_has_sixth_balance(self):
+        """Range trading uses 1/6 of $10k — equal split with other 5 strategies."""
+        assert RANGE_TRADING_CONFIG.initial_balance == Decimal("1666.67")
 
     def test_range_trading_filters_to_support_resistance(self):
         """Only S/R signals feed range trading — other sources are excluded."""
@@ -291,9 +291,9 @@ class TestStrategyConfigs:
         assert isinstance(SWING_TRADING_CONFIG, StrategyConfig)
         assert SWING_TRADING_CONFIG.name == "swing_trading"
 
-    def test_swing_trading_has_fifth_balance(self):
-        """Swing trading uses 1/5 of $10k — equal split with other 4 strategies."""
-        assert SWING_TRADING_CONFIG.initial_balance == Decimal("2000.00")
+    def test_swing_trading_has_sixth_balance(self):
+        """Swing trading uses 1/6 of $10k — equal split with other 5 strategies."""
+        assert SWING_TRADING_CONFIG.initial_balance == Decimal("1666.67")
 
     def test_swing_trading_filters_1h_timeframe(self):
         """Only 1h signals feed swing trading — 1m scalp signals are excluded."""
@@ -400,8 +400,8 @@ class TestStrategyRegistryAllConfigs:
 
             gp = registry.global_portfolio
             total = gp.get_total_equity()
-            # momentum=$3333.33 (test fixture) + mean_reversion=$2000 + breakout=$2000
-            expected = Decimal("3333.33") + Decimal("2000.00") + Decimal("2000.00")
+            # momentum=$3333.33 (test fixture) + mean_reversion=$1666.67 + breakout=$1666.67
+            expected = Decimal("3333.33") + Decimal("1666.67") + Decimal("1666.67")
             assert total == expected
         finally:
             await bus.stop()
@@ -574,7 +574,7 @@ class TestSetupMultiStrategy:
             await app._setup_multi_strategy()
 
             active = set(app.strategy_registry.active_strategy_names())
-            assert active == {"momentum", "mean_reversion", "breakout", "range_trading", "swing_trading"}
+            assert active == {"momentum", "mean_reversion", "breakout", "range_trading", "swing_trading", "news_driven"}
         finally:
             if app.conductor:
                 await app.conductor.stop()
@@ -616,7 +616,7 @@ class TestSetupMultiStrategy:
             app.bus = bus
             await app._setup_multi_strategy()
 
-            assert set(app.allocator._strategies) == {"momentum", "mean_reversion", "breakout", "range_trading", "swing_trading"}
+            assert set(app.allocator._strategies) == {"momentum", "mean_reversion", "breakout", "range_trading", "swing_trading", "news_driven"}
         finally:
             if app.conductor:
                 await app.conductor.stop()
