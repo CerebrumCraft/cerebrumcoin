@@ -18,6 +18,17 @@ FillEvents share one event bus, so without filtering every PortfolioTracker woul
 process every fill — causing triple-counting of positions and incorrect P&L. When
 strategy_id is provided at construction, _on_fill skips events whose strategy_id
 does not match. None means "accept all" (single-strategy backward compatibility).
+
+@decision DEC-PERSIST-001
+@title Per-strategy PortfolioTracker snapshots in paper_state.json
+@status accepted
+@rationale Each strategy has an isolated PortfolioTracker (cash, positions, peak_equity,
+realized_pnl). Without per-strategy snapshots, all per-strategy equity is lost on restart
+and the dashboard shows stale global aggregates. save_snapshot() serialises all mutable
+state to a plain dict using str(Decimal) for lossless round-trip. restore_snapshot()
+deserialises it. initial_balance is NOT restored — it is fixed at construction time and
+must not drift. unrealized_pnl is intentionally set to Decimal("0") on restore; it will
+be recalculated on the next MARKET_DATA tick.
 """
 
 import time as time_module
@@ -373,4 +384,73 @@ class PortfolioTracker:
             delta=str(delta),
             new_cash_balance=str(self._cash_balance),
             new_peak_equity=str(self._peak_equity),
+        )
+
+    def save_snapshot(self) -> dict:
+        """
+        Serialise portfolio state for persistence.
+
+        Returns a plain dict of strings (all Decimals as str for lossless
+        round-trip through JSON). Intended for PaperTradingAdapter._save_state()
+        to embed under strategy_snapshots[strategy_id].
+
+        Note: initial_balance is included for informational purposes only — it
+        is NOT used by restore_snapshot() because the balance is fixed at
+        construction time.
+
+        Returns:
+            Dict suitable for json.dumps() containing cash_balance,
+            initial_balance, peak_equity, total_realized_pnl, and positions.
+        """
+        return {
+            "cash_balance": str(self._cash_balance),
+            "initial_balance": str(self._initial_balance),
+            "peak_equity": str(self._peak_equity),
+            "total_realized_pnl": str(self._total_realized_pnl),
+            "positions": {
+                symbol: {
+                    "amount": str(pos.amount),
+                    "average_entry_price": str(pos.average_entry_price),
+                    "current_price": str(pos.current_price),
+                    "realized_pnl": str(pos.realized_pnl),
+                    "entry_time": pos.entry_time,
+                }
+                for symbol, pos in self._positions.items()
+            },
+        }
+
+    def restore_snapshot(self, snapshot: dict) -> None:
+        """
+        Restore portfolio state from a saved snapshot.
+
+        Overwrites cash_balance, peak_equity, total_realized_pnl, and
+        positions from the snapshot dict. initial_balance is intentionally
+        NOT restored — it is fixed at construction time.
+
+        unrealized_pnl on restored positions is set to Decimal("0"); it will
+        be recalculated automatically on the next MARKET_DATA tick via
+        _on_market_data → Position.update_price().
+
+        Args:
+            snapshot: Dict previously produced by save_snapshot().
+        """
+        self._cash_balance = Decimal(snapshot["cash_balance"])
+        self._peak_equity = Decimal(snapshot["peak_equity"])
+        self._total_realized_pnl = Decimal(snapshot["total_realized_pnl"])
+        self._positions = {}
+        for symbol, pos_data in snapshot.get("positions", {}).items():
+            self._positions[symbol] = Position(
+                symbol=symbol,
+                amount=Decimal(pos_data["amount"]),
+                average_entry_price=Decimal(pos_data["average_entry_price"]),
+                current_price=Decimal(pos_data["current_price"]),
+                unrealized_pnl=Decimal("0"),  # recalculated on next price tick
+                realized_pnl=Decimal(pos_data["realized_pnl"]),
+                entry_time=pos_data.get("entry_time", 0.0),
+            )
+        self._log.info(
+            "portfolio_snapshot_restored",
+            cash_balance=str(self._cash_balance),
+            peak_equity=str(self._peak_equity),
+            positions=list(self._positions.keys()),
         )

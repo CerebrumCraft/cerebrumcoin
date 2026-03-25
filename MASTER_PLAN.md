@@ -286,11 +286,129 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-EXPORT-002 | Trades CSV exporter with flattened signal_snapshot columns | Parameter tuning requires flat tabular data. JSON signal_snapshot is destructured into signal_strength, signal_confidence, signal_action columns. ISO timestamps for human readability. hold_duration_min derived from entry/exit timestamps | 2026-03-17 |
 | DEC-EXPORT-003 | Weight history CSV exporter with ISO timestamps | Signal weight evolution is key data for understanding adaptive learning. Exports weight_history table directly with human-readable timestamps | 2026-03-17 |
 | DEC-DENIAL-001 | Denial counters in RiskManager, displayed in Dashboard Guard Denials section | Observability: knowing which rules fire most often guides tuning. Counters are per-rule dicts incremented on every DENY in _apply_rules. Dashboard shows counts when risk_manager is provided (optional parameter) | 2026-03-17 |
+| DEC-RISK-MGR-001 | RiskManager as stateful coordinator with per-rule denial counters | RiskManager owns the full order validation pipeline: receives combined SignalEvents, creates proposed orders, applies risk rules in sequence (any DENY blocks; MODIFY adjusts amount), and emits approved OrderEvents. Denial counters accumulated here rather than in individual rules because the manager is the single choke-point that sees every denial. Single-threaded asyncio means no locking needed | 2026-03-17 |
 | DEC-TEST-013 | Tests for SidewaysSuppressionRule | Subscribes to both REGIME_CHANGE and MARKET_DATA events. Real EventBus validates subscription wiring. SELL orders must always be approved. BULL/BEAR regimes bypass suppression entirely | 2026-03-17 |
 | DEC-TEST-014 | Tests for MacroVolatilityGateRule | Subscribes to MARKET_DATA events. Key test: local noise passes short gate but macro gate blocks when session is globally flat | 2026-03-17 |
 | DEC-TEST-015 | Tests for adaptive take-profit in ExitMonitor | White-box test of _compute_effective_tp method. End-to-end test verifies exit orders fire at expected gain level below fixed TP threshold | 2026-03-17 |
 | DEC-TEST-016 | Tests for export scripts using in-memory SQLite | Export scripts use raw sqlite3. Tests use in-memory SQLite DB with seeded trade data to verify JSONL validity, CSV headers, and record counts | 2026-03-17 |
 | DEC-TEST-017 | Tests for RiskManager denial counters | Verifies counters increment on DENY, remain at zero for APPROVE/MODIFY, and denial_counts returns a copy not the live dict | 2026-03-17 |
+| DEC-TEST-LEARN-001 | Test trade tracker lifecycle and sell-fill correlation fix | Covers the Session 6 bug (sell fills creating phantom shorts instead of closing matching open BUY trades). Tests prove: (1) BUY fill opens a trade, (2) subsequent SELL fill closes it via FIFO matching, (3) unmatched SELL fill is silently skipped and does NOT open a phantom SELL record. Real EventBus and in-memory SQLite — no mocks | 2026-03-23 |
+
+### Phase 11A Prerequisites: Multi-Strategy Groundwork (COMPLETED)
+**Goal**: Four self-contained changes that lay the groundwork for the multi-strategy agent swarm refactor.
+
+- [x] Fix trade tracker DB bug — unmatched SELL fills must not create phantom short positions (DEC-PREREQ-001)
+- [x] Add `strategy_id: str | None = None` to SignalEvent, OrderEvent, FillEvent (DEC-PREREQ-001)
+- [x] PaperAdapter propagates strategy_id from OrderEvent to FillEvent
+- [x] Refactor RiskManager._apply_rules to use dataclasses.replace() (DEC-RISK-MGR-002)
+
+**Phase 11A Prerequisites Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-PREREQ-001 | strategy_id on SignalEvent/OrderEvent/FillEvent; tracker long-only fix | strategy_id added as last optional field (None default) for forward-compatible multi-strategy routing. Tracker fix: SELL fills with no matching open BUY trade are logged+skipped instead of creating phantom shorts that corrupt subsequent BUY matching (Session 6: 18/19 trades stuck OPEN) | 2026-03-23 |
+| DEC-RISK-MGR-002 | Use dataclasses.replace() for frozen OrderEvent mutation in _apply_rules | Manual field-by-field reconstruction breaks when new fields are added to OrderEvent (e.g. strategy_id). replace() copies all unspecified fields automatically, making the MODIFY path forward-compatible | 2026-03-23 |
+
+### Session 7 Bug Fixes (COMPLETED)
+**Goal**: Fix three bugs discovered in Session 7 deep analysis that left the multi-strategy system in a severely degraded state.
+
+- [x] TradeTracker subscribes to REGIME_CHANGE so _current_regime stays current (DEC-S7-001)
+- [x] get_open_trades() adds ORDER BY entry_time ASC for deterministic FIFO matching (DEC-S7-002)
+- [x] strategy_id propagated through TradeRecord, DB schema, save_trade, _row_to_trade_record, RiskManager signal_snapshot, and OrderEvent (DEC-S7-003)
+
+**Session 7 Bug Fix Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-S7-001 | TradeTracker subscribes to REGIME_CHANGE via bus in start() | update_regime() existed but was never called. Tracker initialised with "UNKNOWN" and stayed there for entire session — every trade record stored regime="UNKNOWN". Fix: subscribe in start() using same pattern as RegimeTradeHaltRule. Handler calls update_regime() then logs the transition | 2026-03-24 |
+| DEC-S7-002 | get_open_trades() adds ORDER BY entry_time ASC | Without ORDER BY, SQLite returns rows in unspecified order. FIFO matching relied on open_trades[0] being the oldest trade — non-deterministic with multiple open positions. Fix: both symbol-filtered and unfiltered queries now ORDER BY entry_time ASC | 2026-03-24 |
+| DEC-S7-003 | strategy_id field on TradeRecord, DB column via ALTER TABLE migration, propagated from FillEvent | Three-layer gap: strategy_id existed on FillEvent but (1) TradeRecord had no field, (2) DB had no column, (3) _open_trade() didn't read it. Fix: add strategy_id: str | None = None to TradeRecord dataclass; ALTER TABLE migration in _create_schema() with try/except for existing DBs; save_trade() includes it in INSERT; _row_to_trade_record() reads via dict(row).get() for old-DB compat; RiskManager propagates signal.strategy_id into both signal_snapshot dict and OrderEvent.strategy_id | 2026-03-24 |
+| DEC-TEST-S7-001 | Session 7 bug-fix regression tests — real EventBus + in-memory SQLite | Covers all three bugs: (1) bus subscription wiring for regime updates, (2) ORDER BY correctness with out-of-order insertion times, (3) strategy_id round-trip through fill → tracker → DB → retrieval. No mocks — same pattern as test_learning.py and test_regime_halt.py | 2026-03-24 |
+
+### Phase 11A: Strategy Abstraction Layer (COMPLETED)
+**Goal**: Create the multi-strategy foundation — isolated pipelines per strategy, shared signal generators, global guards, backward-compatible single-strategy mode.
+
+- [x] Create `cerebrum/strategies/base.py` — StrategyConfig pure config dataclass (DEC-STRAT-001, DEC-STRAT-002)
+- [x] Create `cerebrum/strategies/momentum.py` — MomentumStrategy config matching current paper.toml values exactly (DEC-STRAT-006)
+- [x] Create `cerebrum/strategies/registry.py` — StrategyRegistry: creates aggregator+portfolio+exit_monitor+risk_manager per strategy with error isolation (DEC-STRAT-003)
+- [x] Create `cerebrum/strategies/global_portfolio.py` — GlobalPortfolio: aggregates equity across all PortfolioTrackers (DEC-STRAT-004)
+- [x] Create `cerebrum/risk/global_trade_rate.py` — GlobalTradeRateLimitRule: cross-strategy fill rate limit (DEC-STRAT-007)
+- [x] Modify `cerebrum/signals/aggregator.py` — add strategy_id param; tag COMBINED signals (DEC-STRAT-005)
+- [x] Modify `cerebrum/risk/manager.py` — add strategy_id filter in _on_signal (DEC-STRAT-005)
+- [x] Modify `cerebrum/main.py` — wire StrategyRegistry with backward compat (DEC-STRAT-006, DEC-MAIN-002)
+- [x] Add `cerebrum/risk/portfolio.py` — strategy_id filtering on PortfolioTracker (DEC-RISK-004)
+- [x] Add `cerebrum/signals/support_resistance.py` — pivot-based S/R signal (DEC-SIGNAL-006)
+- [x] Add tests: test_strategy_registry.py, test_global_portfolio.py, test_global_trade_rate.py, test_single_strategy_regression.py
+- **Verification**: All tests pass
+
+**Phase 11A Strategy Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-STRAT-001 | StrategyConfig as a pure config dataclass, not an actor | Rejected "Strategy as actor" pattern (generate_signals(), on_fill()). Config object is simpler to test, version, and serialize. StrategyRegistry owns wiring logic; config owns parameters. Enables backward compat: single MomentumStrategy config wraps current main.py wiring | 2026-03-23 |
+| DEC-STRAT-002 | Isolated portfolios per strategy — no compound keys | Each strategy gets its own PortfolioTracker with own cash balance and position set. Cross-strategy aggregation via GlobalPortfolio (read-only view). Avoids compound symbol/strategy_id keys, simplifies per-strategy P&L attribution, prevents one strategy's drawdown circuit-breaker from triggering another's | 2026-03-23 |
+| DEC-STRAT-003 | StrategyRegistry owns pipeline lifecycle with error isolation | Models plugins/registry.py pattern: register(), start_all(), stop_all() with try/except isolation. One strategy failing to start doesn't block others. Shared global guards (RegimeTradeHaltRule etc.) constructed once and passed to all RiskManagers by reference | 2026-03-23 |
+| DEC-STRAT-004 | GlobalPortfolio as read-only aggregation view | Aggregates equity, drawdown, positions across all strategy PortfolioTrackers. Read-only (no event subscriptions). Drawdown computed from global peak across all strategies combined. Provides per-strategy equity delegation for dashboard and monitoring | 2026-03-23 |
+| DEC-STRAT-005 | strategy_id tagging on aggregator output, filtering on RiskManager input | Each strategy's SignalAggregator tags COMBINED signals with strategy_id=config.name. Each strategy's RiskManager filters _on_signal to skip signals where event.strategy_id != self._strategy_id. None strategy_id on either side = no filtering (backward compat for legacy callers) | 2026-03-23 |
+| DEC-STRAT-006 | Backward-compatible single-strategy mode in main.py | If no strategy config in TOML: create a single MomentumStrategy pipeline identical to current main.py wiring. If strategy configs present: use StrategyRegistry. Zero behavioural change for existing paper/live runs | 2026-03-23 |
+| DEC-STRAT-007 | GlobalTradeRateLimitRule for cross-strategy commission control | Session 4 showed 64% commission drag. A per-strategy rate limit doesn't prevent all five strategies from trading simultaneously. Global cap of 40 trades/hour (5 strategies × ~8 trades) enforces system-wide commission budget | 2026-03-23 |
+| DEC-RISK-004 | strategy_id filtering in PortfolioTracker prevents double-counting | In multi-strategy mode, each PortfolioTracker must only process fills for its own strategy. strategy_id=None accepts all fills (single-strategy backward compat). Prevents triple-counting positions when multiple trackers share one event bus | 2026-03-23 |
+| DEC-SIGNAL-006 | Pivot-based S/R detection with proximity signals | Simple pivot point detection (local highs/lows over N candles) provides structural price levels for range trading. Proximity threshold (0.5% default) determines when price is testing a level. Emits BUY near support, SELL near resistance | 2026-03-23 |
+| DEC-MAIN-002 | Multi-strategy mode as default with single-strategy fallback | Multi-strategy pipeline (StrategyRegistry + DarwinianAllocator + Conductor + WebDashboard) is Phase 11 target. CEREBRUM_MULTI_STRATEGY env var controls mode (default true). Single-strategy preserved for backward compatibility | 2026-03-23 |
+
+### Phase 11B: Additional Strategies + Conductor + Dashboard (COMPLETED)
+**Goal**: Add range trading, swing trading, and news-driven strategies; LLM Conductor for Darwinian capital allocation; htmx web dashboard.
+
+- [x] Create `cerebrum/strategies/mean_reversion.py` — MeanReversionStrategy config (DEC-STRAT-008)
+- [x] Create `cerebrum/strategies/breakout.py` — BreakoutStrategy config (DEC-STRAT-009)
+- [x] Create `cerebrum/strategies/range_trading.py` — RangeTradingStrategy: S/R-only signals, SIDEWAYS exemption (DEC-RANGE-006)
+- [x] Create `cerebrum/strategies/range_detector.py` — RangeDetector: bounce evidence accumulation (DEC-RANGE-001, DEC-RANGE-002, DEC-RANGE-003)
+- [x] Create `cerebrum/risk/range_exit_monitor.py` — structural exits for range trading (DEC-RANGE-004, DEC-RANGE-005)
+- [x] Create `cerebrum/strategies/swing_trading.py` — 1h timeframe strategy to reduce commission drag (DEC-SWING-001)
+- [x] Create `cerebrum/strategies/news_driven.py` — news-heavy signal weighting (DEC-NEWS-001)
+- [x] Create `cerebrum/conductor/allocator.py` — DarwinianAllocator: Sharpe-based capital allocation (DEC-ALLOC-001, DEC-ALLOC-002, DEC-ALLOC-003)
+- [x] Create `cerebrum/conductor/conductor.py` — LLM Conductor: event+polling hybrid, graceful degradation (DEC-CONDUCTOR-001, DEC-CONDUCTOR-002, DEC-CONDUCTOR-003)
+- [x] Create `cerebrum/dashboard/web.py` — htmx+FastAPI web dashboard with copilot mode (DEC-DASH-002, DEC-DASH-003)
+- [x] Add 1h CandleAggregator + timeframe-tagged signal generators to main.py
+- [x] Add tests: test_range_detector.py, test_range_exit_monitor.py, test_range_trading_integration.py, test_allocator.py, test_conductor.py, test_web_dashboard.py, test_multi_timeframe.py, test_news_driven.py
+- **Verification**: All tests pass
+
+**Phase 11B Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-STRAT-008 | MEAN_REVERSION_CONFIG as StrategyConfig for StrategyRegistry wiring | MeanReversionStrategy is a documentation dataclass; config is the real artifact consumed by StrategyRegistry. Higher RSI thresholds (oversold=20, overbought=80) target more extreme mean-reversion setups | 2026-03-24 |
+| DEC-STRAT-009 | BREAKOUT_CONFIG as StrategyConfig for StrategyRegistry wiring | Mirrors DEC-STRAT-008. Breakout uses MACD + Bollinger Bands heavily, lower RSI weight. Targets strong momentum continuation after consolidation breakouts | 2026-03-24 |
+| DEC-RANGE-001 | RangeDetector as a queryable state object, not an event emitter | Range detection requires accumulating bounce evidence over time. State object is simpler to test and reason about than an event-driven accumulator that must handle ordering and timing of bus events | 2026-03-24 |
+| DEC-RANGE-002 | Bounce deduplication via proximity zone tracking | Without deduplication, a burst of S/R signals during a single price test counts as multiple bounces, inflating confidence and triggering false range confirmation | 2026-03-24 |
+| DEC-RANGE-003 | Regex-based level extraction from signal.reason string | SupportResistanceSignal encodes the actual level price in its reason string. Regex extraction avoids adding a new field to the signal event type, keeping the event schema stable | 2026-03-24 |
+| DEC-RANGE-004 | Structural exits over percentage-based for range trading | Fixed % TP is unreachable in tight ranges (Session 5: 0/17). Range trading exits at confirmed S/R levels: take profit near resistance, stop loss below support, giving the trade room to reach the structural target | 2026-03-24 |
+| DEC-RANGE-005 | Fallback to percentage-based exits when no confirmed range exists | After regime change or when S/R levels haven't accumulated enough bounces, RangeExitMonitor falls back to standard percentage-based stop-loss and take-profit to prevent unprotected positions | 2026-03-24 |
+| DEC-RANGE-006 | Dedicated range strategy with S/R-only signal filtering | Mean reversion uses RSI/MACD with different weights — doesn't model range boundaries explicitly. Range trading uses S/R signals exclusively and is exempt from SidewaysSuppressionRule (range is the target regime) | 2026-03-24 |
+| DEC-SWING-001 | 1-hour timeframe swing strategy to reduce commission drag | Session 4: $115 commission on $179 gross (64%). 1h candles → fewer signals → fewer trades → lower commission ratio. Dedicated 1h CandleAggregator; timeframe metadata tag filters swing signals away from 1m strategies | 2026-03-25 |
+| DEC-NEWS-001 | News-heavy signal weighting for event-driven trading | LLM news analyzer already generates SignalType.NEWS signals scored [-1,1] by Claude. News-driven strategy ups the weight to 0.6 (vs 0.1 default) making it the dominant signal. Targets crypto market movers driven by news events | 2026-03-25 |
+| DEC-ALLOC-001 | Darwinian capital allocation via rolling Sharpe ratio | Strategies compete for capital based on risk-adjusted returns. Sharpe ratio penalizes both low returns and high volatility. Rolling window (20 trades) adapts to recent performance without over-indexing on one bad trade | 2026-03-25 |
+| DEC-ALLOC-002 | Auto-reactivation with exponential backoff prevents permanent deadlock | A paused strategy stays paused forever under naive Darwinian selection. Exponential backoff (2^n hours) gives struggling strategies occasional capital to prove recovery | 2026-03-25 |
+| DEC-ALLOC-003 | All-paused edge case: reactivate the least-bad strategy | If every strategy falls below the pause threshold simultaneously, the system would hold 100% cash. Reactivating the strategy with the best Sharpe ratio preserves trading activity | 2026-03-25 |
+| DEC-CONDUCTOR-001 | Event-driven + polling hybrid LLM conductor | Pure polling misses immediate regime changes. Pure event-driven cannot enforce periodic rebalancing. Hybrid: poll every N minutes AND rebalance on REGIME_CHANGE events | 2026-03-25 |
+| DEC-CONDUCTOR-002 | Freeze allocations on API failure, never reset | A trading system must degrade gracefully. If the Claude API is unavailable, freeze current allocations rather than resetting to equal weight (which would trigger disruptive capital transfers) | 2026-03-25 |
+| DEC-CONDUCTOR-003 | Math-only mode when no API key provided | DarwinianAllocator alone is genuinely useful — it adjusts capital based on Sharpe. No API key = math-only mode. LLM reasoning is additive, not required | 2026-03-25 |
+| DEC-DASH-002 | htmx + FastAPI web dashboard for multi-strategy visualization | Pure server-side rendering with htmx for partial updates eliminates JavaScript complexity. FastAPI serves JSON API + HTML template. Auto-refresh every 5s via htmx polling | 2026-03-25 |
+| DEC-DASH-003 | Copilot mode queues pending allocations rather than blocking the Conductor | When copilot_mode=True, Conductor produces an allocation proposal but does not apply it. Dashboard displays the pending allocation for human review and approval via /approve endpoint | 2026-03-25 |
+
+### Phase 11C: Per-Strategy State Persistence (IN PROGRESS)
+**Goal**: Fix dashboard showing stale equity on restart by persisting per-strategy PortfolioTracker state (cash, positions, peak_equity, realized_pnl) in paper_state.json.
+
+- [ ] Add `save_snapshot()` / `restore_snapshot()` to `PortfolioTracker` in `cerebrum/risk/portfolio.py` (DEC-PERSIST-001)
+- [ ] Extend `PaperTradingAdapter` with v2 state format: `set_strategy_portfolios()`, `get_strategy_snapshot()`, v2 `_save_state()`, backward-compat `_load_state()` (DEC-PERSIST-001)
+- [ ] Wire restore in `cerebrum/main.py` after `strategy_registry.start_all()`
+- [ ] Add tests: test_portfolio_persistence.py — 6 scenarios covering roundtrip, positions, v2 format, v1 compat, missing/new strategy
+
+**Phase 11C Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-PERSIST-001 | Per-strategy PortfolioTracker snapshots in paper_state.json v2 format | Each strategy has isolated PortfolioTracker (cash, positions, peak_equity, realized_pnl). Without per-strategy snapshots, all per-strategy equity is lost on restart and the dashboard shows stale global aggregates. v2 adds strategy_snapshots key alongside v1 fields; v1 files load cleanly (no version key = empty snapshots, no error). initial_balance is not restored — fixed at construction time | 2026-03-25 |
 
 ## Resources
 

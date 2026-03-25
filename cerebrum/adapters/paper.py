@@ -10,6 +10,15 @@ Maintains portfolio state in memory with file persistence.
 @rationale Simple JSON file persists balances and positions across restarts. No database
 needed for Phase 1. State includes: balances (USD, BTC, etc.), open positions, trade history.
 Atomic writes prevent corruption. Scales to thousands of trades before needing optimization.
+
+@decision DEC-PERSIST-001
+@title Per-strategy PortfolioTracker snapshots in paper_state.json
+@status accepted
+@rationale v2 state format adds "version": 2 and "strategy_snapshots": {name: snapshot}
+alongside the existing v1 fields. v1 files (no version key) load cleanly: _state_version
+defaults to 1 and _strategy_snapshots to {}. set_strategy_portfolios() registers the live
+PortfolioTracker instances; _save_state() calls save_snapshot() on each and embeds the
+results. get_strategy_snapshot() provides read access for main.py restore wiring.
 """
 
 import asyncio
@@ -80,6 +89,13 @@ class PaperTradingAdapter(ExchangeAdapter):
         self._positions: dict[Symbol, Decimal] = {}
         self._current_prices: dict[Symbol, Price] = {}
         self._trade_history: list[dict[str, Any]] = []
+
+        # Per-strategy persistence (v2 state format — DEC-PERSIST-001)
+        # Populated via set_strategy_portfolios(); empty until called.
+        self._strategy_portfolios: dict[str, Any] = {}
+        # Loaded from file by _load_state(); empty for v1 files.
+        self._strategy_snapshots: dict[str, dict] = {}
+        self._state_version: int = 1
 
         self._log = logger.bind(adapter="paper_trading")
 
@@ -256,16 +272,65 @@ class PaperTradingAdapter(ExchangeAdapter):
         """Get current position size."""
         return self._positions.get(symbol, Decimal("0"))
 
+    def set_strategy_portfolios(self, portfolios: dict[str, Any]) -> None:
+        """
+        Register per-strategy PortfolioTracker instances for state persistence.
+
+        Must be called before _save_state() for v2 snapshots to be written.
+        Typically called by main.py after strategy_registry.start_all() and
+        snapshot restore have both completed.
+
+        Args:
+            portfolios: Mapping of strategy name → PortfolioTracker instance.
+        """
+        self._strategy_portfolios = portfolios
+        self._log.info(
+            "strategy_portfolios_registered",
+            strategies=list(portfolios.keys()),
+        )
+
+    def get_strategy_snapshot(self, name: str) -> dict | None:
+        """
+        Return the saved snapshot for a strategy, or None if not present.
+
+        Used by main.py to check whether a snapshot exists before calling
+        portfolio.restore_snapshot(). Returns None for:
+        - v1 state files (no strategy_snapshots key)
+        - strategies added after the last save (new strategies)
+        - strategies removed between saves (callers should ignore these)
+
+        Args:
+            name: Strategy name (must match the key used in set_strategy_portfolios).
+
+        Returns:
+            Snapshot dict from save_snapshot(), or None.
+        """
+        return self._strategy_snapshots.get(name)
+
     def _save_state(self) -> None:
-        """Persist state to file."""
+        """
+        Persist state to file.
+
+        Writes v2 format when strategy portfolios are registered (includes
+        version=2 and strategy_snapshots). Writes v1 format otherwise for
+        backward compatibility with existing tooling that reads the file.
+        """
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
 
-        state = {
+        state: dict[str, Any] = {
             "balances": {k: str(v) for k, v in self._balances.items()},
             "positions": {k: str(v) for k, v in self._positions.items()},
             "current_prices": {k: str(v) for k, v in self._current_prices.items()},
             "trade_history": self._trade_history,
         }
+
+        # v2: embed per-strategy snapshots when portfolios are registered
+        if self._strategy_portfolios:
+            state["version"] = 2
+            state["strategy_snapshots"] = {
+                name: portfolio.save_snapshot()
+                for name, portfolio in self._strategy_portfolios.items()
+            }
 
         # Atomic write
         temp_file = self._state_file.with_suffix('.tmp')
@@ -274,12 +339,18 @@ class PaperTradingAdapter(ExchangeAdapter):
         temp_file.replace(self._state_file)
 
     def _load_state(self) -> None:
-        """Load state from file."""
+        """
+        Load state from file.
+
+        Handles both v1 (no version key) and v2 (version=2, strategy_snapshots)
+        formats. v1 files load without error; _strategy_snapshots is left empty
+        and _state_version is set to 1. Corrupt files reinitialise fresh state.
+        """
         try:
             with open(self._state_file, 'r') as f:
                 content = f.read().strip()
                 if not content:
-                    # Empty file, initialize fresh state
+                    # Empty file — initialise fresh state
                     self._balances = {"USD": self._initial_balance}
                     self._positions = {}
                     self._current_prices = {}
@@ -292,12 +363,19 @@ class PaperTradingAdapter(ExchangeAdapter):
             self._positions = {k: Decimal(v) for k, v in state.get("positions", {}).items()}
             self._current_prices = {k: Decimal(v) for k, v in state.get("current_prices", {}).items()}
             self._trade_history = state.get("trade_history", [])
+
+            # v2 fields — default to v1 values when absent (backward compat)
+            self._state_version = state.get("version", 1)
+            self._strategy_snapshots = state.get("strategy_snapshots", {})
+
         except (json.JSONDecodeError, ValueError):
-            # Corrupt file, reinitialize
+            # Corrupt file — reinitialise fresh state
             self._balances = {"USD": self._initial_balance}
             self._positions = {}
             self._current_prices = {}
             self._trade_history = []
+            self._state_version = 1
+            self._strategy_snapshots = {}
 
     def get_portfolio_summary(self) -> dict[str, Any]:
         """Get current portfolio state for monitoring."""
