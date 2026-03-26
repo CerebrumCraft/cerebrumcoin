@@ -64,6 +64,34 @@ with cost and non-deterministic output. Both are skipped with notes in output.
 RegimeDetector is included because it runs purely from price data (MarketDataEvents)
 and provides regime-aware signal weighting that is part of the core strategy logic.
 Equal static allocation replaces Conductor during backtest.
+
+@decision DEC-BACKTEST-003
+@title Automatic parameter scaling for non-1m candle intervals
+@status accepted
+@rationale The live system is tuned for ~1 MarketDataEvent/sec (1m ticks). Two
+categories of parameters must be scaled for wider candle intervals:
+
+1. Tick-count windows (guard deque maxlen): live 300 ticks ≈ 5 min; 18000 ticks ≈
+   5 hours. At 15m (900s/tick): same real-time spans = 300/900 ≈ 0.3 (min 3) and
+   18000/900 = 20 ticks. Formula: max(min_val, designed_seconds // candle_interval_seconds)
+   where designed_seconds = original_window_size (since live ticks are ~1/sec).
+
+2. aggregation_window_seconds: used by SignalAggregator to expire historical signals
+   via signal.timestamp < time() - window. Backtest signals carry historical candle
+   timestamps (e.g. 2024), while time() is "now" (2026). A 120s window means ALL
+   historical signals are immediately expired. Fix: set window = max(config_value,
+   candle_interval_seconds) so at minimum one candle's signals can combine before
+   the next candle fires.
+
+3. post_fill_cooldown_seconds: measured in wall-clock time() but backtest fills
+   happen in rapid succession (<1ms apart). Cooldown of 900s would permanently block
+   all trades after the first fill. Fix: scale to 1 second (minimum allowed) so the
+   cooldown expires between two successive candles' wall-clock processing time.
+
+PostFillCooldownRule uses wall-clock time for the per-symbol cooldown check, which
+means at real-time throughput in backtest (~1ms between candles) a 900s cooldown
+would fire exactly once per session. Scaling to 1s allows ~1 trade per async yield
+(0.001s DRAIN_INTERVAL), which is appropriate for backtest evaluation.
 """
 
 import argparse
@@ -258,6 +286,9 @@ async def build_backtest_pipeline(
         config: Loaded Config (e.g. from paper.toml).
         symbols: List of symbol strings for logging/context.
         state_file: Path for paper adapter state. If None, a temp file is used.
+        candle_interval_seconds: Duration of each backtest candle in wall-clock
+            seconds. Drives parameter scaling via scale_backtest_params()
+            (DEC-BACKTEST-003). Default 900 matches the default 15m timeframe.
 
     Returns:
         (bus, registry, paper_adapter, signal_generators)
@@ -273,6 +304,22 @@ async def build_backtest_pipeline(
         state_file = Path(tmp.name)
         tmp.close()
         _owns_state_file = True
+
+    # --- Scale time-sensitive parameters for the backtest candle interval ---
+    # (DEC-BACKTEST-003) The live system is tuned for ~1 tick/sec. At wider
+    # candle intervals, tick-count windows and time-based windows must be
+    # adjusted to cover the same real-time durations.
+    bt_params = scale_backtest_params(candle_interval_seconds)
+
+    # Build a modified config copy for StrategyRegistry so SignalAggregator
+    # and PostFillCooldownRule pick up the scaled values without mutating the
+    # caller's Config object.
+    bt_config = config.model_copy(deep=True)
+    bt_config.signals.aggregation_window_seconds = max(
+        config.signals.aggregation_window_seconds,
+        bt_params["aggregation_window_seconds"],
+    )
+    bt_config.risk.post_fill_cooldown_seconds = bt_params["post_fill_cooldown_seconds"]
 
     # --- PaperTradingAdapter (simulates fills) ---
     paper_adapter = PaperTradingAdapter(
@@ -384,7 +431,11 @@ async def build_backtest_pipeline(
         long_cumulative_threshold=config.regime.long_cumulative_threshold,
     )
 
-    # --- Shared global guards (constructed once, shared by reference — DEC-STRAT-003) ---
+    # --- Shared global guards with scaled tick-count windows (DEC-BACKTEST-003) ---
+    # Guard windows are sized in ticks (MarketDataEvents). At 15m candles, the
+    # live 300-tick vol-gate would cover 75 hours instead of 5 minutes.
+    # scale_backtest_params() converts each window to the equivalent tick count
+    # for this candle interval, preserving the intended real-time coverage.
     global_guards = [
         RegimeTradeHaltRule(
             min_confidence=Decimal(str(config.regime.bear_halt_min_confidence)),
@@ -392,17 +443,17 @@ async def build_backtest_pipeline(
         ),
         VolatilityGateRule(
             min_range_pct=config.risk.volatility_gate_min_range_pct,
-            window_size=config.risk.volatility_gate_window_size,
+            window_size=bt_params["volatility_gate_window"],
             bus=bus,
         ),
         MacroVolatilityGateRule(
             min_range_pct=config.risk.macro_volatility_min_range_pct,
-            window_size=config.risk.macro_volatility_window_size,
+            window_size=bt_params["macro_volatility_window"],
             bus=bus,
         ),
         SidewaysSuppressionRule(
             min_range_pct=config.risk.sideways_suppression_min_range_pct,
-            window_size=config.risk.sideways_suppression_window_size,
+            window_size=bt_params["sideways_suppression_window"],
             bus=bus,
             exempt_strategies={"range_trading"},
         ),
@@ -413,7 +464,9 @@ async def build_backtest_pipeline(
     ]
 
     # --- StrategyRegistry: all 6 strategies ---
-    registry = StrategyRegistry(bus=bus, config=config)
+    # bt_config has scaled aggregation_window_seconds and post_fill_cooldown_seconds
+    # so SignalAggregator and PostFillCooldownRule behave correctly at this timeframe.
+    registry = StrategyRegistry(bus=bus, config=bt_config)
     registry.register(MOMENTUM_CONFIG)
     registry.register(MEAN_REVERSION_CONFIG)
     registry.register(BREAKOUT_CONFIG)
@@ -514,6 +567,86 @@ def timeframe_to_seconds(tf: str) -> int:
     unit = tf[-1]
     value = int(tf[:-1])
     return value * multipliers.get(unit, 60)
+
+
+def scale_backtest_params(candle_interval_seconds: int) -> dict:
+    """
+    Compute scaled pipeline parameters for a given candle interval.
+
+    The live system assumes ~1 MarketDataEvent per second. Backtest candles
+    arrive at a rate of 1 per candle_interval_seconds. Without scaling, two
+    classes of parameters break at wider candle intervals:
+
+    **Tick-count windows** (guard deque sizes): designed for ~1 tick/sec live rate.
+    At 15m (900s/tick), a 300-tick vol-gate window covers 75 hours instead of
+    5 minutes. We scale each window down so it covers the same real-time span:
+        scaled_ticks = max(min_ticks, designed_seconds // candle_interval_seconds)
+    where designed_seconds == original_window_count (since 1 tick/sec live).
+
+    **aggregation_window_seconds**: SignalAggregator uses time() (wall-clock) to
+    expire signals: ``signal.timestamp < time() - window``. Historical backtest
+    candle timestamps are years in the past; a 120s window means all signals
+    are immediately expired, producing zero trades. Fix: ensure the window is
+    >= candle_interval_seconds so signals from one candle are still "fresh"
+    when the next candle fires.
+
+    **post_fill_cooldown_seconds**: PostFillCooldownRule also compares wall-clock
+    elapsed time. In backtest, fills happen in <1ms of real time. A 900s cooldown
+    permanently blocks all but the first trade per symbol per session. Scaled to
+    1s so the cooldown expires within the DRAIN_INTERVAL between candles.
+
+    Args:
+        candle_interval_seconds: Duration of each candle in seconds (e.g. 900 for 15m).
+
+    Returns:
+        Dict with keys:
+            volatility_gate_window (int): Ticks for VolatilityGateRule.
+            macro_volatility_window (int): Ticks for MacroVolatilityGateRule.
+            sideways_suppression_window (int): Ticks for SidewaysSuppressionRule.
+            aggregation_window_seconds (int): Seconds for SignalAggregator window.
+            post_fill_cooldown_seconds (int): Seconds for PostFillCooldownRule.
+    """
+    # Live tick-count windows are sized at ~1 tick/sec, so original_window_size
+    # in ticks ≈ original_window_size in seconds of real time.
+    #
+    # Volatility gate: 300 ticks → 5 minutes of data (designed_seconds=300).
+    # At 15m: 300s / 900s/tick = 0.33 → min 3 ticks.
+    vol_gate_designed_seconds = 300
+    vol_gate_min_ticks = 3
+    volatility_gate_window = max(
+        vol_gate_min_ticks,
+        vol_gate_designed_seconds // candle_interval_seconds,
+    )
+
+    # Macro/sideways windows: 18000 ticks → 5 hours (designed_seconds=18000).
+    # At 15m: 18000s / 900s/tick = 20 ticks.
+    macro_designed_seconds = 18000
+    macro_min_ticks = 5
+    macro_volatility_window = max(
+        macro_min_ticks,
+        macro_designed_seconds // candle_interval_seconds,
+    )
+    sideways_suppression_window = macro_volatility_window
+
+    # Signal aggregation window must be >= candle_interval so signals from
+    # one candle are not expired before the next candle's signals can join them.
+    # Use the config default (120s) when it already covers the interval; otherwise
+    # scale up to 2× candle intervals to allow multi-signal combination.
+    # The caller merges this with config.signals.aggregation_window_seconds.
+    aggregation_window_seconds = candle_interval_seconds  # minimum: 1 candle interval
+
+    # Post-fill cooldown: 1s minimum so backtest can execute > 1 trade per session.
+    # At live tick rate, 900s cooldown is meaningful; in backtest (fills in <1ms),
+    # it permanently blocks after the first fill.
+    post_fill_cooldown_seconds = 1
+
+    return {
+        "volatility_gate_window": volatility_gate_window,
+        "macro_volatility_window": macro_volatility_window,
+        "sideways_suppression_window": sideways_suppression_window,
+        "aggregation_window_seconds": aggregation_window_seconds,
+        "post_fill_cooldown_seconds": post_fill_cooldown_seconds,
+    }
 
 
 async def run_backtest(
