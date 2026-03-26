@@ -367,10 +367,10 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 - [x] Create `cerebrum/strategies/swing_trading.py` — 1h timeframe strategy to reduce commission drag (DEC-SWING-001)
 - [x] Create `cerebrum/strategies/news_driven.py` — news-heavy signal weighting (DEC-NEWS-001)
 - [x] Create `cerebrum/conductor/allocator.py` — DarwinianAllocator: Sharpe-based capital allocation (DEC-ALLOC-001, DEC-ALLOC-002, DEC-ALLOC-003)
-- [x] Create `cerebrum/conductor/conductor.py` — LLM Conductor: event+polling hybrid, graceful degradation (DEC-CONDUCTOR-001, DEC-CONDUCTOR-002, DEC-CONDUCTOR-003)
+- [x] Create `cerebrum/conductor/conductor.py` — LLM Conductor: event+polling hybrid, graceful degradation (DEC-CONDUCTOR-001, DEC-CONDUCTOR-002, DEC-CONDUCTOR-003, DEC-CONDUCTOR-004)
 - [x] Create `cerebrum/dashboard/web.py` — htmx+FastAPI web dashboard with copilot mode (DEC-DASH-002, DEC-DASH-003)
 - [x] Add 1h CandleAggregator + timeframe-tagged signal generators to main.py
-- [x] Add tests: test_range_detector.py, test_range_exit_monitor.py, test_range_trading_integration.py, test_allocator.py, test_conductor.py, test_web_dashboard.py, test_multi_timeframe.py, test_news_driven.py
+- [x] Add tests: test_range_detector.py, test_range_exit_monitor.py, test_range_trading_integration.py, test_allocator.py, test_conductor.py, test_web_dashboard.py, test_multi_timeframe.py, test_news_driven.py, test_strategies.py, test_support_resistance.py, test_main_wiring.py
 - **Verification**: All tests pass
 
 **Phase 11B Decisions:**
@@ -387,28 +387,66 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-RANGE-006 | Dedicated range strategy with S/R-only signal filtering | Mean reversion uses RSI/MACD with different weights — doesn't model range boundaries explicitly. Range trading uses S/R signals exclusively and is exempt from SidewaysSuppressionRule (range is the target regime) | 2026-03-24 |
 | DEC-SWING-001 | 1-hour timeframe swing strategy to reduce commission drag | Session 4: $115 commission on $179 gross (64%). 1h candles → fewer signals → fewer trades → lower commission ratio. Dedicated 1h CandleAggregator; timeframe metadata tag filters swing signals away from 1m strategies | 2026-03-25 |
 | DEC-NEWS-001 | News-heavy signal weighting for event-driven trading | LLM news analyzer already generates SignalType.NEWS signals scored [-1,1] by Claude. News-driven strategy ups the weight to 0.6 (vs 0.1 default) making it the dominant signal. Targets crypto market movers driven by news events | 2026-03-25 |
+| DEC-NEWS-002 | Test news-driven config values against spec, not behavior | NEWS_DRIVEN_CONFIG is a pure data object (frozen StrategyConfig). Tests assert field values directly rather than mocking aggregator/risk manager. Config fields are the contract; tests enforce stability across refactors | 2026-03-25 |
 | DEC-ALLOC-001 | Darwinian capital allocation via rolling Sharpe ratio | Strategies compete for capital based on risk-adjusted returns. Sharpe ratio penalizes both low returns and high volatility. Rolling window (20 trades) adapts to recent performance without over-indexing on one bad trade | 2026-03-25 |
 | DEC-ALLOC-002 | Auto-reactivation with exponential backoff prevents permanent deadlock | A paused strategy stays paused forever under naive Darwinian selection. Exponential backoff (2^n hours) gives struggling strategies occasional capital to prove recovery | 2026-03-25 |
 | DEC-ALLOC-003 | All-paused edge case: reactivate the least-bad strategy | If every strategy falls below the pause threshold simultaneously, the system would hold 100% cash. Reactivating the strategy with the best Sharpe ratio preserves trading activity | 2026-03-25 |
 | DEC-CONDUCTOR-001 | Event-driven + polling hybrid LLM conductor | Pure polling misses immediate regime changes. Pure event-driven cannot enforce periodic rebalancing. Hybrid: poll every N minutes AND rebalance on REGIME_CHANGE events | 2026-03-25 |
 | DEC-CONDUCTOR-002 | Freeze allocations on API failure, never reset | A trading system must degrade gracefully. If the Claude API is unavailable, freeze current allocations rather than resetting to equal weight (which would trigger disruptive capital transfers) | 2026-03-25 |
 | DEC-CONDUCTOR-003 | Math-only mode when no API key provided | DarwinianAllocator alone is genuinely useful — it adjusts capital based on Sharpe. No API key = math-only mode. LLM reasoning is additive, not required | 2026-03-25 |
+| DEC-CONDUCTOR-004 | 50% single-strategy allocation cap to prevent peak-equity spikes | Haiku returned 75% to range_trading at T+90s, injecting $5,000 into a $2,500 portfolio. When Haiku reverted at T+3:44, _peak_equity held $7,500, producing a permanent 66.7% false drawdown that blocked all trading for the rest of the session. Capping at 50% limits the worst-case transient spike to 2x base allocation, keeping false drawdown below any reasonable circuit-breaker threshold | 2026-03-25 |
 | DEC-DASH-002 | htmx + FastAPI web dashboard for multi-strategy visualization | Pure server-side rendering with htmx for partial updates eliminates JavaScript complexity. FastAPI serves JSON API + HTML template. Auto-refresh every 5s via htmx polling | 2026-03-25 |
 | DEC-DASH-003 | Copilot mode queues pending allocations rather than blocking the Conductor | When copilot_mode=True, Conductor produces an allocation proposal but does not apply it. Dashboard displays the pending allocation for human review and approval via /approve endpoint | 2026-03-25 |
+| DEC-TEST-SR-001 | S/R tests with synthetic candle data for deterministic pivot detection | Pivot detection depends on candle patterns. Tests use synthetic candle sequences with known pivot highs/lows to verify detection, clustering (merging nearby pivots), and proximity signal generation. Async tests verify event bus integration. Sync unit tests use EventBus mock only for pure-computation methods | 2026-03-25 |
+| DEC-TEST-STRAT-001 | Strategy config tests covering regime affinity and weight math | Strategy presets drive aggregator weights and risk params. Tests verify mean reversion favors SIDEWAYS with tight TP, breakout favors BULL/VOLATILE with wide TP, and the two strategies cover complementary regimes without overlap | 2026-03-25 |
+| DEC-TEST-RANGE-001 | Real EventBus for all RangeDetector tests — no mocks | RangeDetector is an async subscriber that processes events through the bus pipeline. Testing with a real EventBus exercises the actual delivery path (queue, task dispatch, handler invocation) and guards against timing bugs that mocks would hide | 2026-03-25 |
+| DEC-TEST-RANGE-INT-001 | Integration tests prove cross-component range trading wiring | Unit tests verify each component in isolation. Integration tests verify SidewaysSuppressionRule + SignalAggregator + RangeDetector interact correctly when wired to a shared EventBus | 2026-03-25 |
+| DEC-TEST-MAIN-001 | Test strategy_id filtering and config instances with real implementations | Sacred Practice #5: all tests use real implementations, no internal mocks. PortfolioTracker, StrategyRegistry, and CerebrumCoin._setup_* are exercised directly with in-memory EventBus instances and real Config loaded from paper.toml | 2026-03-25 |
 
-### Phase 11C: Per-Strategy State Persistence (IN PROGRESS)
+### Phase 11C: Per-Strategy State Persistence (COMPLETED)
 **Goal**: Fix dashboard showing stale equity on restart by persisting per-strategy PortfolioTracker state (cash, positions, peak_equity, realized_pnl) in paper_state.json.
 
-- [ ] Add `save_snapshot()` / `restore_snapshot()` to `PortfolioTracker` in `cerebrum/risk/portfolio.py` (DEC-PERSIST-001)
-- [ ] Extend `PaperTradingAdapter` with v2 state format: `set_strategy_portfolios()`, `get_strategy_snapshot()`, v2 `_save_state()`, backward-compat `_load_state()` (DEC-PERSIST-001)
-- [ ] Wire restore in `cerebrum/main.py` after `strategy_registry.start_all()`
-- [ ] Add tests: test_portfolio_persistence.py — 6 scenarios covering roundtrip, positions, v2 format, v1 compat, missing/new strategy
+- [x] Add `save_snapshot()` / `restore_snapshot()` to `PortfolioTracker` in `cerebrum/risk/portfolio.py` (DEC-PERSIST-001, DEC-RISK-005)
+- [x] Extend `PaperTradingAdapter` with v2 state format: `set_strategy_portfolios()`, `get_strategy_snapshot()`, v2 `_save_state()`, backward-compat `_load_state()` (DEC-PERSIST-001)
+- [x] Wire restore in `cerebrum/main.py` after `strategy_registry.start_all()`
+- [x] Add tests: test_portfolio_persistence.py — 6 scenarios covering roundtrip, positions, v2 format, v1 compat, missing/new strategy
+- **Verification**: All tests pass (PR #14 merged)
 
 **Phase 11C Decisions:**
 
 | ID | Decision | Rationale | Date |
 |----|----------|-----------|------|
 | DEC-PERSIST-001 | Per-strategy PortfolioTracker snapshots in paper_state.json v2 format | Each strategy has isolated PortfolioTracker (cash, positions, peak_equity, realized_pnl). Without per-strategy snapshots, all per-strategy equity is lost on restart and the dashboard shows stale global aggregates. v2 adds strategy_snapshots key alongside v1 fields; v1 files load cleanly (no version key = empty snapshots, no error). initial_balance is not restored — fixed at construction time | 2026-03-25 |
+| DEC-RISK-005 | Peak equity lowered on capital withdrawal to prevent false drawdown | Conductor reallocation injects then later withdraws capital. Without peak-lowering on withdrawal, _peak_equity holds a transient high and the drawdown calculation permanently exceeds the circuit-breaker threshold, blocking all trading. Fix: on negative delta, lower peak by the same amount (floor at new equity so real losses are preserved) | 2026-03-25 |
+
+### Phase 12: Proving Ground — Strategy Attribution Analysis (COMPLETED)
+**Goal**: Build analysis tooling that reads the trade database and reports which strategies are making money, enabling data-driven go-live decisions.
+
+- [x] Create `scripts/analyze.py` — strategy attribution report with 6 sections: aggregate overview, per-strategy attribution, regime-conditioned performance, guard effectiveness, go-live scorecard, output modes (DEC-ANALYZE-001, DEC-ANALYZE-002)
+- [x] Create `scripts/weekly_report.py` — automated weekly report writer (DEC-ANALYZE-003)
+- [x] Add tests: `tests/unit/test_analyze.py` — in-memory SQLite with 8 scenarios (DEC-ANALYZE-002)
+- **Verification**: All tests pass — strategy attribution report, weekly reporter, and go-live scorecard operational (2026-03-25)
+
+**Phase 12 Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-ANALYZE-001 | analyze.py replicates stats logic inline (no cerebrum imports) | Follows DEC-EXPORT-001 pattern: standalone scripts avoid importing asyncio-based StateManager and transitive dependencies. Sharpe/Sortino/drawdown logic replicated using raw Decimal arithmetic and sqlite3. Keeps script deployable anywhere Python 3.10+ is available without a full venv | 2026-03-25 |
+| DEC-ANALYZE-002 | Tests use in-memory SQLite with seeded trades — no production DB | Follows DEC-TEST-016 pattern. All scorecard logic, commission calculations, and Sharpe correctness are verified against deterministic seeded data before touching production data | 2026-03-25 |
+| DEC-ANALYZE-003 | weekly_report.py delegates to generate_report() from analyze.py | Code reuse without circular imports: weekly_report imports the pure generate_report() function from analyze.py rather than shelling out. Week number is auto-detected from earliest trade timestamp to avoid manual tracking | 2026-03-25 |
+
+### Phase 12E: Parameter Sensitivity Analysis (IN PROGRESS)
+**Goal**: Build a CLI script that replays historical trades from the database with alternative parameter values to identify optimal stop-loss, take-profit, and position age settings.
+
+- [ ] Create `scripts/sensitivity.py` — trade outcome simulation with SL/TP/age/cooldown sensitivity sweeps, tabular output, JSON mode, Top 5 recommendations (DEC-SENSITIVITY-001, DEC-SENSITIVITY-002)
+- [ ] Add tests: `tests/unit/test_sensitivity.py` — in-memory SQLite, simulation unit tests for all four simulation types, grid cap, strategy filter, JSON validity
+
+**Phase 12E Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-SENSITIVITY-001 | sensitivity.py imports TradeRow/calculate_commission from analyze.py; simulation logic is pure (no I/O) | Reuses the stable TradeRow dataclass and commission formula from analyze.py rather than duplicating. Simulation functions (simulate_sl, simulate_tp, simulate_age, simulate_cooldown) are pure functions that accept a TradeRow and return a simulated P&L Decimal — no side effects, trivially testable | 2026-03-25 |
+| DEC-SENSITIVITY-002 | Tests use in-memory SQLite + direct TradeRow construction for simulation unit tests | DB tests verify fetch + filter logic; direct TradeRow construction for simulation logic (no DB needed to test math). Follows DEC-ANALYZE-002 pattern. Grid cap test uses warnings.catch_warnings to assert UserWarning emission | 2026-03-25 |
 
 ## Resources
 
