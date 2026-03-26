@@ -15,8 +15,8 @@ paper.toml values tuned through Sessions 2–6.
 @rationale If no strategy config is present in TOML, main.py creates a single
 MomentumStrategy pipeline using this config — producing behaviour identical to
 the pre-refactor wiring. MOMENTUM_CONFIG.initial_balance is set to 1/4 of $10k
-to match the 4-strategy equal-split (momentum + mean_reversion + breakout +
-range_trading). The risk_overrides and exit_config mirror paper.toml exactly so
+to match the 6-strategy equal-split (momentum + mean_reversion + breakout +
+range_trading + swing_trading + news_driven). The risk_overrides and exit_config mirror paper.toml exactly so
 Session 2–6 tuning is preserved.
 """
 
@@ -31,7 +31,7 @@ from cerebrum.strategies.base import StrategyConfig
 # aggregator_threshold: 0.4 — matches paper.toml aggregation_threshold
 # risk_overrides: paper.toml [risk] section values
 # exit_config: paper.toml exit parameters
-# initial_balance: 1/4 of $10k — equal split across 4 strategies
+# initial_balance: 1/6 of $10k — equal split across 6 strategies
 # symbols: current paper trading symbols
 MOMENTUM_CONFIG = StrategyConfig(
     name="momentum",
