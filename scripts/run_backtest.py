@@ -153,14 +153,15 @@ async def fetch_ohlcv_data(
         current = since
 
         while current < end_ms:
-            ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, since=current, limit=1000)
+            ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, since=current, limit=720)
             if not ohlcv:
                 break
 
             all_candles.extend(ohlcv)
             current = ohlcv[-1][0] + 1
+            print(f"  Fetched {len(all_candles)} candles so far...")
 
-            if len(ohlcv) < 1000:
+            if len(ohlcv) < 100:
                 break
 
         # Convert to our format
