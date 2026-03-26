@@ -22,23 +22,31 @@ What IS included:
   - Global guards (RegimeTradeHaltRule, VolatilityGateRule, etc.)
   - PaperTradingAdapter with commission + slippage simulation
 
-Timeframe note:
-  The default timeframe is 15m (15-minute candles). Kraken's REST API only returns
-  the most recent ~720 1m candles regardless of the ``since`` parameter, limiting
-  1m backtests to ~12 hours of history. At 15m, Kraken returns proper paginated
-  history — 672 candles covers 7 full days. Use ``--timeframe 1m`` only for short
-  intraday analysis. If switching timeframes, delete stale cache files in
-  ``data/backtest_cache/`` (cache filenames embed the timeframe).
+Exchange and timeframe note:
+  The default exchange is Bitstamp, which returns proper historical 1m data with
+  working pagination — ~1,000 candles per page, 10,080 candles (7 days) across
+  ~11 pages. Kraken's REST API only returns the most recent ~720 1m candles
+  regardless of the ``since`` parameter, making multi-day 1m backtests impossible
+  on Kraken. BTC/USD prices on Bitstamp and Kraken are highly correlated (same
+  asset; arbitrage keeps them within ~0.1%), so Bitstamp data is legitimate for
+  validating strategies that will trade on Kraken.
+
+  For Kraken-specific backtests use ``--exchange kraken --timeframe 15m`` — at
+  15m, Kraken returns proper paginated history (672 candles = 7 full days).
+
+  Cache filenames embed the exchange name, so switching exchanges creates new
+  cache files automatically. Delete stale files in ``data/backtest_cache/`` only
+  when switching timeframes for the same exchange.
 
 Usage::
 
-    # Default: BTC/USD + ETH/USD, last 7 days, 15m candles, all 6 strategies
+    # Default: BTC/USD + ETH/USD, last 7 days, 1m candles via Bitstamp, all 6 strategies
     python3 scripts/run_backtest.py
 
     # Custom
     python3 scripts/run_backtest.py --symbols BTC/USD,ETH/USD --days 14
     python3 scripts/run_backtest.py --symbols BTC/USD --days 30 --output data/backtest_results.json
-    python3 scripts/run_backtest.py --timeframe 1m --days 1  # intraday only (~12h max)
+    python3 scripts/run_backtest.py --exchange kraken --timeframe 15m  # Kraken-specific backtest
 
 @decision DEC-MONITOR-005
 @title Backtest runner with OHLCV replay
@@ -233,7 +241,7 @@ async def fetch_ohlcv_data(
         current = since
 
         while current < end_ms:
-            ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, since=current, limit=720)
+            ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, since=current, limit=1000)
             if not ohlcv:
                 break
 
@@ -961,18 +969,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--exchange",
         type=str,
-        default="kraken",
-        help="Exchange name for OHLCV fetch (default: kraken)",
+        default="bitstamp",
+        help="Exchange name for OHLCV fetch (default: bitstamp). Bitstamp returns proper historical 1m data with pagination; use '--exchange kraken --timeframe 15m' for Kraken-specific backtests.",
     )
     parser.add_argument(
         "--timeframe",
         type=str,
-        default="15m",
+        default="1m",
         help=(
-            "Candle timeframe (default: 15m). "
-            "NOTE: Kraken 1m data is limited to ~12 hours of history; "
-            "use 15m for multi-day backtests. "
-            "Delete data/backtest_cache/ files when switching timeframes."
+            "Candle timeframe (default: 1m). "
+            "With Bitstamp (the default exchange), 1m data is available for multi-day ranges. "
+            "For Kraken, use 15m — Kraken 1m data is limited to ~720 candles (~12h). "
+            "Delete data/backtest_cache/ files when switching timeframes for the same exchange."
         ),
     )
     parser.add_argument(
