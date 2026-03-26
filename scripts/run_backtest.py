@@ -140,6 +140,49 @@ from cerebrum.strategies.registry import StrategyRegistry
 from cerebrum.strategies.swing_trading import SWING_TRADING_CONFIG
 
 # ---------------------------------------------------------------------------
+# BacktestClock — injectable virtual clock for backtest mode
+# ---------------------------------------------------------------------------
+
+
+class BacktestClock:
+    """
+    Simulated clock for backtest mode that tracks the latest candle timestamp.
+
+    Injected into SignalAggregator and PostFillCooldownRule so those components
+    compare signal/fill times against simulated historical time instead of the
+    wall-clock (time.time). Without this, all historical signals are instantly
+    expired because their timestamps (e.g. 2024-03-19) predate the current
+    wall-clock (e.g. 2026-03-26) by years.
+
+    @decision DEC-BACKTEST-004
+    @title Injectable BacktestClock for virtual time in backtest mode
+    @status accepted
+    @rationale SignalAggregator._clean_old_signals() compares signal.timestamp
+    against clock() - window_seconds. In live mode, clock() = time.time() ≈
+    signal.timestamp (signal is fresh). In backtest, signal.timestamp is a
+    historical epoch (e.g. 1742342400 for 2025-03-19) while time.time() is
+    today (2026-03-26 ≈ 1743000000). The 7-day gap means ALL historical signals
+    are instantly expired regardless of window_seconds. BacktestClock advances
+    with each candle so the "now" used for expiry is always the candle's own
+    timestamp. PostFillCooldownRule has the same problem: fills happen in <1ms
+    real time so the cooldown is never active. With BacktestClock, fills and
+    orders share the same simulated time base and the cooldown works as designed.
+    """
+
+    def __init__(self) -> None:
+        self._current_time: float = 0.0
+
+    def __call__(self) -> float:
+        """Return the current simulated time (latest candle timestamp)."""
+        return self._current_time
+
+    def advance(self, timestamp: float) -> None:
+        """Advance the clock to at least `timestamp`. Never goes backwards."""
+        if timestamp > self._current_time:
+            self._current_time = timestamp
+
+
+# ---------------------------------------------------------------------------
 # OHLCV fetch with CSV caching (original implementation — kept intact)
 # ---------------------------------------------------------------------------
 
@@ -271,7 +314,7 @@ async def build_backtest_pipeline(
     symbols: list[str],
     state_file: Path | None = None,
     candle_interval_seconds: int = 900,
-) -> tuple[EventBus, StrategyRegistry, PaperTradingAdapter, list[Any]]:
+) -> tuple[EventBus, StrategyRegistry, PaperTradingAdapter, list[Any], BacktestClock]:
     """
     Wire the full multi-strategy backtest pipeline.
 
@@ -281,6 +324,7 @@ async def build_backtest_pipeline(
     - No WebDashboard (not useful for batch analysis)
     - RegimeDetector IS included (feeds on price data, works from OHLCV)
     - PaperTradingAdapter uses a fresh temp state file (no corruption of live state)
+    - BacktestClock injected into StrategyRegistry for virtual time (DEC-BACKTEST-004)
 
     Args:
         config: Loaded Config (e.g. from paper.toml).
@@ -291,8 +335,9 @@ async def build_backtest_pipeline(
             (DEC-BACKTEST-003). Default 900 matches the default 15m timeframe.
 
     Returns:
-        (bus, registry, paper_adapter, signal_generators)
-        Caller must call registry.stop_all() + bus.stop() when done.
+        (bus, registry, paper_adapter, signal_generators, backtest_clock)
+        Caller must call clock.advance(candle["timestamp"]) before each
+        bus.publish() in the replay loop, then registry.stop_all() + bus.stop().
     """
     bus = EventBus()
     await bus.start()
@@ -305,21 +350,35 @@ async def build_backtest_pipeline(
         tmp.close()
         _owns_state_file = True
 
+    # --- BacktestClock: virtual time source for signal expiry and cooldown (DEC-BACKTEST-004) ---
+    # The clock starts at 0 and is advanced to each candle's timestamp in the
+    # replay loop BEFORE publishing the candle. This ensures:
+    #   - SignalAggregator._clock() returns the candle's historical timestamp,
+    #     not the wall-clock (which is years ahead of the candle data).
+    #   - PostFillCooldownRule._clock() returns the same virtual time, so
+    #     cooldown elapsed time is computed in simulated-seconds, not real-ms.
+    backtest_clock = BacktestClock()
+
     # --- Scale time-sensitive parameters for the backtest candle interval ---
     # (DEC-BACKTEST-003) The live system is tuned for ~1 tick/sec. At wider
-    # candle intervals, tick-count windows and time-based windows must be
-    # adjusted to cover the same real-time durations.
+    # candle intervals, tick-count windows must be adjusted to cover the same
+    # real-time durations.
     bt_params = scale_backtest_params(candle_interval_seconds)
 
     # Build a modified config copy for StrategyRegistry so SignalAggregator
-    # and PostFillCooldownRule pick up the scaled values without mutating the
-    # caller's Config object.
+    # picks up a scaled aggregation_window without mutating the caller's Config.
+    # With BacktestClock, aggregation_window_seconds only needs to cover one
+    # candle interval — signals from the same candle will share the same virtual
+    # timestamp and won't be expired immediately. We keep the max() for safety.
     bt_config = config.model_copy(deep=True)
     bt_config.signals.aggregation_window_seconds = max(
         config.signals.aggregation_window_seconds,
         bt_params["aggregation_window_seconds"],
     )
-    bt_config.risk.post_fill_cooldown_seconds = bt_params["post_fill_cooldown_seconds"]
+    # PostFillCooldownRule now uses BacktestClock, so wall-clock scaling is no
+    # longer needed. Keep the config value unmodified (e.g. 900s) — the virtual
+    # clock will properly enforce it in simulated time.
+    # bt_config.risk.post_fill_cooldown_seconds is intentionally NOT overridden.
 
     # --- PaperTradingAdapter (simulates fills) ---
     paper_adapter = PaperTradingAdapter(
@@ -464,9 +523,10 @@ async def build_backtest_pipeline(
     ]
 
     # --- StrategyRegistry: all 6 strategies ---
-    # bt_config has scaled aggregation_window_seconds and post_fill_cooldown_seconds
-    # so SignalAggregator and PostFillCooldownRule behave correctly at this timeframe.
-    registry = StrategyRegistry(bus=bus, config=bt_config)
+    # bt_config has scaled aggregation_window_seconds.
+    # backtest_clock is injected so SignalAggregator and PostFillCooldownRule
+    # use virtual historical time instead of wall-clock time. (DEC-BACKTEST-004)
+    registry = StrategyRegistry(bus=bus, config=bt_config, clock=backtest_clock)
     registry.register(MOMENTUM_CONFIG)
     registry.register(MEAN_REVERSION_CONFIG)
     registry.register(BREAKOUT_CONFIG)
@@ -475,7 +535,7 @@ async def build_backtest_pipeline(
     registry.register(NEWS_DRIVEN_CONFIG)
     await registry.start_all(shared_global_rules=global_guards)
 
-    return bus, registry, paper_adapter, signal_generators
+    return bus, registry, paper_adapter, signal_generators, backtest_clock
 
 
 # ---------------------------------------------------------------------------
@@ -698,7 +758,7 @@ async def run_backtest(
     print()
 
     # Build pipeline
-    bus, registry, paper_adapter, _signal_generators = await build_backtest_pipeline(
+    bus, registry, paper_adapter, _signal_generators, backtest_clock = await build_backtest_pipeline(
         config=config,
         symbols=symbols,
         state_file=state_file,
@@ -716,6 +776,10 @@ async def run_backtest(
 
     try:
         for i, candle in enumerate(merged):
+            # Advance virtual clock BEFORE publishing so SignalAggregator and
+            # PostFillCooldownRule see the candle's historical timestamp as "now".
+            # (DEC-BACKTEST-004)
+            backtest_clock.advance(candle["timestamp"])
             await publish_candle(bus, candle)
             await asyncio.sleep(DRAIN_INTERVAL)
 

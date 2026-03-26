@@ -23,8 +23,8 @@ adjustment for context-aware trading.
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from decimal import Decimal
-from time import time
-from typing import Deque
+import time as _time_module
+from typing import Callable, Deque
 
 import structlog
 
@@ -66,6 +66,7 @@ class SignalAggregator:
         strategy_id: str | None = None,
         signal_source_filter: str | None = None,
         signal_timeframe_filter: str | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         """
         Initialize signal aggregator.
@@ -89,10 +90,20 @@ class SignalAggregator:
                          matches this string are admitted to the buffer. Signals
                          from generators with a different timeframe are silently
                          dropped. None disables filtering (default, backward-compatible).
+            clock: Callable returning current time as float (Unix epoch seconds).
+                   Default: time.time (wall-clock). Inject a BacktestClock instance
+                   in backtest mode so signal expiry uses simulated historical time
+                   instead of wall-clock time. This prevents all historical signals
+                   from being instantly expired when backtesting against past data.
+                   (DEC-BACKTEST-004)
         """
         self._bus = bus
         self._threshold = threshold
         self._window_seconds = window_seconds
+        # Injectable clock: default to wall-clock time.time for live trading.
+        # Backtest injects a BacktestClock that tracks the latest candle timestamp.
+        # @decision DEC-BACKTEST-004: virtual clock injection for backtest mode.
+        self._clock: Callable[[], float] = clock if clock is not None else _time_module.time
         self._regime_confidence: Decimal = Decimal("0.0")
         self._buy_suppression_factor = Decimal(buy_suppression_factor)
         self._buy_suppression_min_confidence = Decimal(buy_suppression_min_confidence)
@@ -195,8 +206,8 @@ class SignalAggregator:
                 return
 
         symbol = event.symbol
-        current_time = time()
-        
+        current_time = self._clock()
+
         # Add signal to buffer
         self._signal_buffer[symbol].append(event)
         
