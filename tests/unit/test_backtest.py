@@ -141,7 +141,7 @@ class TestPipelineWiring:
             state_file = Path(f.name)
 
         try:
-            bus, registry, paper_adapter, _ = await build_backtest_pipeline(
+            bus, registry, paper_adapter, *_ = await build_backtest_pipeline(
                 config=config,
                 symbols=["BTC/USD"],
                 state_file=state_file,
@@ -169,7 +169,7 @@ class TestPipelineWiring:
             state_file = Path(f.name)
 
         try:
-            bus, registry, paper_adapter, _ = await build_backtest_pipeline(
+            bus, registry, paper_adapter, *_ = await build_backtest_pipeline(
                 config=config,
                 symbols=["BTC/USD"],
                 state_file=state_file,
@@ -249,7 +249,7 @@ class TestResultsCollection:
             state_file = Path(f.name)
 
         try:
-            bus, registry, paper_adapter, _ = await build_backtest_pipeline(
+            bus, registry, paper_adapter, *_ = await build_backtest_pipeline(
                 config=config,
                 symbols=["BTC/USD"],
                 state_file=state_file,
@@ -279,7 +279,7 @@ class TestResultsCollection:
             state_file = Path(f.name)
 
         try:
-            bus, registry, paper_adapter, _ = await build_backtest_pipeline(
+            bus, registry, paper_adapter, *_ = await build_backtest_pipeline(
                 config=config,
                 symbols=["BTC/USD"],
                 state_file=state_file,
@@ -475,7 +475,7 @@ class TestScaleBacktestParams:
                 state_file = Path(f.name)
 
             try:
-                bus, registry, paper_adapter, _ = await build_backtest_pipeline(
+                bus, registry, paper_adapter, *_ = await build_backtest_pipeline(
                     config=config,
                     symbols=["BTC/USD"],
                     state_file=state_file,
@@ -514,7 +514,7 @@ class TestScaleBacktestParams:
                 state_file = Path(f.name)
 
             try:
-                bus, registry, paper_adapter, _ = await build_backtest_pipeline(
+                bus, registry, paper_adapter, *_ = await build_backtest_pipeline(
                     config=config,
                     symbols=["BTC/USD"],
                     state_file=state_file,
@@ -528,6 +528,180 @@ class TestScaleBacktestParams:
                     assert agg._window_seconds == config_window, (
                         f"Strategy {name}: window {agg._window_seconds} != config {config_window}"
                     )
+
+                await registry.stop_all()
+                await bus.stop()
+            finally:
+                state_file.unlink(missing_ok=True)
+
+        asyncio.get_event_loop().run_until_complete(_check())
+
+
+# ---------------------------------------------------------------------------
+# 8. BacktestClock — virtual time source for backtest mode
+# ---------------------------------------------------------------------------
+
+
+class TestBacktestClock:
+    """
+    BacktestClock tracks the latest candle timestamp and never goes backwards.
+
+    @decision DEC-BACKTEST-004
+    @title BacktestClock injectable virtual clock for backtest mode
+    @status accepted
+    @rationale Replaces wall-clock time.time() in SignalAggregator and
+    PostFillCooldownRule during backtest so historical signals are compared
+    against historical time, not today's wall-clock.
+    """
+
+    def test_initial_time_is_zero(self) -> None:
+        """BacktestClock starts at 0.0 before any candle is processed."""
+        from scripts.run_backtest import BacktestClock
+
+        clock = BacktestClock()
+        assert clock() == 0.0
+
+    def test_advance_sets_time(self) -> None:
+        """advance() moves the clock forward to the given timestamp."""
+        from scripts.run_backtest import BacktestClock
+
+        clock = BacktestClock()
+        clock.advance(1_742_000_000.0)
+        assert clock() == 1_742_000_000.0
+
+    def test_advance_never_goes_backwards(self) -> None:
+        """advance() with a smaller timestamp does not decrease the clock."""
+        from scripts.run_backtest import BacktestClock
+
+        clock = BacktestClock()
+        clock.advance(1_742_000_100.0)
+        clock.advance(1_742_000_050.0)  # earlier — should be ignored
+        assert clock() == 1_742_000_100.0
+
+    def test_advance_multiple_candles(self) -> None:
+        """Clock advances monotonically across a series of candles."""
+        from scripts.run_backtest import BacktestClock
+
+        clock = BacktestClock()
+        timestamps = [
+            BASE_TIMESTAMP + i * CANDLE_INTERVAL_S for i in range(5)
+        ]
+        for ts in timestamps:
+            clock.advance(ts)
+        assert clock() == timestamps[-1]
+
+    def test_clock_callable_returns_float(self) -> None:
+        """BacktestClock() returns a float — compatible with time.time() signature."""
+        from scripts.run_backtest import BacktestClock
+
+        clock = BacktestClock()
+        clock.advance(1_742_000_000.123)
+        result = clock()
+        assert isinstance(result, float)
+
+    def test_aggregator_uses_backtest_clock(self) -> None:
+        """
+        SignalAggregator respects an injected BacktestClock: signals are NOT
+        expired when the clock is set to match their historical timestamps.
+
+        Without BacktestClock, _clean_old_signals() would compare historical
+        signal timestamps against time.time() (today), instantly expiring them.
+        With BacktestClock advanced to match, signals survive.
+        """
+        import asyncio
+        from decimal import Decimal
+        from scripts.run_backtest import BacktestClock
+        from cerebrum.signals.aggregator import SignalAggregator
+        from cerebrum.core.bus import EventBus
+        from cerebrum.core.events import SignalEvent
+        from cerebrum.core.types import EventType, SignalAction, SignalType
+
+        async def _run() -> None:
+            bus = EventBus()
+            await bus.start()
+
+            clock = BacktestClock()
+            historical_ts = BASE_TIMESTAMP  # 1_700_000_000.0 — far in the past
+
+            # Advance clock to match: signals at this timestamp are "current"
+            clock.advance(historical_ts)
+
+            agg = SignalAggregator(
+                bus=bus,
+                window_seconds=120,  # 2-minute window
+                clock=clock,
+            )
+
+            # Inject a signal with the historical timestamp directly into buffer
+            signal = SignalEvent(
+                event_type=EventType.SIGNAL,
+                timestamp=historical_ts,  # matches the clock
+                signal_type=SignalType.TECHNICAL,
+                symbol="BTC/USD",
+                action=SignalAction.BUY,
+                strength=Decimal("0.8"),
+                confidence=Decimal("0.7"),
+            )
+            agg._signal_buffer["BTC/USD"].append(signal)
+
+            # With clock at historical_ts, the signal should survive
+            agg._clean_old_signals("BTC/USD", clock())
+            assert agg.get_signal_count("BTC/USD") == 1, (
+                "Signal at historical_ts should NOT be expired when clock is at historical_ts"
+            )
+
+            # Advance 8 days past the signal — it should now expire
+            clock.advance(historical_ts + 8 * 86400)
+            agg._clean_old_signals("BTC/USD", clock())
+            assert agg.get_signal_count("BTC/USD") == 0, (
+                "Signal should be expired 8 days after its timestamp"
+            )
+
+            await bus.stop()
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_pipeline_clock_advances_with_candles(self) -> None:
+        """
+        After build_backtest_pipeline(), clock.advance() updates the clock
+        returned from the pipeline. Verifies the BacktestClock is the same
+        instance wired into each strategy's SignalAggregator.
+        """
+        import asyncio
+        import tempfile
+        from pathlib import Path
+        from scripts.run_backtest import build_backtest_pipeline, BacktestClock
+        from cerebrum.core.config import Config
+
+        config = Config.from_toml(Path("config/paper.toml"))
+
+        async def _check() -> None:
+            with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+                state_file = Path(f.name)
+
+            try:
+                bus, registry, paper_adapter, _sigs, clock = await build_backtest_pipeline(
+                    config=config,
+                    symbols=["BTC/USD"],
+                    state_file=state_file,
+                    candle_interval_seconds=60,
+                )
+
+                assert isinstance(clock, BacktestClock), (
+                    "build_backtest_pipeline must return a BacktestClock as 5th element"
+                )
+                assert clock() == 0.0, "Clock should start at 0"
+
+                clock.advance(BASE_TIMESTAMP)
+                assert clock() == BASE_TIMESTAMP
+
+                # The aggregator's _clock must be the same object (not a copy)
+                agg = registry.get_aggregator("momentum")
+                assert agg is not None
+                assert agg._clock is clock, (
+                    "SignalAggregator._clock must be the same BacktestClock instance "
+                    "passed to StrategyRegistry — not a copy"
+                )
 
                 await registry.stop_all()
                 await bus.stop()

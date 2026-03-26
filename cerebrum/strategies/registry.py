@@ -29,7 +29,7 @@ independently per strategy so each strategy has its own thresholds and counters.
 """
 
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
 import structlog
 
@@ -103,7 +103,12 @@ class StrategyRegistry:
         registry.global_portfolio  # aggregate view
     """
 
-    def __init__(self, bus: EventBus, config: Config) -> None:
+    def __init__(
+        self,
+        bus: EventBus,
+        config: Config,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
         """
         Initialize the strategy registry.
 
@@ -113,9 +118,18 @@ class StrategyRegistry:
                  buses.
             config: Application config. Used as the base for per-strategy
                     parameter overrides defined in StrategyConfig.risk_overrides.
+            clock: Callable returning current time as float (Unix epoch seconds).
+                   Default: None (uses time.time in each component). Pass a
+                   BacktestClock instance in backtest mode to inject simulated
+                   historical time into SignalAggregator and PostFillCooldownRule.
+                   Live mode always passes None — no behavioral change.
+                   (DEC-BACKTEST-004)
         """
         self._bus = bus
         self._config = config
+        # Injectable clock threaded to per-strategy components that use wall-clock time.
+        # None = time.time default (live). BacktestClock in backtest mode.
+        self._clock: Callable[[], float] | None = clock
         self._strategy_configs: dict[str, StrategyConfig] = {}
         self._pipelines: dict[str, _StrategyPipeline] = {}
         self._log = logger.bind(component="strategy_registry")
@@ -268,6 +282,7 @@ class StrategyRegistry:
             Fully wired _StrategyPipeline.
         """
         # --- SignalAggregator ---
+        # Pass clock if provided (backtest mode). None = time.time default (live).
         aggregator = SignalAggregator(
             bus=self._bus,
             weights=dict(cfg.aggregator_weights),
@@ -278,6 +293,7 @@ class StrategyRegistry:
             strategy_id=cfg.name,
             signal_source_filter=cfg.signal_source_filter,
             signal_timeframe_filter=cfg.signal_timeframe_filter,
+            clock=self._clock,
         )
 
         # --- PortfolioTracker (strategy_id-filtered — DEC-RISK-004) ---
@@ -345,6 +361,7 @@ class StrategyRegistry:
                                   self._config.risk.post_fill_cooldown_seconds)
                 ),
                 bus=self._bus,
+                _clock=self._clock,  # None = time.time (live); BacktestClock in backtest
             ),
         ]
 
