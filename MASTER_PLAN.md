@@ -448,6 +448,23 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-SENSITIVITY-001 | sensitivity.py imports TradeRow/calculate_commission from analyze.py; simulation logic is pure (no I/O) | Reuses the stable TradeRow dataclass and commission formula from analyze.py rather than duplicating. Simulation functions (simulate_sl, simulate_tp, simulate_age, simulate_cooldown) are pure functions that accept a TradeRow and return a simulated P&L Decimal — no side effects, trivially testable | 2026-03-25 |
 | DEC-SENSITIVITY-002 | Tests use in-memory SQLite + direct TradeRow construction for simulation unit tests | DB tests verify fetch + filter logic; direct TradeRow construction for simulation logic (no DB needed to test math). Follows DEC-ANALYZE-002 pattern. Grid cap test uses warnings.catch_warnings to assert UserWarning emission | 2026-03-25 |
 
+### Phase 12F: Dashboard Upgrades — Equity Curves, Scorecard, Commission, Heatmap (IN PROGRESS)
+**Goal**: Extend the web dashboard with four new panels: per-strategy equity curves, go-live scorecard, commission drag visualization, and guard denial heatmap with color-coded intensity.
+
+- [ ] Add `self._strategy_equity_history`, `self._fill_counts`, `self._commission_totals`, `self._gross_pnl`, `self._first_fill_time` state tracking in `WebDashboard.__init__`
+- [ ] Update `_on_fill` to snapshot per-strategy equity and accumulate commission/fill-count on every FillEvent
+- [ ] Add `GET /api/strategy_equity_history` — per-strategy equity curve points for multi-line Chart.js
+- [ ] Add `GET /api/scorecard` — go-live criteria evaluation (days, P&L, drawdown, drag, fills, concentration)
+- [ ] Add `GET /api/commission` — per-strategy gross/net P&L and drag percentage
+- [ ] Update `cerebrum/dashboard/templates/index.html` — add per-strategy equity chart, scorecard table, commission panel, heatmap-colored denial table
+- [ ] Add tests in `tests/unit/test_web_dashboard.py`: equity history, scorecard, commission endpoint, fill tracking
+
+**Phase 12F Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-DASH-004 | Phase 12F state tracked from FillEvents in-memory — no DB queries | The dashboard runs embedded in the trading process and must stay lightweight. Per-strategy equity history, fill counts, commission totals, and realized P&L are accumulated incrementally from FillEvent callbacks. Authoritative analysis (Sharpe, full attribution) is deferred to scripts/analyze.py which queries the trade DB directly; the scorecard notes this for criteria that cannot be computed inline. | 2026-03-25 |
+
 ## Resources
 
 | File | Purpose |

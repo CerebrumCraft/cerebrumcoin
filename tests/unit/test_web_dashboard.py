@@ -749,3 +749,324 @@ class TestLifecycle:
 
         await dashboard.stop()
         assert len(dashboard._ws_clients) == 0
+
+
+# ---------------------------------------------------------------------------
+# Test: Phase 12F — GET /api/strategy_equity_history
+# ---------------------------------------------------------------------------
+
+
+class TestStrategyEquityHistoryEndpoint:
+    """GET /api/strategy_equity_history returns per-strategy equity curves."""
+
+    @pytest.mark.asyncio
+    async def test_empty_initially(self, client):
+        resp = client.get("/api/strategy_equity_history")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "strategies" in data
+        assert data["strategies"] == {}
+
+    @pytest.mark.asyncio
+    async def test_returns_per_strategy_structure(self, dashboard):
+        """After a fill, each strategy gets an equity snapshot entry."""
+        # Pre-seed one history entry per strategy to simulate a fill snapshot
+        for name in STRATEGY_NAMES:
+            dashboard._strategy_equity_history[name] = [
+                {"ts": 1_000_000, "equity": 10000.0}
+            ]
+
+        client = TestClient(dashboard.app)
+        resp = client.get("/api/strategy_equity_history")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "strategies" in data
+        for name in STRATEGY_NAMES:
+            assert name in data["strategies"]
+            points = data["strategies"][name]
+            assert len(points) == 1
+            assert points[0]["equity"] == 10000.0
+            assert "ts" in points[0]
+
+    @pytest.mark.asyncio
+    async def test_fill_triggers_strategy_snapshot(self, dashboard):
+        """_on_fill snapshots all strategy equities after each fill."""
+        assert dashboard._strategy_equity_history == {}
+
+        fill = FillEvent(
+            event_type=EventType.FILL,
+            timestamp=1_000_000.0,
+            order_id="snap-test",
+            symbol="BTC/USD",
+            side=Side.BUY,
+            filled_amount=Decimal("0.001"),
+            fill_price=Decimal("84000"),
+            commission=Decimal("0.10"),
+            commission_asset="USD",
+            strategy_id="momentum",
+        )
+        await dashboard._on_fill(fill)
+
+        # All registered strategies should have a snapshot
+        for name in STRATEGY_NAMES:
+            assert name in dashboard._strategy_equity_history
+            assert len(dashboard._strategy_equity_history[name]) == 1
+            assert dashboard._strategy_equity_history[name][0]["equity"] == 10000.0
+
+    @pytest.mark.asyncio
+    async def test_strategy_equity_history_capped_at_500(self, dashboard):
+        """Each strategy history is capped at 500 points."""
+        for name in STRATEGY_NAMES:
+            dashboard._strategy_equity_history[name] = [
+                {"ts": i, "equity": 10000.0} for i in range(500)
+            ]
+
+        fill = FillEvent(
+            event_type=EventType.FILL,
+            timestamp=1_000_500.0,
+            order_id="cap-test",
+            symbol="BTC/USD",
+            side=Side.BUY,
+            filled_amount=Decimal("0.001"),
+            fill_price=Decimal("84000"),
+            commission=Decimal("0.10"),
+            commission_asset="USD",
+            strategy_id="momentum",
+        )
+        await dashboard._on_fill(fill)
+
+        for name in STRATEGY_NAMES:
+            assert len(dashboard._strategy_equity_history[name]) == 500
+
+
+# ---------------------------------------------------------------------------
+# Test: Phase 12F — GET /api/scorecard
+# ---------------------------------------------------------------------------
+
+
+class TestScorecardEndpoint:
+    """GET /api/scorecard returns go-live criteria with pass/fail."""
+
+    @pytest.mark.asyncio
+    async def test_returns_required_fields(self, client):
+        resp = client.get("/api/scorecard")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "criteria" in data
+        assert "verdict" in data
+        assert "kill_alerts" in data
+
+    @pytest.mark.asyncio
+    async def test_initial_verdict_is_insufficient(self, client):
+        """With no fills, scorecard should show INSUFFICIENT."""
+        resp = client.get("/api/scorecard")
+        data = resp.json()
+        assert data["verdict"] == "INSUFFICIENT"
+
+    @pytest.mark.asyncio
+    async def test_criteria_have_required_structure(self, client):
+        resp = client.get("/api/scorecard")
+        data = resp.json()
+        for c in data["criteria"]:
+            assert "name" in c
+            assert "target" in c
+            assert "current" in c
+            assert "pass" in c
+
+    @pytest.mark.asyncio
+    async def test_sharpe_criterion_is_na(self, client):
+        """Sharpe ratio criterion is always N/A (requires analyze.py)."""
+        resp = client.get("/api/scorecard")
+        data = resp.json()
+        sharpe = next(c for c in data["criteria"] if "Sharpe" in c["name"])
+        assert sharpe["pass"] is None
+        assert "analyze.py" in sharpe["current"]
+
+    @pytest.mark.asyncio
+    async def test_kill_alerts_empty_at_start(self, client):
+        """No kill alerts at startup (zero drawdown, zero P&L loss)."""
+        resp = client.get("/api/scorecard")
+        data = resp.json()
+        assert data["kill_alerts"] == []
+
+    @pytest.mark.asyncio
+    async def test_verdict_nogo_after_fill(self, dashboard):
+        """After first fill, verdict becomes NO-GO (criteria not yet met)."""
+        fill = FillEvent(
+            event_type=EventType.FILL,
+            timestamp=1_000_000.0,
+            order_id="sc-test",
+            symbol="BTC/USD",
+            side=Side.BUY,
+            filled_amount=Decimal("0.001"),
+            fill_price=Decimal("84000"),
+            commission=Decimal("0.10"),
+            commission_asset="USD",
+            strategy_id="momentum",
+        )
+        await dashboard._on_fill(fill)
+        assert dashboard._first_fill_time is not None
+
+        client = TestClient(dashboard.app)
+        resp = client.get("/api/scorecard")
+        data = resp.json()
+        # Has data now, but days_trading < 30, fill_count < 50 → NO-GO
+        assert data["verdict"] == "NO-GO"
+
+
+# ---------------------------------------------------------------------------
+# Test: Phase 12F — GET /api/commission
+# ---------------------------------------------------------------------------
+
+
+class TestCommissionEndpoint:
+    """GET /api/commission returns per-strategy commission drag data."""
+
+    @pytest.mark.asyncio
+    async def test_returns_required_fields(self, client):
+        resp = client.get("/api/commission")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "strategies" in data
+        assert "total" in data
+
+    @pytest.mark.asyncio
+    async def test_initial_commission_zero(self, client):
+        """Before any fills, all commission values are zero."""
+        resp = client.get("/api/commission")
+        data = resp.json()
+        total = data["total"]
+        assert total["commission"] == 0.0
+        assert total["net_pnl"] == 0.0
+        assert total["gross_pnl"] == 0.0
+        assert total["drag_pct"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_per_strategy_structure(self, client):
+        """Each strategy entry has the four required fields."""
+        resp = client.get("/api/commission")
+        data = resp.json()
+        for name in STRATEGY_NAMES:
+            assert name in data["strategies"]
+            s = data["strategies"][name]
+            assert "gross_pnl" in s
+            assert "commission" in s
+            assert "net_pnl" in s
+            assert "drag_pct" in s
+
+    @pytest.mark.asyncio
+    async def test_commission_tracked_after_fill(self, dashboard):
+        """Fill events accumulate commission per strategy."""
+        assert dashboard._commission_totals == {}
+
+        fill = FillEvent(
+            event_type=EventType.FILL,
+            timestamp=1_000_000.0,
+            order_id="comm-test",
+            symbol="BTC/USD",
+            side=Side.BUY,
+            filled_amount=Decimal("0.001"),
+            fill_price=Decimal("84000"),
+            commission=Decimal("0.135"),
+            commission_asset="USD",
+            strategy_id="momentum",
+        )
+        await dashboard._on_fill(fill)
+
+        assert "momentum" in dashboard._commission_totals
+        assert abs(dashboard._commission_totals["momentum"] - 0.135) < 1e-6
+
+    @pytest.mark.asyncio
+    async def test_commission_accumulates_across_fills(self, dashboard):
+        """Multiple fills from the same strategy accumulate commission."""
+        for i in range(3):
+            fill = FillEvent(
+                event_type=EventType.FILL,
+                timestamp=1_000_000.0 + i,
+                order_id=f"comm-acc-{i}",
+                symbol="BTC/USD",
+                side=Side.BUY,
+                filled_amount=Decimal("0.001"),
+                fill_price=Decimal("84000"),
+                commission=Decimal("0.10"),
+                commission_asset="USD",
+                strategy_id="breakout",
+            )
+            await dashboard._on_fill(fill)
+
+        assert abs(dashboard._commission_totals["breakout"] - 0.30) < 1e-6
+
+    @pytest.mark.asyncio
+    async def test_fill_count_tracked_per_strategy(self, dashboard):
+        """Fill counts increment independently per strategy."""
+        for strat, count in [("momentum", 2), ("mean_reversion", 1)]:
+            for i in range(count):
+                fill = FillEvent(
+                    event_type=EventType.FILL,
+                    timestamp=1_000_000.0 + i,
+                    order_id=f"fc-{strat}-{i}",
+                    symbol="BTC/USD",
+                    side=Side.BUY,
+                    filled_amount=Decimal("0.001"),
+                    fill_price=Decimal("84000"),
+                    commission=Decimal("0.10"),
+                    commission_asset="USD",
+                    strategy_id=strat,
+                )
+                await dashboard._on_fill(fill)
+
+        assert dashboard._fill_counts["momentum"] == 2
+        assert dashboard._fill_counts["mean_reversion"] == 1
+        assert dashboard._fill_counts.get("breakout", 0) == 0
+
+    @pytest.mark.asyncio
+    async def test_first_fill_time_recorded(self, dashboard):
+        """First fill records _first_fill_time; subsequent fills do not overwrite."""
+        assert dashboard._first_fill_time is None
+
+        fill1 = FillEvent(
+            event_type=EventType.FILL,
+            timestamp=1_000_000.0,
+            order_id="fft-1",
+            symbol="BTC/USD",
+            side=Side.BUY,
+            filled_amount=Decimal("0.001"),
+            fill_price=Decimal("84000"),
+            commission=Decimal("0.10"),
+            commission_asset="USD",
+            strategy_id="momentum",
+        )
+        await dashboard._on_fill(fill1)
+        assert dashboard._first_fill_time == 1_000_000.0
+
+        fill2 = FillEvent(
+            event_type=EventType.FILL,
+            timestamp=2_000_000.0,
+            order_id="fft-2",
+            symbol="BTC/USD",
+            side=Side.BUY,
+            filled_amount=Decimal("0.001"),
+            fill_price=Decimal("84000"),
+            commission=Decimal("0.10"),
+            commission_asset="USD",
+            strategy_id="momentum",
+        )
+        await dashboard._on_fill(fill2)
+        # Should still be the first fill's timestamp
+        assert dashboard._first_fill_time == 1_000_000.0
+
+
+# ---------------------------------------------------------------------------
+# Test: Phase 12F — New routes registered
+# ---------------------------------------------------------------------------
+
+
+class TestPhase12FRoutesRegistered:
+    """Phase 12F endpoints are present in the FastAPI route list."""
+
+    @pytest.mark.asyncio
+    async def test_new_routes_registered(self, dashboard):
+        route_paths = [r.path for r in dashboard.app.routes]
+        assert "/api/strategy_equity_history" in route_paths
+        assert "/api/scorecard" in route_paths
+        assert "/api/commission" in route_paths

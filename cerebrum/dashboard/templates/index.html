@@ -147,10 +147,11 @@
     }
     .pnl-row:last-child { border-bottom: none; }
 
-    /* ── Equity chart ───────────────────────────────────────── */
-    #equity-chart-wrap { height: 140px; margin-top: 8px; }
+    /* ── Equity charts ──────────────────────────────────────── */
+    #equity-chart-wrap          { height: 140px; margin-top: 8px; }
+    #strategy-equity-chart-wrap { height: 160px; margin-top: 8px; }
 
-    /* ── Denial table ───────────────────────────────────────── */
+    /* ── Denial table + heatmap ─────────────────────────────── */
     table { width: 100%; border-collapse: collapse; font-size: 11px; }
     th {
       color: var(--dim);
@@ -160,7 +161,13 @@
     }
     td { padding: 3px 6px; border-bottom: 1px solid #1e1e1e; }
     tr:hover td { background: var(--bg3); }
-    .count { color: var(--orange); font-weight: bold; }
+    .count { font-weight: bold; }
+    /* Heatmap intensity levels on count cells */
+    .heat-0 { color: var(--dim); }
+    .heat-1 { color: #ff8f00; }
+    .heat-2 { color: var(--orange); }
+    .heat-3 { color: var(--red); background: rgba(255,23,68,0.08); }
+    .heat-4 { color: var(--red); background: rgba(255,23,68,0.18); font-size: 12px; }
 
     /* ── Conductor log ──────────────────────────────────────── */
     #conductor-log {
@@ -204,6 +211,44 @@
     .btn-reject  { background: var(--red);    color: #fff; font-weight: bold; }
     .btn-toggle  { background: var(--bg3); color: var(--cyan); border: 1px solid var(--cyan); }
     .btn-toggle.active { background: var(--cyan); color: #000; }
+
+    /* ── Scorecard panel (Phase 12F) ────────────────────────── */
+    .scorecard-verdict {
+      display: inline-block;
+      padding: 3px 12px;
+      border-radius: 3px;
+      font-weight: bold;
+      letter-spacing: 0.1em;
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+    .verdict-GO           { background: var(--green);  color: #000; }
+    .verdict-NO-GO        { background: var(--red);    color: #fff; }
+    .verdict-INSUFFICIENT { background: var(--dim);    color: #fff; }
+    .scorecard-table td.pass-yes { color: var(--green); }
+    .scorecard-table td.pass-no  { color: var(--red); }
+    .scorecard-table td.pass-na  { color: var(--dim); font-style: italic; }
+    .kill-alert {
+      background: rgba(255,23,68,0.15);
+      border-left: 3px solid var(--red);
+      padding: 5px 8px;
+      margin-bottom: 4px;
+      font-size: 11px;
+      color: var(--red);
+    }
+
+    /* ── Commission panel (Phase 12F) ───────────────────────── */
+    .commission-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr 60px;
+      gap: 4px;
+      padding: 3px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 11px;
+      align-items: center;
+    }
+    .commission-row:last-child { border-bottom: none; }
+    .commission-header { color: var(--dim); font-size: 10px; letter-spacing: 0.1em; }
 
     /* ── Status bar ─────────────────────────────────────────── */
     #status-bar {
@@ -267,7 +312,7 @@
     <div id="strategy-arena"></div>
   </div>
 
-  <!-- P&L Panel -->
+  <!-- P&L Panel + Global Equity Chart -->
   <div class="panel">
     <div class="panel-title">Portfolio P&amp;L</div>
     <div id="pnl-panel">
@@ -286,11 +331,19 @@
     </div>
   </div>
 
-  <!-- Guard Denials -->
+  <!-- Per-Strategy Equity Curves (Phase 12F) -->
+  <div class="panel full-width">
+    <div class="panel-title">Per-Strategy Equity Curves</div>
+    <div id="strategy-equity-chart-wrap">
+      <canvas id="strategy-equity-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Guard Denials — heatmap-colored (Phase 12F upgrade) -->
   <div class="panel">
     <div class="panel-title">Guard Denials</div>
     <div id="denials-panel">
-      <span style="color:var(--dim)">Loading…</span>
+      <span style="color:var(--dim)">Loading&hellip;</span>
     </div>
   </div>
 
@@ -298,6 +351,22 @@
   <div class="panel">
     <div class="panel-title">Conductor Log</div>
     <div id="conductor-log"></div>
+  </div>
+
+  <!-- Scorecard Panel (Phase 12F) -->
+  <div class="panel full-width">
+    <div class="panel-title">Go-Live Scorecard</div>
+    <div id="scorecard-panel">
+      <span style="color:var(--dim)">Loading&hellip;</span>
+    </div>
+  </div>
+
+  <!-- Commission Panel (Phase 12F) -->
+  <div class="panel full-width">
+    <div class="panel-title">Commission &amp; Drag</div>
+    <div id="commission-panel">
+      <span style="color:var(--dim)">Loading&hellip;</span>
+    </div>
   </div>
 
   <!-- Copilot Panel (full width, shown when copilot mode enabled) -->
@@ -326,7 +395,7 @@
 
 <!-- ── Status bar ─────────────────────────────────────────── -->
 <div id="status-bar">
-  <span>CerebrumCoin v2 &mdash; Phase 11D</span>
+  <span>CerebrumCoin v2 &mdash; Phase 12F</span>
   <span id="ws-status">WS: disconnected</span>
   <span id="last-update">—</span>
 </div>
@@ -340,18 +409,16 @@ function esc(str) {
 }
 
 // ── State ─────────────────────────────────────────────────
-const state = {
-  copilotMode: false,
-};
+const state = { copilotMode: false };
 
-// ── Equity Chart ──────────────────────────────────────────
+// ── Global Equity Chart ───────────────────────────────────
 const ctx = document.getElementById('equity-chart').getContext('2d');
 const equityChart = new Chart(ctx, {
   type: 'line',
   data: {
     labels: [],
     datasets: [{
-      label: 'Equity',
+      label: 'Global Equity',
       data: [],
       borderColor: '#00e5ff',
       backgroundColor: 'rgba(0,229,255,0.06)',
@@ -387,7 +454,75 @@ function pushEquityPoint(ts, value) {
   equityChart.update('none');
 }
 
-// ── Colour palette ────────────────────────────────────────
+// ── Per-Strategy Equity Chart (Phase 12F) ─────────────────
+const sCtx = document.getElementById('strategy-equity-chart').getContext('2d');
+const strategyEquityChart = new Chart(sCtx, {
+  type: 'line',
+  data: { labels: [], datasets: [] },
+  options: {
+    animation: false,
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        display: true,
+        labels: {
+          color: '#c8c8c8',
+          font: { family: 'Courier New', size: 10 },
+          boxWidth: 12,
+        }
+      }
+    },
+    scales: {
+      x: { display: false },
+      y: {
+        grid: { color: '#1e1e1e' },
+        ticks: { color: '#666', font: { family: 'Courier New', size: 10 } },
+      }
+    }
+  }
+});
+
+// Strategy colors — indexed to ensure consistent per-strategy coloring
+const STRATEGY_PALETTE = [
+  '#00e5ff', '#d500f9', '#ffd600', '#00c853',
+  '#ff6d00', '#2979ff', '#ff1744', '#76ff03',
+];
+
+function renderStrategyEquityHistory(data) {
+  const perStrat = data.strategies || {};
+  const names = Object.keys(perStrat);
+  if (!names.length) return;
+
+  // Build a unified sorted timestamp set across all strategies
+  const allTs = new Set();
+  for (const pts of Object.values(perStrat)) {
+    for (const pt of pts) allTs.add(pt.ts);
+  }
+  const sortedTs = Array.from(allTs).sort((a, b) => a - b);
+  const labels = sortedTs.map(ts => new Date(ts * 1000).toLocaleTimeString());
+
+  const datasets = names.map((name, i) => {
+    const ptMap = {};
+    for (const pt of (perStrat[name] || [])) ptMap[pt.ts] = pt.equity;
+    return {
+      label: name,
+      data: sortedTs.map(ts => ptMap[ts] !== undefined ? ptMap[ts] : null),
+      borderColor: STRATEGY_PALETTE[i % STRATEGY_PALETTE.length],
+      backgroundColor: 'transparent',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0.3,
+      spanGaps: true,
+    };
+  });
+
+  strategyEquityChart.data.labels = labels;
+  strategyEquityChart.data.datasets = datasets;
+  strategyEquityChart.update('none');
+}
+
+// ── Colour palette for strategy name → color ──────────────
 const STRAT_COLORS = {
   momentum:       '#00e5ff',
   mean_reversion: '#d500f9',
@@ -402,7 +537,7 @@ function fmtUsd(val) {
 }
 function pnlColor(val) { return val >= 0 ? 'var(--green)' : 'var(--red)'; }
 
-// ── Strategy Arena — built with DOM APIs (no innerHTML of untrusted data) ──
+// ── Strategy Arena ────────────────────────────────────────
 function buildStrategyRow(name, s) {
   const pct   = (s.allocation_pct || 0).toFixed(1);
   const pnl   = s.pnl || 0;
@@ -413,7 +548,6 @@ function buildStrategyRow(name, s) {
   row.dataset.strategy = name;
   row.addEventListener('click', () => row.classList.toggle('expanded'));
 
-  // Header
   const header = document.createElement('div');
   header.className = 'strat-header';
 
@@ -428,12 +562,13 @@ function buildStrategyRow(name, s) {
   pnlSpan.style.color = pnlColor(pnl);
   pnlSpan.textContent = fmtUsd(pnl);
   statsEl.appendChild(pnlSpan);
-  statsEl.appendChild(document.createTextNode(' | ' + pct + '% capital | $' + (s.equity || 0).toFixed(2)));
+  statsEl.appendChild(document.createTextNode(
+    ' | ' + pct + '% capital | $' + (s.equity || 0).toFixed(2)
+  ));
 
   header.appendChild(nameEl);
   header.appendChild(statsEl);
 
-  // Allocation bar
   const barWrap = document.createElement('div');
   barWrap.className = 'alloc-bar-wrap';
   const bar = document.createElement('div');
@@ -442,16 +577,13 @@ function buildStrategyRow(name, s) {
   bar.style.background = color;
   barWrap.appendChild(bar);
 
-  // Details (collapsed by default)
   const details = document.createElement('div');
   details.className = 'strat-details';
-
-  const topD = topDenialText(s.denials);
   details.textContent =
     'Cash: $' + (s.cash || 0).toFixed(2) +
     '  Equity: $' + (s.equity || 0).toFixed(2) +
     '  P&L: ' + fmtUsd(pnl) +
-    '  Top denial: ' + topD;
+    '  Top denial: ' + topDenialText(s.denials);
 
   row.appendChild(header);
   row.appendChild(barWrap);
@@ -469,7 +601,6 @@ function renderStrategies(data) {
   const arena = document.getElementById('strategy-arena');
   const pnlStrategies = document.getElementById('pnl-strategies');
 
-  // Clear existing rows
   while (arena.firstChild) arena.removeChild(arena.firstChild);
   while (pnlStrategies.firstChild) pnlStrategies.removeChild(pnlStrategies.firstChild);
 
@@ -485,7 +616,6 @@ function renderStrategies(data) {
   for (const [name, s] of Object.entries(strategies)) {
     arena.appendChild(buildStrategyRow(name, s));
 
-    // P&L row
     const pnl = s.pnl || 0;
     const row = document.createElement('div');
     row.className = 'pnl-row';
@@ -500,7 +630,6 @@ function renderStrategies(data) {
     pnlStrategies.appendChild(row);
   }
 
-  // Global equity + drawdown
   const ge = data.global_equity || 0;
   const dd = data.global_drawdown_pct || 0;
   document.getElementById('global-equity').textContent = '$' + ge.toFixed(2);
@@ -510,11 +639,23 @@ function renderStrategies(data) {
   ddEl.style.color = dd > 0.1 ? 'var(--red)' : 'var(--dim)';
 }
 
-// ── Denials table — DOM-safe ──────────────────────────────
+// ── Denial heatmap (Phase 12F) ────────────────────────────
+function heatClass(count) {
+  if (count === 0)   return 'heat-0';
+  if (count < 10)    return 'heat-1';
+  if (count < 100)   return 'heat-2';
+  if (count < 500)   return 'heat-3';
+  return 'heat-4';
+}
+
 function renderDenials(data) {
   const panel = document.getElementById('denials-panel');
   while (panel.firstChild) panel.removeChild(panel.firstChild);
-  if (!data || !data.denials || !Object.keys(data.denials).length) {
+
+  const denials = data && data.denials ? data.denials : {};
+  const anyDenials = Object.values(denials).some(r => Object.keys(r).length > 0);
+
+  if (!anyDenials) {
     const msg = document.createElement('span');
     msg.style.color = 'var(--dim)';
     msg.textContent = 'No denials yet.';
@@ -531,17 +672,23 @@ function renderDenials(data) {
   });
   table.appendChild(headerRow);
 
-  for (const [strat, rules] of Object.entries(data.denials)) {
-    for (const [rule, count] of Object.entries(rules)) {
+  for (const [strat, rules] of Object.entries(denials)) {
+    // Sort by count descending so hottest rules appear first
+    const sorted = Object.entries(rules).sort((a, b) => b[1] - a[1]);
+    for (const [rule, count] of sorted) {
       const tr = document.createElement('tr');
+
       const tdS = document.createElement('td');
       tdS.style.color = colorFor(strat);
       tdS.textContent = strat;
+
       const tdR = document.createElement('td');
       tdR.textContent = rule;
+
       const tdC = document.createElement('td');
-      tdC.className = 'count';
-      tdC.textContent = count;
+      tdC.className = 'count ' + heatClass(count);
+      tdC.textContent = count.toLocaleString();
+
       tr.appendChild(tdS);
       tr.appendChild(tdR);
       tr.appendChild(tdC);
@@ -551,7 +698,174 @@ function renderDenials(data) {
   panel.appendChild(table);
 }
 
-// ── Conductor Log — DOM-safe ──────────────────────────────
+// ── Scorecard panel (Phase 12F) ───────────────────────────
+function renderScorecard(data) {
+  const panel = document.getElementById('scorecard-panel');
+  while (panel.firstChild) panel.removeChild(panel.firstChild);
+
+  if (!data || !data.criteria) {
+    const msg = document.createElement('span');
+    msg.style.color = 'var(--dim)';
+    msg.textContent = 'Loading scorecard\u2026';
+    panel.appendChild(msg);
+    return;
+  }
+
+  // Kill alerts shown prominently at top
+  for (const alert of (data.kill_alerts || [])) {
+    const alertEl = document.createElement('div');
+    alertEl.className = 'kill-alert';
+    alertEl.textContent = alert;
+    panel.appendChild(alertEl);
+  }
+
+  // Verdict badge
+  const verdict = data.verdict || 'INSUFFICIENT';
+  const verdictEl = document.createElement('div');
+  verdictEl.className = 'scorecard-verdict verdict-' + verdict.replace(/[^A-Z\-]/g, '');
+  verdictEl.textContent = verdict;
+  panel.appendChild(verdictEl);
+
+  // Criteria table
+  const table = document.createElement('table');
+  table.className = 'scorecard-table';
+
+  const hdr = document.createElement('tr');
+  ['Criterion', 'Target', 'Current', 'Status'].forEach(txt => {
+    const th = document.createElement('th');
+    th.textContent = txt;
+    hdr.appendChild(th);
+  });
+  table.appendChild(hdr);
+
+  for (const c of data.criteria) {
+    const tr = document.createElement('tr');
+
+    const tdName = document.createElement('td');
+    tdName.textContent = c.name;
+
+    const tdTarget = document.createElement('td');
+    tdTarget.style.color = 'var(--dim)';
+    tdTarget.textContent = c.target;
+
+    const tdCurrent = document.createElement('td');
+    tdCurrent.textContent = c.current;
+
+    const tdStatus = document.createElement('td');
+    if (c.pass === null || c.pass === undefined) {
+      tdStatus.className = 'pass-na';
+      tdStatus.textContent = 'N/A';
+    } else if (c.pass) {
+      tdStatus.className = 'pass-yes';
+      tdStatus.textContent = 'PASS';
+    } else {
+      tdStatus.className = 'pass-no';
+      tdStatus.textContent = 'FAIL';
+    }
+
+    tr.appendChild(tdName);
+    tr.appendChild(tdTarget);
+    tr.appendChild(tdCurrent);
+    tr.appendChild(tdStatus);
+    table.appendChild(tr);
+  }
+
+  panel.appendChild(table);
+}
+
+// ── Commission panel (Phase 12F) ──────────────────────────
+function renderCommission(data) {
+  const panel = document.getElementById('commission-panel');
+  while (panel.firstChild) panel.removeChild(panel.firstChild);
+
+  const strategies = data && data.strategies ? data.strategies : {};
+  if (!Object.keys(strategies).length) {
+    const msg = document.createElement('span');
+    msg.style.color = 'var(--dim)';
+    msg.textContent = 'No commission data yet.';
+    panel.appendChild(msg);
+    return;
+  }
+
+  // Column header row
+  const hdr = document.createElement('div');
+  hdr.className = 'commission-row commission-header';
+  ['Strategy', 'Gross P&L', 'Net P&L', 'Drag %'].forEach(txt => {
+    const cell = document.createElement('div');
+    cell.textContent = txt;
+    hdr.appendChild(cell);
+  });
+  panel.appendChild(hdr);
+
+  function dragColor(pct) {
+    return pct < 30 ? 'var(--green)' : pct < 60 ? 'var(--yellow)' : 'var(--red)';
+  }
+
+  for (const [name, d] of Object.entries(strategies)) {
+    const row = document.createElement('div');
+    row.className = 'commission-row';
+
+    const nameEl = document.createElement('div');
+    nameEl.style.color = colorFor(name);
+    nameEl.textContent = name;
+
+    const grossEl = document.createElement('div');
+    grossEl.style.color = d.gross_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    grossEl.textContent = '$' + d.gross_pnl.toFixed(2);
+
+    const netEl = document.createElement('div');
+    netEl.style.color = d.net_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    netEl.textContent = '$' + d.net_pnl.toFixed(2);
+
+    const dragEl = document.createElement('div');
+    dragEl.style.color = dragColor(d.drag_pct || 0);
+    dragEl.textContent = (d.drag_pct || 0).toFixed(1) + '%';
+
+    row.appendChild(nameEl);
+    row.appendChild(grossEl);
+    row.appendChild(netEl);
+    row.appendChild(dragEl);
+    panel.appendChild(row);
+  }
+
+  // Total row
+  if (data.total) {
+    const sep = document.createElement('div');
+    sep.style.borderTop = '1px solid var(--border)';
+    sep.style.margin = '4px 0';
+    panel.appendChild(sep);
+
+    const totalRow = document.createElement('div');
+    totalRow.className = 'commission-row';
+    totalRow.style.fontWeight = 'bold';
+
+    const d = data.total;
+
+    const nameEl = document.createElement('div');
+    nameEl.style.color = 'var(--cyan)';
+    nameEl.textContent = 'TOTAL';
+
+    const grossEl = document.createElement('div');
+    grossEl.style.color = d.gross_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    grossEl.textContent = '$' + d.gross_pnl.toFixed(2);
+
+    const netEl = document.createElement('div');
+    netEl.style.color = d.net_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    netEl.textContent = '$' + d.net_pnl.toFixed(2);
+
+    const dragEl = document.createElement('div');
+    dragEl.style.color = dragColor(d.drag_pct || 0);
+    dragEl.textContent = (d.drag_pct || 0).toFixed(1) + '%';
+
+    totalRow.appendChild(nameEl);
+    totalRow.appendChild(grossEl);
+    totalRow.appendChild(netEl);
+    totalRow.appendChild(dragEl);
+    panel.appendChild(totalRow);
+  }
+}
+
+// ── Conductor Log ─────────────────────────────────────────
 function addConductorEntry(action, reasoning, allocations) {
   const log = document.getElementById('conductor-log');
   const now = new Date().toLocaleTimeString();
@@ -751,50 +1065,39 @@ function handleWsMessage(msg) {
   }
 }
 
-// ── Periodic REST polling (fallback) ──────────────────────
+// ── Periodic REST polling ──────────────────────────────────
 async function pollStrategies() {
-  try {
-    const r = await fetch('/api/strategies');
-    const data = await r.json();
-    renderStrategies(data);
-  } catch(e) {}
+  try { const r = await fetch('/api/strategies'); renderStrategies(await r.json()); } catch(e) {}
 }
-
 async function pollRegime() {
-  try {
-    const r = await fetch('/api/regime');
-    const data = await r.json();
-    updateRegime(data.regime, data.confidence);
-  } catch(e) {}
+  try { const r = await fetch('/api/regime'); const d = await r.json(); updateRegime(d.regime, d.confidence); } catch(e) {}
 }
-
 async function pollCopilot() {
   if (!state.copilotMode) return;
   try {
     const r = await fetch('/api/copilot/status');
-    const data = await r.json();
-    if (data.has_pending) {
-      updateCopilotPanel(true, data.pending_reasoning, data.pending_allocation);
-    }
+    const d = await r.json();
+    if (d.has_pending) updateCopilotPanel(true, d.pending_reasoning, d.pending_allocation);
   } catch(e) {}
 }
-
 async function pollDenials() {
-  try {
-    const r = await fetch('/api/denials');
-    const data = await r.json();
-    renderDenials(data);
-  } catch(e) {}
+  try { const r = await fetch('/api/denials'); renderDenials(await r.json()); } catch(e) {}
 }
-
 async function pollEquityHistory() {
   try {
     const r = await fetch('/api/equity_history');
-    const data = await r.json();
-    for (const pt of (data.history || [])) {
-      pushEquityPoint(pt.ts, pt.equity);
-    }
+    const d = await r.json();
+    for (const pt of (d.history || [])) pushEquityPoint(pt.ts, pt.equity);
   } catch(e) {}
+}
+async function pollStrategyEquityHistory() {
+  try { const r = await fetch('/api/strategy_equity_history'); renderStrategyEquityHistory(await r.json()); } catch(e) {}
+}
+async function pollScorecard() {
+  try { const r = await fetch('/api/scorecard'); renderScorecard(await r.json()); } catch(e) {}
+}
+async function pollCommission() {
+  try { const r = await fetch('/api/commission'); renderCommission(await r.json()); } catch(e) {}
 }
 
 // ── Boot ──────────────────────────────────────────────────
@@ -804,11 +1107,17 @@ window.addEventListener('DOMContentLoaded', async function() {
   await pollRegime();
   await pollDenials();
   await pollEquityHistory();
+  await pollStrategyEquityHistory();
+  await pollScorecard();
+  await pollCommission();
 
-  setInterval(pollStrategies, 5000);
-  setInterval(pollRegime, 5000);
-  setInterval(pollDenials, 10000);
-  setInterval(pollCopilot, 3000);
+  setInterval(pollStrategies,             5000);
+  setInterval(pollRegime,                 5000);
+  setInterval(pollDenials,               10000);
+  setInterval(pollCopilot,               3000);
+  setInterval(pollStrategyEquityHistory, 10000);
+  setInterval(pollScorecard,             15000);
+  setInterval(pollCommission,            10000);
 });
 </script>
 </body>
