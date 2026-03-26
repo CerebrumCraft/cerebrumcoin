@@ -22,14 +22,23 @@ What IS included:
   - Global guards (RegimeTradeHaltRule, VolatilityGateRule, etc.)
   - PaperTradingAdapter with commission + slippage simulation
 
+Timeframe note:
+  The default timeframe is 15m (15-minute candles). Kraken's REST API only returns
+  the most recent ~720 1m candles regardless of the ``since`` parameter, limiting
+  1m backtests to ~12 hours of history. At 15m, Kraken returns proper paginated
+  history — 672 candles covers 7 full days. Use ``--timeframe 1m`` only for short
+  intraday analysis. If switching timeframes, delete stale cache files in
+  ``data/backtest_cache/`` (cache filenames embed the timeframe).
+
 Usage::
 
-    # Default: BTC/USD + ETH/USD, last 7 days, all 6 strategies
+    # Default: BTC/USD + ETH/USD, last 7 days, 15m candles, all 6 strategies
     python3 scripts/run_backtest.py
 
     # Custom
     python3 scripts/run_backtest.py --symbols BTC/USD,ETH/USD --days 14
     python3 scripts/run_backtest.py --symbols BTC/USD --days 30 --output data/backtest_results.json
+    python3 scripts/run_backtest.py --timeframe 1m --days 1  # intraday only (~12h max)
 
 @decision DEC-MONITOR-005
 @title Backtest runner with OHLCV replay
@@ -233,6 +242,7 @@ async def build_backtest_pipeline(
     config: Config,
     symbols: list[str],
     state_file: Path | None = None,
+    candle_interval_seconds: int = 900,
 ) -> tuple[EventBus, StrategyRegistry, PaperTradingAdapter, list[Any]]:
     """
     Wire the full multi-strategy backtest pipeline.
@@ -275,11 +285,12 @@ async def build_backtest_pipeline(
     )
     await paper_adapter.connect()
 
-    # --- 1m CandleAggregator (shared across momentum/mean_reversion/breakout/
-    #     range_trading/news_driven strategies) ---
+    # --- Primary CandleAggregator (shared across momentum/mean_reversion/breakout/
+    #     range_trading/news_driven strategies). Uses candle_interval_seconds from
+    #     the backtest timeframe, NOT from config (which is tuned for live 1m trading). ---
     candle_agg = CandleAggregator(
         bus,
-        interval_seconds=config.signals.candle_interval_seconds,
+        interval_seconds=candle_interval_seconds,
     )
 
     # --- 1h CandleAggregator (dedicated to swing_trading — DEC-SWING-001) ---
@@ -497,11 +508,20 @@ def collect_results(
 # ---------------------------------------------------------------------------
 
 
+def timeframe_to_seconds(tf: str) -> int:
+    """Convert ccxt timeframe string (e.g. '1m', '15m', '1h') to seconds."""
+    multipliers = {"m": 60, "h": 3600, "d": 86400}
+    unit = tf[-1]
+    value = int(tf[:-1])
+    return value * multipliers.get(unit, 60)
+
+
 async def run_backtest(
     symbols: list[str],
     candles_by_symbol: dict[str, list[dict]],
     config: Config,
     state_file: Path | None = None,
+    timeframe: str = "15m",
 ) -> dict[str, Any]:
     """
     Run the full multi-strategy backtest.
@@ -549,6 +569,7 @@ async def run_backtest(
         config=config,
         symbols=symbols,
         state_file=state_file,
+        candle_interval_seconds=timeframe_to_seconds(timeframe),
     )
 
     # --- Replay ---
@@ -749,8 +770,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--timeframe",
         type=str,
-        default="1m",
-        help="Candle timeframe (default: 1m)",
+        default="15m",
+        help=(
+            "Candle timeframe (default: 15m). "
+            "NOTE: Kraken 1m data is limited to ~12 hours of history; "
+            "use 15m for multi-day backtests. "
+            "Delete data/backtest_cache/ files when switching timeframes."
+        ),
     )
     parser.add_argument(
         "--cache-dir",
@@ -803,6 +829,7 @@ def main() -> None:
             symbols=list(candles_by_symbol.keys()),
             candles_by_symbol=candles_by_symbol,
             config=config,
+            timeframe=args.timeframe,
         )
 
         # Print results
