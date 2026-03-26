@@ -72,28 +72,42 @@ def calculate_sharpe_ratio(
 ) -> Decimal:
     """
     Calculate Sharpe ratio (annualized excess return / volatility).
-    
-    Uses trade returns. If variance is zero, returns very large number.
+
+    Uses percentage returns (pnl / entry_value) rather than raw dollar P&L.
+    This ensures a $5 gain on a $100 position (5%) is treated differently
+    from a $5 gain on a $2,500 position (0.2%). Trades where entry_value
+    is zero or missing are skipped to avoid division instability.
+
+    If variance is zero (perfectly consistent returns), returns a very large
+    sentinel value (1000000) to indicate near-infinite risk-adjusted return.
     """
     if not trades:
         return Decimal("0.0")
-    
-    returns = [t.pnl for t in trades if t.pnl]
+
+    returns = []
+    for t in trades:
+        if not t.pnl:
+            continue
+        entry_value = t.entry_price * t.quantity
+        if not entry_value or entry_value == 0:
+            continue
+        returns.append(t.pnl / entry_value)
+
     if not returns:
         return Decimal("0.0")
-    
+
     mean_return = sum(returns) / Decimal(str(len(returns)))
-    
+
     # Calculate variance
     variance = sum((r - mean_return) ** 2 for r in returns) / Decimal(str(len(returns)))
-    
+
     if variance == 0:
         # No variance means consistent returns
         return Decimal("1000000") if mean_return > risk_free_rate else Decimal("0.0")
-    
+
     std_dev = variance.sqrt()
     excess_return = mean_return - risk_free_rate
-    
+
     return excess_return / std_dev if std_dev > 0 else Decimal("0.0")
 
 
@@ -103,16 +117,28 @@ def calculate_sortino_ratio(
 ) -> Decimal:
     """
     Calculate Sortino ratio (excess return / downside deviation).
-    
-    Only considers downside volatility (negative returns).
+
+    Uses percentage returns (pnl / entry_value) rather than raw dollar P&L,
+    consistent with calculate_sharpe_ratio. Trades where entry_value is zero
+    or missing are skipped to avoid division instability.
+
+    Only considers downside volatility (returns below target_return).
     """
     if not trades:
         return Decimal("0.0")
-    
-    returns = [t.pnl for t in trades if t.pnl]
+
+    returns = []
+    for t in trades:
+        if not t.pnl:
+            continue
+        entry_value = t.entry_price * t.quantity
+        if not entry_value or entry_value == 0:
+            continue
+        returns.append(t.pnl / entry_value)
+
     if not returns:
         return Decimal("0.0")
-    
+
     mean_return = sum(returns) / Decimal(str(len(returns)))
     
     # Calculate downside deviation (only negative returns)
