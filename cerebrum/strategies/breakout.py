@@ -20,8 +20,9 @@ entry rather than a bounce off it.
 @rationale Mirrors DEC-STRAT-008: BreakoutStrategy is a documentation dataclass;
 BREAKOUT_CONFIG is the StrategyConfig the registry consumes. Parameters match
 BreakoutStrategy defaults. Capital allocation is 1/3 of $10k ($3,333) for
-equal-split 3-strategy mode. Wider TP (4%) and SL (2%) reflect trend-following
-conviction and the room breakouts need to breathe before confirming direction.
+equal-split 3-strategy mode. Wider TP (4%) and SL (1.5%, tightened from 2.0% per
+Session 11 sensitivity analysis) reflect trend-following conviction while cutting
+losses faster when breakouts fail (DEC-TUNE-004).
 """
 
 from dataclasses import dataclass, field
@@ -51,9 +52,10 @@ class BreakoutStrategy:
             open longer before stop-loss triggers.
         take_profit_percent: Wider target (4.0%) to capture trend moves.
             Breakouts that succeed often run 2-5% before retracing.
-        stop_loss_percent: Standard stop (2.0%) — wider than mean reversion
+        stop_loss_percent: Tightened stop (1.5%) — still wider than mean reversion
             because breakout entries need room to breathe through initial
-            volatility after the breakout.
+            volatility after the breakout. Tightened from 2.0% per Session 11
+            sensitivity analysis (DEC-TUNE-004).
         position_size_percent: Larger positions (5%) since trend-following
             has higher conviction when regime confirms the direction.
         preferred_regimes: Regimes where this strategy should be active.
@@ -74,7 +76,7 @@ class BreakoutStrategy:
 
     aggregation_threshold: Decimal = Decimal("0.5")
     take_profit_percent: Decimal = Decimal("4.0")
-    stop_loss_percent: Decimal = Decimal("2.0")
+    stop_loss_percent: Decimal = Decimal("1.5")
     position_size_percent: Decimal = Decimal("5.0")
 
     preferred_regimes: tuple[str, ...] = ("BULL", "VOLATILE")
@@ -141,7 +143,7 @@ BREAKOUT_CONFIG = StrategyConfig(
         "post_fill_cooldown_seconds": 900,
     },
     exit_config={
-        "stop_loss_percent": "2.0",
+        "stop_loss_percent": "1.5",
         "take_profit_percent": "4.0",
         "max_position_age_minutes": 180,
         "adaptive_tp": True,

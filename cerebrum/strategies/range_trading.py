@@ -73,7 +73,7 @@ RANGE_TRADING_CONFIG = StrategyConfig(
         "post_fill_cooldown_seconds": 300,
     },
     exit_config={
-        "stop_loss_percent": "0.8",
+        "stop_loss_percent": "0.5",
         "take_profit_percent": "1.0",
         "max_position_age_minutes": 60,
         "adaptive_tp": True,

@@ -17,7 +17,9 @@ MomentumStrategy pipeline using this config — producing behaviour identical to
 the pre-refactor wiring. MOMENTUM_CONFIG.initial_balance is set to 1/4 of $10k
 to match the 6-strategy equal-split (momentum + mean_reversion + breakout +
 range_trading + swing_trading + news_driven). The risk_overrides and exit_config mirror paper.toml exactly so
-Session 2–6 tuning is preserved.
+Session 2–6 tuning is preserved. stop_loss_percent tightened from 1.5% to 1.0%
+per Session 11 sensitivity analysis: SL=1.0% yielded AdjPnL=$183 vs $65 at 1.5%
+(+$118 improvement). See DEC-TUNE-004.
 """
 
 from decimal import Decimal
@@ -45,7 +47,7 @@ MOMENTUM_CONFIG = StrategyConfig(
     risk_overrides={
         "min_signal_strength": "0.6",
         "position_size_percent": "5.0",
-        "stop_loss_percent": "1.5",
+        "stop_loss_percent": "1.0",
         "take_profit_percent": "3.0",
         "post_fill_cooldown_seconds": 900,
         "volatility_gate_min_range_pct": "0.5",
@@ -56,7 +58,7 @@ MOMENTUM_CONFIG = StrategyConfig(
         "macro_volatility_window_size": 18000,
     },
     exit_config={
-        "stop_loss_percent": "1.5",
+        "stop_loss_percent": "1.0",
         "take_profit_percent": "3.0",
         "max_position_age_minutes": 120,
         "adaptive_tp": True,
