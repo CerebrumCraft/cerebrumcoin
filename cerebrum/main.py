@@ -298,6 +298,7 @@ class CerebrumCoin:
             ma_period=config.regime.ma_period,
             long_window_size=config.regime.long_window_size,
             long_cumulative_threshold=config.regime.long_cumulative_threshold,
+            min_hold_count=config.regime.min_hold_count,
         )
         self._intelligence_components.append(regime_detector)
 

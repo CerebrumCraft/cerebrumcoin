@@ -305,6 +305,10 @@ class RegimeConfig(BaseSettings):
         default="0.7",
         description="Minimum BEAR confidence to halt all trading for a symbol"
     )
+    min_hold_count: int = Field(
+        default=3,
+        description="Consecutive readings required before committing to a regime transition (DEC-REGIME-005)"
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="REGIME_",

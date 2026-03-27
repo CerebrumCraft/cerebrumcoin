@@ -58,3 +58,4 @@ buy_suppression_min_confidence = "0.8"
 bear_halt_min_confidence = "0.7"
 long_window_size = 3000
 long_cumulative_threshold = 0.001
+min_hold_count = 3  # Regime hysteresis: consecutive readings required before transition

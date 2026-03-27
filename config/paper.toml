@@ -23,15 +23,15 @@ rsi_overbought = 75  # Up from 70 - more extreme overbought
 
 [risk]
 # Increase minimum signal strength for trade entry
-min_signal_strength = "0.6"  # 0.7 was too restrictive; 0.6 worked in session 2
+min_signal_strength = "0.65"  # 0.6 → 0.65: slightly higher entry bar
 # Position sizing: 3% reduces commission drag vs 2% default
 position_size_percent = "5.0"  # Up from 3% — larger trades reduce commission's relative bite
 # Exit rules: tighter stop-loss to cut losses faster in sideways conditions
-stop_loss_percent = "1.5"    # 1.5% worked in session 2; 2.0% let losers bleed too long
+stop_loss_percent = "1.0"    # 1.5 → 1.0%: session 13 0% WR, cut losses faster
 take_profit_percent = "3.0"  # 3.0% reachable in normal ranges; 4.0% never triggered
 max_position_age_minutes = 120
 # Post-fill cooldown: longer cooldown to reduce churn in range-bound markets
-post_fill_cooldown_seconds = 900  # Up from 600 — session 4 had 64% commission drag; fewer trades needed
+post_fill_cooldown_seconds = 1800  # 900 → 1800: 30 min cooldown in choppy markets
 # Volatility gate: deny orders when market too flat to cover commission (0.32%) + slippage (0.1%)
 volatility_gate_min_range_pct = "0.5"  # 0.5% threshold; 0.32% commission + 0.1% slippage = 0.42% floor
 volatility_gate_window_size = 300       # ~5 min rolling window (matches regime short window)
@@ -53,8 +53,8 @@ report_file_path = "data/session_report.txt"
 backtest_cache_dir = "data/backtest_cache"
 
 [regime]
-window_size = 300             # 100 → 300: ~5 min window captures more cumulative drift
-update_interval = 30          # 20 → 30: less frequent regime recalc
+window_size = 600             # 300 → 600: ~10 min window smooths micro-bounces
+update_interval = 60          # 30 → 60: recalc every 60s reduces whipsaw
 cumulative_trend_threshold = 0.002  # 0.003 → 0.002: catch mild drifts (ETH -0.7% missed as SIDEWAYS)
 ma_slope_threshold = 0.00005
 mean_return_threshold = 0.002
@@ -63,8 +63,9 @@ ma_period = 10
 buy_suppression_factor = "0.2"
 buy_suppression_min_confidence = "0.8"
 bear_halt_min_confidence = "0.7"   # Halt all trading when BEAR confidence >= 0.7 (session 4: 39% WR in BEAR)
-long_window_size = 3000           # ~50 min window catches slow drifts missed by 5-min window
+long_window_size = 6000           # 3000 → 6000: ~100 min long window for macro trend
 long_cumulative_threshold = 0.001  # 0.1% drift in long window triggers BEAR/BULL
+min_hold_count = 3                 # Hysteresis: require 3 consecutive readings before regime transition
 
 [strategy.range_trading]
 enabled = true

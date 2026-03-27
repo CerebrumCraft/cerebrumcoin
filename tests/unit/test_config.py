@@ -230,18 +230,18 @@ def test_paper_toml_tuned_parameters():
         "rsi_overbought should be 75 (up from 70) for more extreme signals"
 
     # Verify tuned risk parameters
-    assert config.risk.min_signal_strength == Decimal("0.6"), \
-        "min_signal_strength should be 0.6 (up from 0.5) for higher conviction in choppy markets"
-    assert config.risk.stop_loss_percent == Decimal("1.5"), \
-        "stop_loss_percent should be 1.5 (down from 2.0) for faster exit on losing trades"
+    assert config.risk.min_signal_strength == Decimal("0.65"), \
+        "min_signal_strength should be 0.65 (up from 0.6, session 13 tuning)"
+    assert config.risk.stop_loss_percent == Decimal("1.0"), \
+        "stop_loss_percent should be 1.0 (down from 1.5, session 13 0% WR — cut losses faster)"
     assert config.risk.take_profit_percent == Decimal("3.0"), \
         "take_profit_percent should be 3.0 (new exit rule)"
     assert config.risk.max_position_age_minutes == 120, \
         "max_position_age_minutes should be 120 (2 hour time-based exit)"
     assert config.risk.position_size_percent == Decimal("5.0"), \
         "position_size_percent should be 5.0 (tuned in session 4 to reduce commission drag on larger trades)"
-    assert config.risk.post_fill_cooldown_seconds == 900, \
-        "post_fill_cooldown_seconds should be 900 (15 min, tuned in session 4 to reduce churn)"
+    assert config.risk.post_fill_cooldown_seconds == 1800, \
+        "post_fill_cooldown_seconds should be 1800 (30 min, session 13 tuning for choppy markets)"
 
     # Verify volatility gate parameters (Issue #2)
     assert config.risk.volatility_gate_min_range_pct == Decimal("0.5"), \

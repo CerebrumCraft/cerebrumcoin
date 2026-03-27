@@ -38,6 +38,15 @@ preventing the bot from buying into slow bleeds that SIDEWAYS classification mis
 Session 3 evidence: 0/28 win rate, -$128 PnL with 1% drift over 6.5 hours undetected.
 The long window only overrides a SIDEWAYS classification — if the short window already
 detects BULL or BEAR, the long window does not interfere.
+
+@decision DEC-REGIME-005
+@title Regime hysteresis — require N consecutive readings before transition
+@status accepted
+@rationale Session 13 showed 89 regime transitions in 11 hours (every ~100s).
+Brief 2-min BULL flickers during a macro downtrend let 49 trades through, all losers.
+Requiring 3 consecutive same-regime readings before transitioning filters out
+micro-bounce noise. At update_interval=60, this means ~3 minutes of sustained
+regime before the detector commits to a transition.
 """
 
 import asyncio
@@ -91,6 +100,7 @@ class RegimeDetector:
         ma_period: int = 10,
         long_window_size: int = 3000,
         long_cumulative_threshold: float = 0.001,
+        min_hold_count: int = 3,
     ) -> None:
         """
         Initialize regime detector.
@@ -107,6 +117,9 @@ class RegimeDetector:
             ma_period: Moving-average period for slope calculation
             long_window_size: Number of price points for long-window drift detection (~50 min)
             long_cumulative_threshold: Cumulative return threshold for long-window override (0.1%)
+            min_hold_count: Consecutive readings required before committing to a regime
+                transition (DEC-REGIME-005). Default 3 means ~3 update_intervals of
+                sustained signal before the detector transitions.
         """
         self._bus = bus
         self._window_size = window_size
@@ -123,6 +136,11 @@ class RegimeDetector:
         # Long-window parameters (DEC-REGIME-003)
         self._long_window_size = long_window_size
         self._long_cumulative_threshold = long_cumulative_threshold
+
+        # Hysteresis parameters (DEC-REGIME-005)
+        self._min_hold_count = min_hold_count
+        self._pending_regime: dict[Symbol, str] = {}
+        self._pending_count: dict[Symbol, int] = {}
 
         # Per-symbol price history — short window and long window are independent deques
         self._price_history: dict[Symbol, Deque[Decimal]] = {}
@@ -192,10 +210,38 @@ class RegimeDetector:
         else:
             new_regime, confidence = self._detect_regime_rules(prices, long_prices=long_prices)
 
-        # Check for regime change
+        # Hysteresis: require min_hold_count consecutive readings before transitioning
+        # (DEC-REGIME-005)
         old_regime = self._current_regime[symbol]
         if new_regime != old_regime:
+            pending = self._pending_regime.get(symbol)
+            if pending == new_regime:
+                self._pending_count[symbol] = self._pending_count.get(symbol, 0) + 1
+            else:
+                self._pending_regime[symbol] = new_regime
+                self._pending_count[symbol] = 1
+
+            if self._pending_count.get(symbol, 0) < self._min_hold_count:
+                # Not enough consecutive readings yet — keep current regime
+                self._log.debug(
+                    "regime_hysteresis_hold",
+                    symbol=symbol,
+                    current=old_regime,
+                    pending=new_regime,
+                    count=self._pending_count.get(symbol, 0),
+                    required=self._min_hold_count,
+                )
+                return  # Skip transition
+        else:
+            # Regime matches current — reset pending
+            self._pending_regime.pop(symbol, None)
+            self._pending_count.pop(symbol, None)
+
+        # Commit the transition (hysteresis satisfied or regime unchanged)
+        if new_regime != old_regime:
             self._current_regime[symbol] = new_regime
+            self._pending_regime.pop(symbol, None)
+            self._pending_count.pop(symbol, None)
 
             event = RegimeChangeEvent(
                 event_type=EventType.REGIME_CHANGE,
