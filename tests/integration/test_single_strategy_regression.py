@@ -84,16 +84,24 @@ class TestMomentumConfigValues:
         assert weights[SignalType.REGIME] == Decimal("0.7")
 
     def test_risk_overrides_match_paper_toml(self):
-        """Risk overrides reflect the paper.toml [risk] section tuning."""
+        """Risk overrides reflect the paper.toml [risk] section tuning.
+
+        stop_loss_percent is 1.0% (tightened from 1.5% per Session 11
+        sensitivity analysis — DEC-TUNE-004).
+        """
         overrides = MOMENTUM_CONFIG.risk_overrides
         assert overrides["min_signal_strength"] == "0.6"
         assert overrides["position_size_percent"] == "5.0"
-        assert overrides["stop_loss_percent"] == "1.5"
+        assert overrides["stop_loss_percent"] == "1.0"
 
     def test_exit_config_matches_paper_toml(self):
-        """Exit config reflects paper.toml stop_loss, take_profit, age."""
+        """Exit config reflects stop_loss, take_profit, age.
+
+        stop_loss_percent is 1.0% (tightened from 1.5% per Session 11
+        sensitivity analysis — DEC-TUNE-004).
+        """
         ec = MOMENTUM_CONFIG.exit_config
-        assert ec["stop_loss_percent"] == "1.5"
+        assert ec["stop_loss_percent"] == "1.0"
         assert ec["take_profit_percent"] == "3.0"
         assert ec["max_position_age_minutes"] == 120
         assert ec["adaptive_tp"] is True
@@ -162,14 +170,14 @@ class TestSingleStrategyPipelineEquivalence:
         assert sizing_rules[0]._size_percent == Decimal("5.0")
 
     async def test_exit_monitor_stop_loss_matches_paper(self, bus, config):
-        """ExitMonitor stop-loss matches paper.toml stop_loss_percent = 1.5."""
+        """ExitMonitor stop-loss matches MOMENTUM_CONFIG: 1.0% (DEC-TUNE-004)."""
         registry = StrategyRegistry(bus, config)
         registry.register(MOMENTUM_CONFIG)
         await registry.start_all()
 
         em = registry.get_exit_monitor("momentum")
         assert em is not None
-        assert em._stop_loss_pct == Decimal("1.5")
+        assert em._stop_loss_pct == Decimal("1.0")
 
     async def test_exit_monitor_take_profit_matches_paper(self, bus, config):
         """ExitMonitor take-profit matches paper.toml take_profit_percent = 3.0."""
