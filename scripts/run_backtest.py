@@ -389,6 +389,11 @@ async def build_backtest_pipeline(
     # bt_config.risk.post_fill_cooldown_seconds is intentionally NOT overridden.
 
     # --- PaperTradingAdapter (simulates fills) ---
+    # Pass backtest_clock so FillEvent timestamps use the same virtual time base
+    # as SignalAggregator and PostFillCooldownRule. Without this, fills get
+    # wall-clock timestamps (~2026-03-26) while the clock is at historical time
+    # (~2025-03-19), making PostFillCooldownRule compute a negative elapsed time
+    # and block ALL trades for the entire backtest. (DEC-BACKTEST-004)
     paper_adapter = PaperTradingAdapter(
         bus=bus,
         config={},
@@ -396,6 +401,7 @@ async def build_backtest_pipeline(
         commission_percent=config.paper.commission_percent,
         slippage_percent=config.paper.slippage_percent,
         state_file=state_file,
+        clock=backtest_clock,
     )
     await paper_adapter.connect()
 

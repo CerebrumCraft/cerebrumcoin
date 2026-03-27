@@ -450,3 +450,120 @@ async def test_paper_adapter_strategy_id_none_when_not_set(bus, temp_state_file)
     assert fills[0].strategy_id is None
 
     await adapter.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Tests: injectable clock (DEC-BACKTEST-004)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_paper_adapter_default_clock_uses_wall_time(bus, temp_state_file):
+    """clock=None (default) must produce fill timestamps near wall-clock time."""
+    fills = []
+
+    async def fill_handler(event: FillEvent):
+        fills.append(event)
+
+    bus.subscribe(EventType.FILL, fill_handler, "test_default_clock_fill")
+
+    adapter = PaperTradingAdapter(
+        bus=bus,
+        config={},
+        initial_balance=Decimal("10000.0"),
+        commission_percent=Decimal("0.1"),
+        slippage_percent=Decimal("0.05"),
+        state_file=temp_state_file,
+        # clock omitted — should default to time.time
+    )
+
+    await adapter.connect()
+
+    before = time()
+
+    market_event = MarketDataEvent(
+        event_type=EventType.MARKET_DATA,
+        timestamp=time(),
+        symbol="BTC/USD",
+        price=Decimal("50000.0"),
+        volume=Decimal("100.0"),
+    )
+    await bus.publish(market_event)
+    await asyncio.sleep(0.1)
+
+    order = OrderEvent(
+        event_type=EventType.ORDER,
+        timestamp=time(),
+        order_id="order_default_clock",
+        symbol="BTC/USD",
+        side=Side.BUY,
+        order_type=OrderType.MARKET,
+        amount=Decimal("0.1"),
+    )
+    await bus.publish(order)
+    await asyncio.sleep(0.2)
+
+    after = time()
+
+    assert len(fills) == 1
+    # Fill timestamp must be a real wall-clock value (within the test window)
+    assert before <= fills[0].timestamp <= after
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_paper_adapter_injectable_clock_used_for_fill_timestamp(bus, temp_state_file):
+    """clock= argument must be used for FillEvent.timestamp and trade history."""
+    fills = []
+
+    async def fill_handler(event: FillEvent):
+        fills.append(event)
+
+    bus.subscribe(EventType.FILL, fill_handler, "test_injectable_clock_fill")
+
+    # Simulate a historical epoch like BacktestClock would supply
+    HISTORICAL_TS = 1_742_342_400.0  # 2025-03-19 00:00:00 UTC
+
+    def fake_clock() -> float:
+        return HISTORICAL_TS
+
+    adapter = PaperTradingAdapter(
+        bus=bus,
+        config={},
+        initial_balance=Decimal("10000.0"),
+        commission_percent=Decimal("0.1"),
+        slippage_percent=Decimal("0.05"),
+        state_file=temp_state_file,
+        clock=fake_clock,
+    )
+
+    await adapter.connect()
+
+    market_event = MarketDataEvent(
+        event_type=EventType.MARKET_DATA,
+        timestamp=HISTORICAL_TS,
+        symbol="BTC/USD",
+        price=Decimal("50000.0"),
+        volume=Decimal("100.0"),
+    )
+    await bus.publish(market_event)
+    await asyncio.sleep(0.1)
+
+    order = OrderEvent(
+        event_type=EventType.ORDER,
+        timestamp=HISTORICAL_TS,
+        order_id="order_injected_clock",
+        symbol="BTC/USD",
+        side=Side.BUY,
+        order_type=OrderType.MARKET,
+        amount=Decimal("0.1"),
+    )
+    await bus.publish(order)
+    await asyncio.sleep(0.2)
+
+    assert len(fills) == 1
+    # FillEvent.timestamp must come from our fake_clock, not wall-clock
+    assert fills[0].timestamp == HISTORICAL_TS
+
+    await adapter.disconnect()

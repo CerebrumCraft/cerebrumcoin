@@ -27,7 +27,7 @@ import uuid
 from decimal import Decimal
 from pathlib import Path
 from time import time
-from typing import Any
+from typing import Any, Callable
 
 import structlog
 
@@ -66,6 +66,7 @@ class PaperTradingAdapter(ExchangeAdapter):
         commission_percent: Decimal,
         slippage_percent: Decimal,
         state_file: Path,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         """
         Initialize paper trading adapter.
@@ -77,12 +78,20 @@ class PaperTradingAdapter(ExchangeAdapter):
             commission_percent: Commission as % of trade value
             slippage_percent: Slippage as % of price
             state_file: Path to state persistence file
+            clock: Callable returning current time as a float (seconds since
+                epoch). Defaults to ``time.time`` for live trading. Pass a
+                BacktestClock instance in backtest mode so fill timestamps use
+                the same virtual time base as signal aggregation and cooldown
+                rules — avoiding permanent cooldown blocks caused by the gap
+                between wall-clock time and historical candle timestamps.
+                (DEC-BACKTEST-004)
         """
         super().__init__(bus, config)
         self._initial_balance = initial_balance
         self._commission_percent = commission_percent
         self._slippage_percent = slippage_percent
         self._state_file = state_file
+        self._clock: Callable[[], float] = clock if clock is not None else time
 
         # Portfolio state
         self._balances: dict[str, Decimal] = {}
@@ -218,7 +227,7 @@ class PaperTradingAdapter(ExchangeAdapter):
             # Record trade
             trade_record = {
                 "order_id": order.order_id,
-                "timestamp": time(),
+                "timestamp": self._clock(),
                 "symbol": order.symbol,
                 "side": order.side.value,
                 "amount": str(order.amount),
@@ -230,7 +239,7 @@ class PaperTradingAdapter(ExchangeAdapter):
             # Publish fill event — propagate strategy_id from order for multi-strategy routing
             fill_event = FillEvent(
                 event_type=EventType.FILL,
-                timestamp=time(),
+                timestamp=self._clock(),
                 order_id=order.order_id,
                 symbol=order.symbol,
                 side=order.side,
