@@ -41,13 +41,16 @@ Usage:
     python3 scripts/sensitivity.py --db data/cerebrum.db --strategy momentum
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import argparse
 import json
 import sqlite3
 import warnings
 from dataclasses import dataclass
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 from scripts.analyze import (

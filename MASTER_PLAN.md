@@ -419,13 +419,19 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-PERSIST-001 | Per-strategy PortfolioTracker snapshots in paper_state.json v2 format | Each strategy has isolated PortfolioTracker (cash, positions, peak_equity, realized_pnl). Without per-strategy snapshots, all per-strategy equity is lost on restart and the dashboard shows stale global aggregates. v2 adds strategy_snapshots key alongside v1 fields; v1 files load cleanly (no version key = empty snapshots, no error). initial_balance is not restored — fixed at construction time | 2026-03-25 |
 | DEC-RISK-005 | Peak equity lowered on capital withdrawal to prevent false drawdown | Conductor reallocation injects then later withdraws capital. Without peak-lowering on withdrawal, _peak_equity holds a transient high and the drawdown calculation permanently exceeds the circuit-breaker threshold, blocking all trading. Fix: on negative delta, lower peak by the same amount (floor at new equity so real losses are preserved) | 2026-03-25 |
 
-### Phase 12: Proving Ground — Strategy Attribution Analysis (COMPLETED)
-**Goal**: Build analysis tooling that reads the trade database and reports which strategies are making money, enabling data-driven go-live decisions.
+### Phase 12: Proving Ground — Strategy Attribution + Backtest + Tuning (IN PROGRESS)
+**Goal**: Build analysis tooling, full multi-strategy backtest, parameter sensitivity, and dashboard upgrades to enable data-driven go-live decisions. Scorecard not yet passing — 30-day proving ground in progress.
 
-- [x] Create `scripts/analyze.py` — strategy attribution report with 6 sections: aggregate overview, per-strategy attribution, regime-conditioned performance, guard effectiveness, go-live scorecard, output modes (DEC-ANALYZE-001, DEC-ANALYZE-002)
-- [x] Create `scripts/weekly_report.py` — automated weekly report writer (DEC-ANALYZE-003)
-- [x] Add tests: `tests/unit/test_analyze.py` — in-memory SQLite with 8 scenarios (DEC-ANALYZE-002)
-- **Verification**: All tests pass — strategy attribution report, weekly reporter, and go-live scorecard operational (2026-03-25)
+- [x] 12A: Strategy attribution analysis (`scripts/analyze.py`) — PR #18
+- [x] 12B: Go-live scorecard (in analyze.py) — PR #18
+- [x] 12C: Fix Sharpe ratio to use percentage returns — PR #17
+- [x] 12D: Full multi-strategy backtest (`scripts/run_backtest.py`) — PR #21
+- [x] 12E: Parameter sensitivity analysis (`scripts/sensitivity.py`) — PR #19
+- [x] 12F: Dashboard upgrades (equity curves, scorecard, commission, heatmap) — PR #20
+- [x] 12G: Backtest fixes (OHLCV pagination, Bitstamp data, virtual clock, paper adapter clock) — PRs #22-27
+- [x] 12H: Data-driven SL tuning (momentum 1.0%, breakout 1.5%, range_trading 0.5%) — PR #28
+- [ ] 12I: 30-day proving ground evaluation — Session 13 running
+- [ ] 12J: Live trading preparation ($100 pilot) — after scorecard passes
 
 **Phase 12 Decisions:**
 
@@ -434,36 +440,17 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-ANALYZE-001 | analyze.py replicates stats logic inline (no cerebrum imports) | Follows DEC-EXPORT-001 pattern: standalone scripts avoid importing asyncio-based StateManager and transitive dependencies. Sharpe/Sortino/drawdown logic replicated using raw Decimal arithmetic and sqlite3. Keeps script deployable anywhere Python 3.10+ is available without a full venv | 2026-03-25 |
 | DEC-ANALYZE-002 | Tests use in-memory SQLite with seeded trades — no production DB | Follows DEC-TEST-016 pattern. All scorecard logic, commission calculations, and Sharpe correctness are verified against deterministic seeded data before touching production data | 2026-03-25 |
 | DEC-ANALYZE-003 | weekly_report.py delegates to generate_report() from analyze.py | Code reuse without circular imports: weekly_report imports the pure generate_report() function from analyze.py rather than shelling out. Week number is auto-detected from earliest trade timestamp to avoid manual tracking | 2026-03-25 |
-
-### Phase 12E: Parameter Sensitivity Analysis (IN PROGRESS)
-**Goal**: Build a CLI script that replays historical trades from the database with alternative parameter values to identify optimal stop-loss, take-profit, and position age settings.
-
-- [ ] Create `scripts/sensitivity.py` — trade outcome simulation with SL/TP/age/cooldown sensitivity sweeps, tabular output, JSON mode, Top 5 recommendations (DEC-SENSITIVITY-001, DEC-SENSITIVITY-002)
-- [ ] Add tests: `tests/unit/test_sensitivity.py` — in-memory SQLite, simulation unit tests for all four simulation types, grid cap, strategy filter, JSON validity
-
-**Phase 12E Decisions:**
-
-| ID | Decision | Rationale | Date |
-|----|----------|-----------|------|
+| DEC-STATS-001 | Sharpe/Sortino use percentage returns | Raw dollar P&L was scale-dependent | 2026-03-25 |
 | DEC-SENSITIVITY-001 | sensitivity.py imports TradeRow/calculate_commission from analyze.py; simulation logic is pure (no I/O) | Reuses the stable TradeRow dataclass and commission formula from analyze.py rather than duplicating. Simulation functions (simulate_sl, simulate_tp, simulate_age, simulate_cooldown) are pure functions that accept a TradeRow and return a simulated P&L Decimal — no side effects, trivially testable | 2026-03-25 |
 | DEC-SENSITIVITY-002 | Tests use in-memory SQLite + direct TradeRow construction for simulation unit tests | DB tests verify fetch + filter logic; direct TradeRow construction for simulation logic (no DB needed to test math). Follows DEC-ANALYZE-002 pattern. Grid cap test uses warnings.catch_warnings to assert UserWarning emission | 2026-03-25 |
-
-### Phase 12F: Dashboard Upgrades — Equity Curves, Scorecard, Commission, Heatmap (IN PROGRESS)
-**Goal**: Extend the web dashboard with four new panels: per-strategy equity curves, go-live scorecard, commission drag visualization, and guard denial heatmap with color-coded intensity.
-
-- [ ] Add `self._strategy_equity_history`, `self._fill_counts`, `self._commission_totals`, `self._gross_pnl`, `self._first_fill_time` state tracking in `WebDashboard.__init__`
-- [ ] Update `_on_fill` to snapshot per-strategy equity and accumulate commission/fill-count on every FillEvent
-- [ ] Add `GET /api/strategy_equity_history` — per-strategy equity curve points for multi-line Chart.js
-- [ ] Add `GET /api/scorecard` — go-live criteria evaluation (days, P&L, drawdown, drag, fills, concentration)
-- [ ] Add `GET /api/commission` — per-strategy gross/net P&L and drag percentage
-- [ ] Update `cerebrum/dashboard/templates/index.html` — add per-strategy equity chart, scorecard table, commission panel, heatmap-colored denial table
-- [ ] Add tests in `tests/unit/test_web_dashboard.py`: equity history, scorecard, commission endpoint, fill tracking
-
-**Phase 12F Decisions:**
-
-| ID | Decision | Rationale | Date |
-|----|----------|-----------|------|
 | DEC-DASH-004 | Phase 12F state tracked from FillEvents in-memory — no DB queries | The dashboard runs embedded in the trading process and must stay lightweight. Per-strategy equity history, fill counts, commission totals, and realized P&L are accumulated incrementally from FillEvent callbacks. Authoritative analysis (Sharpe, full attribution) is deferred to scripts/analyze.py which queries the trade DB directly; the scorecard notes this for criteria that cannot be computed inline. | 2026-03-25 |
+| DEC-BACKTEST-001 | Backtest reuses entire live pipeline — no separate signal logic | The only change from live is the data source: OHLCV CSV instead of Kraken WebSocket. All signal generators, risk rules, strategy registry, and paper adapter are identical. This validates strategies against real-world data using the same execution path they'll see in production | 2026-03-26 |
+| DEC-BACKTEST-002 | News/sentiment and Conductor skipped in backtest | News feeds, LLM analyzer, fear/greed sentiment, and FinBERT are real-time push systems with no historical data equivalent. Conductor uses LLM API with cost. Both are skipped: news_driven strategy gets zero NEWS signals (noted in output), Conductor allocation is replaced by equal static allocation. RegimeDetector is included (feeds on price data alone) | 2026-03-26 |
+| DEC-BACKTEST-003 | Scale time-based params for non-1m candles | Guard windows calibrated for 1m ticks | 2026-03-26 |
+| DEC-BACKTEST-004 | Injectable BacktestClock for virtual time | SignalAggregator, PostFillCooldownRule, PaperAdapter all used time() | 2026-03-26 |
+| DEC-TUNE-002 | Mean reversion position_size 3%→5% | At $1,666.67 capital, 3% = $50 trades where commission eats profits | 2026-03-25 |
+| DEC-TUNE-003 | Mean reversion cooldown 600→900s | Match other strategies, reduce churn in SIDEWAYS | 2026-03-25 |
+| DEC-TUNE-004 | Tighten SL: momentum 1.0%, breakout 1.5%, range_trading 0.5% | Session 11 sensitivity analysis: SL=1.0% improves AdjPnL by +$118 | 2026-03-26 |
 
 ## Resources
 
