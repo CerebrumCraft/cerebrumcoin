@@ -1070,3 +1070,126 @@ class TestPhase12FRoutesRegistered:
         assert "/api/strategy_equity_history" in route_paths
         assert "/api/scorecard" in route_paths
         assert "/api/commission" in route_paths
+
+
+# ---------------------------------------------------------------------------
+# Test: _get_global_equity — paper adapter vs GlobalPortfolio fallback
+# @mock-exempt: PaperTradingAdapter is an external exchange adapter boundary
+#               (simulates a live exchange connection). Mocking it here is
+#               appropriate — we need to control its return value without
+#               starting a real paper trading session.
+# ---------------------------------------------------------------------------
+
+
+class TestGetGlobalEquityPaperAdapterGroundTruth:
+    """With paper_adapter set, _get_global_equity uses adapter as ground truth.
+
+    Root cause fixed: GlobalPortfolio.get_total_equity() sums all 6 strategy
+    PortfolioTracker equities, double-counting capital because each tracker
+    holds its own cash allocation + position marks independently of the real
+    exchange state (~$11,200 displayed vs ~$9,994 actual). Using
+    PaperTradingAdapter.get_portfolio_summary() as the single source of truth
+    corrects this display bug.
+    """
+
+    @pytest.mark.asyncio
+    async def test_with_paper_adapter_returns_adapter_value(
+        self, bus, registry, conductor, global_portfolio
+    ):
+        """_get_global_equity() returns adapter total_value_usd, not GlobalPortfolio sum."""
+        from unittest.mock import MagicMock
+        paper_adapter = MagicMock()
+        paper_adapter.get_portfolio_summary.return_value = {
+            "total_value_usd": "9994.00",
+            "balances": {"USD": "9994.00"},
+            "positions": {},
+            "trade_count": 42,
+            "pnl_usd": "-6.00",
+        }
+
+        d = WebDashboard(
+            bus=bus,
+            registry=registry,
+            conductor=conductor,
+            global_portfolio=global_portfolio,
+            host="127.0.0.1",
+            port=18090,
+            paper_adapter=paper_adapter,
+        )
+
+        result = d._get_global_equity()
+        assert result == Decimal("9994.00")
+
+    @pytest.mark.asyncio
+    async def test_build_strategies_payload_uses_adapter_equity(
+        self, bus, registry, conductor, global_portfolio
+    ):
+        """_build_strategies_payload()['global_equity'] reflects adapter value, not inflated sum."""
+        from unittest.mock import MagicMock
+        paper_adapter = MagicMock()
+        paper_adapter.get_portfolio_summary.return_value = {
+            "total_value_usd": "9994.00",
+            "balances": {"USD": "9994.00"},
+            "positions": {},
+            "trade_count": 5,
+            "pnl_usd": "-6.00",
+        }
+
+        d = WebDashboard(
+            bus=bus,
+            registry=registry,
+            conductor=conductor,
+            global_portfolio=global_portfolio,
+            host="127.0.0.1",
+            port=18091,
+            paper_adapter=paper_adapter,
+        )
+
+        payload = d._build_strategies_payload()
+        # GlobalPortfolio for 3 strategies at $10k each = $30k (inflated).
+        # The adapter returns $9,994 — dashboard must use the adapter value.
+        assert payload["global_equity"] == pytest.approx(9994.0)
+
+    @pytest.mark.asyncio
+    async def test_without_paper_adapter_falls_back_to_global_portfolio(
+        self, bus, registry, conductor, global_portfolio
+    ):
+        """Without paper_adapter (live mode), falls back to GlobalPortfolio."""
+        d = WebDashboard(
+            bus=bus,
+            registry=registry,
+            conductor=conductor,
+            global_portfolio=global_portfolio,
+            host="127.0.0.1",
+            port=18092,
+            paper_adapter=None,
+        )
+
+        result = d._get_global_equity()
+        # Three strategies at $10,000 each = $30,000
+        assert result == Decimal("30000.00")
+
+    @pytest.mark.asyncio
+    async def test_drawdown_still_uses_global_portfolio(
+        self, bus, registry, conductor, global_portfolio
+    ):
+        """get_total_drawdown() is still sourced from GlobalPortfolio regardless of adapter."""
+        from unittest.mock import MagicMock
+        paper_adapter = MagicMock()
+        paper_adapter.get_portfolio_summary.return_value = {
+            "total_value_usd": "9994.00",
+        }
+
+        d = WebDashboard(
+            bus=bus,
+            registry=registry,
+            conductor=conductor,
+            global_portfolio=global_portfolio,
+            host="127.0.0.1",
+            port=18093,
+            paper_adapter=paper_adapter,
+        )
+
+        payload = d._build_strategies_payload()
+        # Drawdown still comes from GlobalPortfolio — starts at 0.0
+        assert payload["global_drawdown_pct"] == pytest.approx(0.0)
