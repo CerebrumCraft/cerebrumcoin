@@ -369,6 +369,23 @@ class Conductor:
             )
             return
 
+        # @decision DEC-CONDUCTOR-005
+        # @title Normalize LLM allocation fractions to percentages
+        # @status accepted
+        # @rationale Haiku returns 0.25 instead of 25 for "25%". Rather than
+        # relying on prompt engineering, detect sum(allocations) <= 2 and
+        # multiply by 100. This is the single normalization point since
+        # _apply_allocations() is called by all allocation sources.
+        total = sum(allocations.values())
+        if total > Decimal("0") and total <= Decimal("2"):
+            # Sum is ~1.0 — LLM returned fractions, multiply by 100
+            allocations = {k: v * Decimal("100") for k, v in allocations.items()}
+            self._log.info(
+                "allocation_normalized",
+                original_sum=str(round(total, 4)),
+                message="LLM returned fractions; rescaled to percentages",
+            )
+
         # --- Apply 50% single-strategy cap (DEC-CONDUCTOR-004) ---
         allocations = self._cap_allocations(allocations)
 

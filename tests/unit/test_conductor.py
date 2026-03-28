@@ -486,3 +486,109 @@ async def test_allocation_cap_50_percent(bus, mock_registry, allocator, clock):
     assert abs(total - Decimal("100")) < Decimal("1"), (
         f"Allocations sum to {total}%, expected ~100%"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 10: Fraction normalization — LLM returns decimals summing to ~1.0
+# (DEC-CONDUCTOR-005)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fraction_allocations_normalized_to_percentages(
+    bus, mock_registry, allocator, clock
+):
+    """
+    When the LLM returns decimal fractions (e.g. 0.25 instead of 25),
+    _apply_allocations() must detect sum(values) <= 2 and rescale by *100.
+
+    Without the fix each strategy would receive 1% of its intended capital
+    (pct=0.25 → target = total * 0.25/100 = $75 instead of $7,500).
+    """
+    conductor = _make_conductor(bus, mock_registry, allocator, api_key=None, clock=clock)
+
+    # LLM returned fractions summing to 1.0
+    fraction_allocs = {
+        "momentum": Decimal("0.50"),
+        "mean_reversion": Decimal("0.30"),
+        "breakout": Decimal("0.20"),
+    }
+
+    await conductor._apply_allocations(fraction_allocs)
+
+    # Reconstruct applied percentages from adjust_balance deltas
+    applied: dict[str, Decimal] = {}
+    for name, p in mock_registry._portfolios.items():
+        if p.adjust_balance.called:
+            delta = p.adjust_balance.call_args[0][0]
+            current = TOTAL_CAPITAL / 3
+            target = current + delta
+            pct = target / TOTAL_CAPITAL * Decimal("100")
+            applied[name] = pct
+        else:
+            applied[name] = TOTAL_CAPITAL / 3 / TOTAL_CAPITAL * Decimal("100")
+
+    # momentum should have ~50%, not 0.5%
+    assert applied["momentum"] > Decimal("40"), (
+        f"momentum got {applied['momentum']}% — fractions were NOT normalized to percentages"
+    )
+    assert abs(applied["momentum"] - Decimal("50")) < Decimal("1"), (
+        f"momentum expected ~50%, got {applied['momentum']}%"
+    )
+
+    # Total must be ~100%
+    total = sum(applied.values())
+    assert abs(total - Decimal("100")) < Decimal("1"), (
+        f"Normalized allocations sum to {total}%, expected ~100%"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 11: Whole-percentage allocations are NOT rescaled (DEC-CONDUCTOR-005)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_whole_percentage_allocations_not_rescaled(
+    bus, mock_registry, allocator, clock
+):
+    """
+    When the LLM correctly returns whole percentages summing to ~100,
+    _apply_allocations() must NOT modify them.
+
+    Guard against over-triggering the normalization: only fractions (sum <= 2)
+    get rescaled. A normal allocation like {mom: 50, mr: 30, bk: 20} = 100
+    must pass through unchanged.
+    """
+    conductor = _make_conductor(bus, mock_registry, allocator, api_key=None, clock=clock)
+
+    whole_pct_allocs = {
+        "momentum": Decimal("50"),
+        "mean_reversion": Decimal("30"),
+        "breakout": Decimal("20"),
+    }
+
+    await conductor._apply_allocations(whole_pct_allocs)
+
+    # Reconstruct applied percentages from adjust_balance deltas
+    applied: dict[str, Decimal] = {}
+    for name, p in mock_registry._portfolios.items():
+        if p.adjust_balance.called:
+            delta = p.adjust_balance.call_args[0][0]
+            current = TOTAL_CAPITAL / 3
+            target = current + delta
+            pct = target / TOTAL_CAPITAL * Decimal("100")
+            applied[name] = pct
+        else:
+            applied[name] = TOTAL_CAPITAL / 3 / TOTAL_CAPITAL * Decimal("100")
+
+    # momentum should be ~50%, NOT ~5000% (which would happen if rescaled again)
+    assert abs(applied["momentum"] - Decimal("50")) < Decimal("1"), (
+        f"momentum expected ~50%, got {applied['momentum']}% — whole percentages were incorrectly rescaled"
+    )
+    assert abs(applied["mean_reversion"] - Decimal("30")) < Decimal("1"), (
+        f"mean_reversion expected ~30%, got {applied['mean_reversion']}%"
+    )
+    assert abs(applied["breakout"] - Decimal("20")) < Decimal("1"), (
+        f"breakout expected ~20%, got {applied['breakout']}%"
+    )
