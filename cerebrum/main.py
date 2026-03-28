@@ -548,6 +548,7 @@ class CerebrumCoin:
                 registry=self.strategy_registry,
                 conductor=self.conductor,
                 global_portfolio=self.strategy_registry.global_portfolio,
+                paper_adapter=self.paper_adapter,
             )
             await self.web_dashboard.start()
             self._log.info("web_dashboard_started", url="http://127.0.0.1:8080")

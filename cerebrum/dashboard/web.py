@@ -82,6 +82,7 @@ from cerebrum.core.events import Event, FillEvent, RegimeChangeEvent
 from cerebrum.core.types import EventType
 
 if TYPE_CHECKING:
+    from cerebrum.adapters.paper import PaperTradingAdapter
     from cerebrum.conductor.conductor import Conductor
     from cerebrum.strategies.global_portfolio import GlobalPortfolio
     from cerebrum.strategies.registry import StrategyRegistry
@@ -143,6 +144,7 @@ class WebDashboard:
         global_portfolio: "GlobalPortfolio",
         host: str = "127.0.0.1",
         port: int = 8080,
+        paper_adapter: "PaperTradingAdapter | None" = None,
     ) -> None:
         """
         Initialise the web dashboard.
@@ -155,6 +157,9 @@ class WebDashboard:
             global_portfolio: GlobalPortfolio for aggregate equity view.
             host: Bind address (default 127.0.0.1 — localhost only).
             port: HTTP port (default 8080).
+            paper_adapter: Optional PaperTradingAdapter — when present, used as
+                ground truth for global equity to avoid double-counting six
+                strategy PortfolioTracker equities (see _get_global_equity).
         """
         if not _FASTAPI_AVAILABLE:
             raise ImportError(
@@ -165,6 +170,7 @@ class WebDashboard:
         self._registry = registry
         self._conductor = conductor
         self._global_portfolio = global_portfolio
+        self._paper_adapter = paper_adapter
         self._host = host
         self._port = port
 
@@ -193,6 +199,19 @@ class WebDashboard:
 
         self._log = logger.bind(component="web_dashboard")
         self._setup_routes()
+
+    def _get_global_equity(self) -> Decimal:
+        """Ground-truth total portfolio equity.
+
+        Uses PaperTradingAdapter.get_portfolio_summary() in paper mode to avoid
+        double-counting six strategy PortfolioTrackers (each holds its own cash
+        allocation + position marks, inflating the sum vs actual adapter state).
+        Falls back to GlobalPortfolio aggregation in live mode.
+        """
+        if self._paper_adapter is not None:
+            summary = self._paper_adapter.get_portfolio_summary()
+            return Decimal(summary["total_value_usd"])
+        return self._global_portfolio.get_total_equity()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -439,7 +458,7 @@ class WebDashboard:
         await self._broadcast({"type": "strategy_update", "data": strategies})
 
         # Snapshot global equity for the global equity chart
-        total_equity = float(self._global_portfolio.get_total_equity())
+        total_equity = float(self._get_global_equity())
         self._equity_history.append({"ts": ts, "equity": total_equity})
         if len(self._equity_history) > 500:
             self._equity_history = self._equity_history[-500:]
@@ -496,7 +515,7 @@ class WebDashboard:
                 "denials": denials,
             }
 
-        global_equity = float(self._global_portfolio.get_total_equity())
+        global_equity = float(self._get_global_equity())
         global_drawdown = float(self._global_portfolio.get_total_drawdown())
 
         return {
