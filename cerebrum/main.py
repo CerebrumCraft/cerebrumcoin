@@ -22,6 +22,19 @@ volatility gate, macro gate, sideways suppression, global rate limit) are constr
 once and passed to StrategyRegistry.start_all() so they are shared by reference across
 all per-strategy RiskManagers — avoiding duplicate event bus subscriptions for guards
 that observe global market state (DEC-STRAT-003).
+
+@decision DEC-SHUTDOWN-001
+@title Graceful position liquidation on shutdown
+@status accepted
+@rationale Open positions persisted across sessions create phantom P&L. Session 11
+showed $10,750.72 equity with unrealized gains that were never realized. Closing all
+positions at market during graceful shutdown ensures accurate realized P&L and clean
+state for the next session. _close_all_positions() publishes OrderEvents to the still-
+running event bus (and hence the paper adapter's execute_order handler) so fills flow
+through the normal PortfolioTracker path, realizing P&L correctly. Called in stop()
+after the web dashboard is stopped but before the conductor/strategies/bus are torn
+down so the event loop is still live. Each position close is isolated with try/except
+so one failure cannot block the others.
 """
 
 import argparse
@@ -29,8 +42,10 @@ import asyncio
 import os
 import signal
 import sys
+import uuid
 from decimal import Decimal
 from pathlib import Path
+from time import time as _time
 from typing import Any
 
 import structlog
@@ -39,7 +54,8 @@ from cerebrum.adapters.kraken import KrakenAdapter
 from cerebrum.adapters.paper import PaperTradingAdapter
 from cerebrum.core.bus import EventBus
 from cerebrum.core.config import Config
-from cerebrum.core.types import EventType, TradingMode
+from cerebrum.core.events import OrderEvent
+from cerebrum.core.types import EventType, OrderStatus, OrderType, Side, TradingMode
 from cerebrum.risk.exit_monitor import ExitMonitor
 from cerebrum.risk.global_trade_rate import GlobalTradeRateLimitRule
 from cerebrum.risk.manager import RiskManager
@@ -664,6 +680,92 @@ class CerebrumCoin:
         # Wait for shutdown signal
         await self._shutdown_event.wait()
 
+    async def _close_all_positions(self) -> None:
+        """
+        Liquidate all open positions at market price before shutdown.
+
+        Collects positions from both single-strategy (self.portfolio) and
+        multi-strategy (self.strategy_registry) modes. For each open position
+        publishes an OrderEvent to the still-running event bus so the paper
+        adapter's execute_order handler processes it normally, realizing P&L
+        through PortfolioTracker._on_fill().
+
+        Must be called while the event bus and paper adapter are still running
+        (i.e. before conductor/strategies/bus teardown). Each position closure
+        is isolated with try/except so one failure cannot block the others.
+
+        See DEC-SHUTDOWN-001.
+        """
+        # Gather (strategy_id, symbol, amount) tuples for every open position.
+        pending: list[tuple[str | None, str, Decimal]] = []
+
+        # Single-strategy mode
+        if self.portfolio is not None:
+            for symbol, pos in self.portfolio.get_all_positions().items():
+                if pos.amount != Decimal("0"):
+                    pending.append((None, symbol, pos.amount))
+
+        # Multi-strategy mode
+        if self.strategy_registry is not None:
+            for name in self.strategy_registry.active_strategy_names():
+                portfolio = self.strategy_registry.get_portfolio(name)
+                if portfolio is None:
+                    continue
+                for symbol, pos in portfolio.get_all_positions().items():
+                    if pos.amount != Decimal("0"):
+                        pending.append((name, symbol, pos.amount))
+
+        if not pending:
+            self._log.info("shutdown_liquidation_no_positions")
+            return
+
+        self._log.info(
+            "shutdown_liquidation_starting",
+            position_count=len(pending),
+        )
+
+        for strategy_id, symbol, amount in pending:
+            try:
+                # Long position → SELL to close; short position → BUY to cover.
+                side = Side.SELL if amount > Decimal("0") else Side.BUY
+                close_amount = abs(amount)
+
+                order = OrderEvent(
+                    event_type=EventType.ORDER,
+                    timestamp=_time(),
+                    order_id=str(uuid.uuid4()),
+                    symbol=symbol,
+                    side=side,
+                    order_type=OrderType.MARKET,
+                    amount=close_amount,
+                    price=None,
+                    status=OrderStatus.PENDING,
+                    metadata={"exit_reason": "shutdown_liquidation", "source": "shutdown"},
+                    strategy_id=strategy_id,
+                )
+                await self.bus.publish(order)
+                self._log.info(
+                    "shutdown_liquidation_order_sent",
+                    strategy_id=strategy_id or "single",
+                    symbol=symbol,
+                    side=side.value,
+                    amount=str(close_amount),
+                )
+            except Exception as exc:
+                self._log.warning(
+                    "shutdown_liquidation_order_failed",
+                    strategy_id=strategy_id or "single",
+                    symbol=symbol,
+                    error=str(exc),
+                )
+
+        # Yield control so the event bus can dispatch the published orders
+        # to the paper adapter's execute_order handler before we proceed
+        # with teardown. A single asyncio.sleep(0) is enough because the
+        # bus processes events in the same event loop iteration.
+        await asyncio.sleep(0)
+        self._log.info("shutdown_liquidation_complete")
+
     async def stop(self) -> None:
         """Stop the trading system gracefully (reverse startup order)."""
         self._log.info("cerebrumcoin_stopping")
@@ -671,6 +773,11 @@ class CerebrumCoin:
         # Stop WebDashboard first (closes HTTP server / WS connections)
         if self.web_dashboard is not None:
             await self.web_dashboard.stop()
+
+        # Liquidate all open positions before tearing down the event bus.
+        # The bus and paper adapter must still be running for fills to process.
+        # See DEC-SHUTDOWN-001.
+        await self._close_all_positions()
 
         # Stop Conductor (cancels poll task)
         if self.conductor is not None:
@@ -693,7 +800,8 @@ class CerebrumCoin:
             if hasattr(component, "stop"):
                 await component.stop()
 
-        # Disconnect adapters
+        # Disconnect adapters (paper adapter calls _save_state() here,
+        # capturing the post-liquidation state with no open positions).
         if self.kraken_adapter:
             await self.kraken_adapter.disconnect()
 
