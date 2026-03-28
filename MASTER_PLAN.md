@@ -451,6 +451,35 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-TUNE-002 | Mean reversion position_size 3%→5% | At $1,666.67 capital, 3% = $50 trades where commission eats profits | 2026-03-25 |
 | DEC-TUNE-003 | Mean reversion cooldown 600→900s | Match other strategies, reduce churn in SIDEWAYS | 2026-03-25 |
 | DEC-TUNE-004 | Tighten SL: momentum 1.0%, breakout 1.5%, range_trading 0.5% | Session 11 sensitivity analysis: SL=1.0% improves AdjPnL by +$118 | 2026-03-26 |
+| DEC-SHUTDOWN-001 | Graceful position liquidation on shutdown | Open positions persisted across sessions create phantom P&L. Session 11 showed $10,750.72 equity with unrealized gains never realized. _close_all_positions() publishes OrderEvents to the still-running bus so fills flow through normal PortfolioTracker path, realizing P&L before _save_state() captures clean state | 2026-03-27 |
+| DEC-TEST-SHUTDOWN-001 | Test shutdown liquidation with real bus and in-memory PortfolioTracker | Sacred Practice #5: real EventBus + real PortfolioTracker. Verifies SELL for long, BUY for short, zero-amount skip, error isolation, multi-strategy registry path | 2026-03-27 |
+
+---
+
+### Phase 13: Stocks Trading Expansion (IN PROGRESS)
+**Goal**: Enable stock trading alongside existing crypto strategies via Alpaca, with proper symbol routing, NYSE market hours awareness, and paper trading validation before any live stocks execution.
+
+**Scope**: Paper-only. Existing strategies trade stock symbols using the same logic as crypto. Stock-specific strategies, backtesting data pipeline, and live stocks execution are deferred to Phase 14.
+
+- [x] 13A: Alpaca + Kraken `strategy_id` fix; `AlpacaConfig` dataclass; commented `[alpaca]` section in paper.toml — `fb4b5fa`
+- [x] 13B: `MarketHoursRule` — NYSE calendar guard (9:30–16:00 ET, 10 holidays, 60s cache, crypto always passes) — `fb4b5fa`
+- [ ] 13C: WebSocket streaming upgrade for AlpacaAdapter (replace 5s polling; polling remains as fallback)
+- [ ] 13D: Multi-adapter routing — `OrderRouter` dispatches stock symbols to Alpaca, crypto to Kraken/paper; wire both adapters + `MarketHoursRule` into `main.py`
+- [ ] 13E: Mixed paper session validation — crypto on Kraken + stocks on Alpaca paper; 30-day proving ground before live stocks
+
+**Waiting on**: Phase 12J ($100 live crypto pilot) before proceeding with 13C–13E.
+
+**Phase 13 Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-ALPACA-FIX-001 | Propagate `strategy_id` from OrderEvent to FillEvent in AlpacaAdapter and KrakenAdapter | All three adapters must propagate strategy_id consistently so Conductor can attribute stock fills to the correct strategy. Omission was a Phase 6 POC gap | 2026-03-28 |
+| DEC-HOURS-001 | Local NYSE calendar in MarketHoursRule — no external API | External clock API calls introduce network dependency in the risk path. Local calendar using `zoneinfo` + Anonymous Gregorian Easter algorithm covers all 10 NYSE holidays deterministically. Crypto symbols (`/`) always bypass the rule | 2026-03-28 |
+| DEC-ROUTE-001 | Symbol format determines adapter: `/` → crypto (Kraken/paper), no `/` → stocks (Alpaca) | Crypto pairs use ccxt format (`BTC/USD`); stock tickers have no slash (`AAPL`). Universal convention, no extra config needed for common cases | TBD (13D) |
+| DEC-ALPACA-002 | WebSocket streaming via `StockDataStream`, polling as fallback | Alpaca free tier provides IEX data via WebSocket — sufficient for paper validation | TBD (13C) |
+| DEC-ALPACA-003 | Alpaca's built-in paper mode serves as the stocks paper adapter | No separate PaperTradingAdapter needed for stocks. `paper=True` config flag controls endpoint | TBD (13D) |
+
+---
 
 ## Resources
 
@@ -458,6 +487,6 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 |------|---------|
 | `pyproject.toml` | Dependencies and project config |
 | `config/default.toml` | Default runtime configuration |
-| `config/paper.toml` | Paper trading overrides |
+| `config/paper.toml` | Paper trading overrides (includes commented `[alpaca]` section) |
 | `config/live.toml` | Live trading configuration (conservative) |
 | `.env.example` | API key template |
