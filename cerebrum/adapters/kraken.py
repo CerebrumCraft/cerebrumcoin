@@ -241,6 +241,8 @@ class KrakenAdapter(ExchangeAdapter):
                     fill_price = Decimal(str(filled_order["average"]))
                     fill_amount = Decimal(str(filled_order["filled"]))
                     
+                    # Propagate strategy_id from OrderEvent for multi-strategy routing.
+                    # Matches the pattern in PaperTradingAdapter and AlpacaAdapter.
                     fill_event = FillEvent(
                         event_type=EventType.FILL,
                         timestamp=time(),
@@ -252,8 +254,9 @@ class KrakenAdapter(ExchangeAdapter):
                         commission=Decimal(str(filled_order.get("fee", {}).get("cost", 0))),
                         commission_asset="USD",
                         exchange_order_id=str(filled_order["id"]),
+                        strategy_id=order.strategy_id,
                     )
-                    
+
                     await self.bus.publish(fill_event)
                     
                     self._log.info(

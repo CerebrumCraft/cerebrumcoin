@@ -194,6 +194,114 @@ async def test_alpaca_execute_order(mock_trading_client):
     await bus.stop()
 
 
+# @mock-exempt: Alpaca TradingClient is an external service boundary — mocking at the API layer.
+@pytest.mark.asyncio
+async def test_alpaca_execute_order_propagates_strategy_id(mock_trading_client):
+    """
+    Test that strategy_id from OrderEvent is propagated to FillEvent (DEC-ALPACA-FIX-001).
+
+    Multi-strategy routing requires FillEvent.strategy_id to match the originating
+    OrderEvent.strategy_id so the Conductor can attribute fills to the correct strategy.
+    """
+    bus = EventBus()
+    await bus.start()
+
+    fills = []
+
+    async def capture_fill(event: FillEvent) -> None:
+        fills.append(event)
+
+    bus.subscribe(EventType.FILL, capture_fill, "test_capture_strategy")
+
+    adapter = AlpacaAdapter(bus, {"api_key": "test", "secret_key": "test"})
+    adapter._trading_client = mock_trading_client
+    adapter._connected = True
+
+    mock_order = MagicMock()
+    mock_order.id = "alpaca_order_456"
+    mock_order.status = "accepted"
+    mock_trading_client.submit_order.return_value = mock_order
+
+    mock_filled = MagicMock()
+    mock_filled.id = "alpaca_order_456"
+    mock_filled.status = "filled"
+    mock_filled.filled_qty = "5"
+    mock_filled.filled_avg_price = "200.00"
+    mock_trading_client.get_order_by_id.return_value = mock_filled
+
+    # Order with a specific strategy_id
+    order = OrderEvent(
+        event_type=EventType.ORDER,
+        timestamp=0.0,
+        order_id="order_with_strategy",
+        symbol="MSFT",
+        side=Side.BUY,
+        order_type=OrderType.MARKET,
+        amount=Decimal("5"),
+        strategy_id="momentum",
+    )
+
+    await adapter.execute_order(order)
+    await asyncio.sleep(0.1)
+
+    assert len(fills) == 1
+    fill = fills[0]
+    assert fill.strategy_id == "momentum", (
+        "FillEvent.strategy_id must match OrderEvent.strategy_id (DEC-ALPACA-FIX-001)"
+    )
+
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_alpaca_execute_order_no_strategy_id(mock_trading_client):
+    """Test that strategy_id=None is propagated when OrderEvent has no strategy_id."""
+    bus = EventBus()
+    await bus.start()
+
+    fills = []
+
+    async def capture_fill(event: FillEvent) -> None:
+        fills.append(event)
+
+    bus.subscribe(EventType.FILL, capture_fill, "test_capture_none_strategy")
+
+    adapter = AlpacaAdapter(bus, {"api_key": "test", "secret_key": "test"})
+    adapter._trading_client = mock_trading_client
+    adapter._connected = True
+
+    mock_order_obj = MagicMock()
+    mock_order_obj.id = "alpaca_order_789"
+    mock_order_obj.status = "accepted"
+    mock_trading_client.submit_order.return_value = mock_order_obj
+
+    mock_filled_obj = MagicMock()
+    mock_filled_obj.id = "alpaca_order_789"
+    mock_filled_obj.status = "filled"
+    mock_filled_obj.filled_qty = "3"
+    mock_filled_obj.filled_avg_price = "150.00"
+    mock_trading_client.get_order_by_id.return_value = mock_filled_obj
+
+    # Order without strategy_id (default None)
+    order = OrderEvent(
+        event_type=EventType.ORDER,
+        timestamp=0.0,
+        order_id="order_no_strategy",
+        symbol="AAPL",
+        side=Side.BUY,
+        order_type=OrderType.MARKET,
+        amount=Decimal("3"),
+    )
+
+    await adapter.execute_order(order)
+    await asyncio.sleep(0.1)
+
+    assert len(fills) == 1
+    assert fills[0].strategy_id is None
+
+    await bus.stop()
+
+
 @pytest.mark.asyncio
 async def test_alpaca_disconnect():
     """Test Alpaca adapter disconnection."""

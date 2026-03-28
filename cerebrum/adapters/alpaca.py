@@ -215,6 +215,14 @@ class AlpacaAdapter(ExchangeAdapter):
                 filled = self._trading_client.get_order_by_id(alpaca_order.id)
 
                 if str(filled.status) == "filled":
+                    # @decision DEC-ALPACA-FIX-001
+                    # @title Propagate strategy_id from OrderEvent to FillEvent
+                    # @status accepted
+                    # @rationale Multi-strategy routing (Conductor) requires FillEvent.strategy_id
+                    # to match the originating OrderEvent.strategy_id so fills are attributed to
+                    # the correct strategy. Without this, all fills appear unrouted (strategy_id=None),
+                    # breaking the Conductor's per-strategy P&L tracking. Matches PaperTradingAdapter
+                    # pattern (cerebrum/adapters/paper.py line 251).
                     fill_event = FillEvent(
                         event_type=EventType.FILL,
                         timestamp=time(),
@@ -226,6 +234,7 @@ class AlpacaAdapter(ExchangeAdapter):
                         commission=Decimal("0"),  # Alpaca is commission-free
                         commission_asset="USD",
                         exchange_order_id=str(filled.id),
+                        strategy_id=order.strategy_id,
                     )
                     await self.bus.publish(fill_event)
 

@@ -394,6 +394,51 @@ class MonitoringConfig(BaseSettings):
     )
 
 
+class AlpacaConfig(BaseSettings):
+    """
+    Alpaca stock trading API configuration.
+
+    Used when the system operates in multi-asset mode (stocks + crypto).
+    The [alpaca] section in TOML is optional — omitting it uses all defaults,
+    so existing configs without an [alpaca] section continue to work.
+
+    @decision DEC-ALPACA-CONFIG-001
+    @title AlpacaConfig as optional BaseSettings with all safe defaults
+    @status accepted
+    @rationale Alpaca is an optional extension for stock trading. Adding it as
+    a separate config class with empty-string API key defaults means the system
+    boots without Alpaca credentials and only activates stock trading when the
+    user explicitly configures keys. The default symbols list is empty so no
+    unexpected stock subscriptions occur on first boot.
+    """
+
+    api_key: str = Field(default="", description="Alpaca API key")
+    secret_key: str = Field(default="", description="Alpaca secret key")
+    paper: bool = Field(
+        default=True,
+        description="Use Alpaca paper trading endpoint (True) or live (False)"
+    )
+    symbols: list[str] = Field(
+        default_factory=list,
+        description="Stock symbols to trade (e.g. ['AAPL', 'MSFT', 'NVDA'])"
+    )
+    poll_interval_seconds: int = Field(
+        default=5,
+        description="Market data polling interval in seconds"
+    )
+    websocket_enabled: bool = Field(
+        default=True,
+        description="Enable WebSocket streaming for real-time data (future use)"
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="ALPACA_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+
 class Config(BaseSettings):
     """Master configuration combining all subsystems."""
     exchange: ExchangeConfig = Field(default_factory=ExchangeConfig)
@@ -406,6 +451,7 @@ class Config(BaseSettings):
     intelligence: IntelligenceConfig = Field(default_factory=IntelligenceConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
+    alpaca: AlpacaConfig = Field(default_factory=AlpacaConfig)
 
     model_config = SettingsConfigDict(
         env_file=".env",

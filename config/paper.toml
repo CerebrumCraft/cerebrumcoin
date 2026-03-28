@@ -69,3 +69,12 @@ min_hold_count = 3                 # Hysteresis: require 3 consecutive readings 
 
 [strategy.range_trading]
 enabled = true
+
+# Alpaca stock trading — uncomment and fill in credentials to enable
+# Leave commented out for crypto-only paper trading sessions
+# [alpaca]
+# api_key = ""
+# secret_key = ""
+# paper = true
+# symbols = ["AAPL", "MSFT", "NVDA"]
+# websocket_enabled = true
