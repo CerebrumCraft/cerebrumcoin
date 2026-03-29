@@ -45,6 +45,8 @@ macro_volatility_window_size = 18000    # ~5 hours at 1 tick/sec
 adaptive_tp = true
 tp_multiplier = "1.5"   # effective_tp = range_pct * 1.5 (e.g. 0.4% range -> 0.6% TP)
 min_tp_percent = "0.3"  # Floor: never set TP below 0.3% (covers commission)
+# Commission gate: deny orders when range < commission*2*ratio (0.16%*2*2.0 = 0.64% threshold)
+min_profit_to_commission_ratio = "2.0"  # 2x round-trip commission required in recent range
 
 [monitoring]
 dashboard_enabled = true

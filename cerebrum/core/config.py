@@ -150,6 +150,16 @@ class RiskConfig(BaseSettings):
             "Prevents TP being set so low that commission guarantees a loss."
         )
     )
+    min_profit_to_commission_ratio: Decimal = Field(
+        default=Decimal("2.0"),
+        description=(
+            "Minimum ratio of expected price range to round-trip commission cost. "
+            "CommissionGateRule denies orders when range_pct < commission_pct * 2 * ratio. "
+            "Default 2.0 requires the recent range to be at least 2x the round-trip "
+            "commission (e.g. 0.64% minimum range for Kraken 0.16% maker fee). "
+            "Raise to be more conservative; lower to allow thinner-margin trades."
+        )
+    )
 
     @field_validator("max_drawdown_percent", "position_size_percent")
     @classmethod
