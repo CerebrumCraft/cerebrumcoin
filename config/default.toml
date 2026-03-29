@@ -25,7 +25,7 @@ state_file = "data/paper_state.json"
 
 [trading]
 mode = "paper"
-symbols = ["BTC/USD", "ETH/USD"]
+symbols = ["BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD"]
 data_refresh_seconds = 1
 
 [signals]

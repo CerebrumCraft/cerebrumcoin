@@ -88,7 +88,7 @@ def test_trading_config_defaults():
     config = TradingConfig()
 
     assert config.mode == TradingMode.PAPER
-    assert config.symbols == ["BTC/USD", "ETH/USD"]
+    assert config.symbols == ["BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD"]
     assert config.data_refresh_seconds == 1
 
 
@@ -254,3 +254,37 @@ def test_paper_toml_tuned_parameters():
         "commission should match Kraken's maker fee"
     assert config.paper.slippage_percent == Decimal("0.1"), \
         "slippage should be conservative"
+
+
+def test_paper_toml_loads_four_symbols():
+    """Test that paper.toml explicitly declares all four trading pairs (Phase 13 expansion).
+
+    paper.toml loads standalone (not layered on default.toml), so symbols must
+    be present in the [trading] section rather than relying on TradingConfig defaults.
+    """
+    paper_config_path = Path(__file__).parent.parent.parent / "config" / "paper.toml"
+
+    if not paper_config_path.exists():
+        pytest.skip("paper.toml not found")
+
+    config = Config.from_toml(paper_config_path)
+
+    expected = ["BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD"]
+    assert config.trading.symbols == expected, (
+        f"paper.toml should declare all 4 trading pairs; got {config.trading.symbols}"
+    )
+
+
+def test_default_toml_loads_four_symbols():
+    """Test that config/default.toml declares all four trading pairs (Phase 13 expansion)."""
+    default_config_path = Path(__file__).parent.parent.parent / "config" / "default.toml"
+
+    if not default_config_path.exists():
+        pytest.skip("config/default.toml not found")
+
+    config = Config.from_toml(default_config_path)
+
+    expected = ["BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD"]
+    assert config.trading.symbols == expected, (
+        f"default.toml should declare all 4 trading pairs; got {config.trading.symbols}"
+    )

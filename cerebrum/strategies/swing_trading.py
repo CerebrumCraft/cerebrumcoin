@@ -45,5 +45,5 @@ SWING_TRADING_CONFIG = StrategyConfig(
         "min_tp_percent": "1.0",
     },
     initial_balance=Decimal("1666.67"),  # 1/6 of $10k for 6-strategy split
-    symbols=["BTC/USD", "ETH/USD"],
+    symbols=["BTC/USD", "ETH/USD", "SOL/USD"],
 )
