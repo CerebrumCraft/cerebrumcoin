@@ -1,8 +1,18 @@
 # CerebrumCoin Paper Trading Configuration
 # Extends default.toml with paper trading overrides
 
+# @decision DEC-PAIRS-001
+# @title Expand crypto trading pairs to SOL/USD and DOGE/USD
+# @status accepted
+# @rationale Phase 13 proving ground expands from 2 to 4 crypto pairs. SOL and DOGE
+# have sufficient liquidity on Kraken and distinct volatility profiles: SOL tracks
+# BTC closely but moves faster; DOGE is more sentiment-driven. Both are supported by
+# the existing symbol-agnostic architecture (signal generators, risk rules, portfolio
+# tracker all key on symbol strings). Symbols must be explicit here because paper.toml
+# loads standalone (not layered on default.toml).
 [trading]
 mode = "paper"
+symbols = ["BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD"]
 
 [paper]
 initial_balance_usd = "10000.0"

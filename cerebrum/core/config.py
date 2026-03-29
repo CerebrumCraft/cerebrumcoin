@@ -238,7 +238,7 @@ class TradingConfig(BaseSettings):
         description="Trading mode: paper, live, or backtest"
     )
     symbols: list[str] = Field(
-        default=["BTC/USD", "ETH/USD"],
+        default=["BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD"],
         description="Trading pairs to monitor"
     )
     data_refresh_seconds: int = Field(
