@@ -61,6 +61,7 @@ from cerebrum.risk.global_trade_rate import GlobalTradeRateLimitRule
 from cerebrum.risk.manager import RiskManager
 from cerebrum.risk.portfolio import PortfolioTracker
 from cerebrum.risk.rules import (
+    CommissionGateRule,
     MacroVolatilityGateRule,
     MaxDrawdownRule,
     MaxPositionSizeRule,
@@ -397,6 +398,12 @@ class CerebrumCoin:
                 window_size=config.risk.macro_volatility_window_size,
                 bus=self.bus,
             ),
+            CommissionGateRule(
+                commission_percent=config.paper.commission_percent,
+                min_profit_to_commission_ratio=config.risk.min_profit_to_commission_ratio,
+                window_size=config.risk.volatility_gate_window_size,
+                bus=self.bus,
+            ),
         ]
         self.risk_manager = RiskManager(
             self.bus,
@@ -462,6 +469,12 @@ class CerebrumCoin:
             MacroVolatilityGateRule(
                 min_range_pct=config.risk.macro_volatility_min_range_pct,
                 window_size=config.risk.macro_volatility_window_size,
+                bus=self.bus,
+            ),
+            CommissionGateRule(
+                commission_percent=config.paper.commission_percent,
+                min_profit_to_commission_ratio=config.risk.min_profit_to_commission_ratio,
+                window_size=config.risk.volatility_gate_window_size,
                 bus=self.bus,
             ),
             SidewaysSuppressionRule(

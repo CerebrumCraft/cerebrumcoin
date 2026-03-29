@@ -929,3 +929,139 @@ class MacroVolatilityGateRule(RiskRule):
             ),
             risk_level=RiskLevel.LOW,
         )
+
+
+class CommissionGateRule(RiskRule):
+    """
+    Deny orders when expected profit cannot cover round-trip commission.
+
+    @decision DEC-COMMISSION-001
+    @title Commission-aware minimum trade viability gate
+    @status accepted
+    @rationale Session 17 showed trades too small to overcome 0.32% round-trip
+    commission. Expected profit = position_value * recent_range_pct. Commission
+    cost = position_value * commission_pct * 2 (round-trip). If range_pct
+    < round_trip_commission * min_ratio, the trade is denied.
+
+    Unlike VolatilityGateRule (which uses a static config threshold), this rule
+    computes the threshold dynamically from commission_percent so it stays
+    self-calibrating if fee rates change. The two rules are complementary:
+    VolatilityGateRule guards against absolute flatness; CommissionGateRule
+    guards against commission-relative unprofitability.
+
+    @decision DEC-VOL-002
+    @title Per-symbol rolling price window via MARKET_DATA event bus subscription
+    @status accepted
+    @rationale Reuses the same per-symbol deque pattern established by
+    VolatilityGateRule — self-subscribes in __init__, maintains per-symbol dict
+    of deque(maxlen=window_size). Decoupled from regime detector and other gates.
+    """
+
+    def __init__(
+        self,
+        commission_percent: Decimal,
+        min_profit_to_commission_ratio: Decimal,
+        window_size: int,
+        bus: "EventBus",
+    ) -> None:
+        """
+        Initialize commission gate rule.
+
+        Args:
+            commission_percent: One-way commission rate as a percentage
+                (e.g. Decimal("0.16") for Kraken's 0.16% maker fee).
+                Round-trip cost = commission_percent * 2.
+            min_profit_to_commission_ratio: Required multiple of round-trip
+                commission that the recent price range must exceed before a
+                trade is allowed. Decimal("2.0") means the range must be at
+                least 2x the round-trip commission cost.
+            window_size: Number of recent price ticks to consider per symbol.
+                The window is a rolling deque — old prices fall off automatically.
+            bus: Event bus to subscribe to MARKET_DATA events.
+        """
+        super().__init__("commission_gate")
+        self._commission_percent = commission_percent
+        self._min_ratio = min_profit_to_commission_ratio
+        self._window_size = window_size
+        # Compute threshold once at construction — invariant for the session.
+        # threshold = commission_percent * 2 (round-trip) * min_ratio
+        self._threshold = commission_percent * Decimal("2") * min_profit_to_commission_ratio
+        # Per-symbol rolling price windows. deque(maxlen=N) auto-evicts oldest entries.
+        self._price_windows: dict[Symbol, deque[Price]] = {}
+
+        bus.subscribe(
+            EventType.MARKET_DATA,
+            self._on_market_data,
+            subscriber_name="commission_gate_rule",
+        )
+
+        self._log.info(
+            "commission_gate_initialized",
+            commission_percent=float(commission_percent),
+            min_profit_to_commission_ratio=float(min_profit_to_commission_ratio),
+            threshold_pct=float(self._threshold),
+            window_size=window_size,
+        )
+
+    async def _on_market_data(self, event: Event) -> None:
+        """Append the latest price to the per-symbol rolling window."""
+        if not isinstance(event, MarketDataEvent):
+            return
+        symbol = event.symbol
+        if symbol not in self._price_windows:
+            self._price_windows[symbol] = deque(maxlen=self._window_size)
+        self._price_windows[symbol].append(event.price)
+
+    def evaluate(
+        self,
+        signal: SignalEvent,
+        order: OrderEvent,
+        portfolio: PortfolioTracker,
+    ) -> RuleResult:
+        """
+        Deny the order if the recent price range for the symbol is below
+        the minimum commission-coverage threshold.
+
+        Returns APPROVE during cold start (window not yet full) to avoid
+        blocking early trades when the system has just started.
+        """
+        symbol = order.symbol
+        window = self._price_windows.get(symbol)
+
+        # Cold start: insufficient data to evaluate — allow trading
+        if window is None or len(window) < self._window_size:
+            current = len(window) if window is not None else 0
+            return RuleResult(
+                decision=RuleDecision.APPROVE,
+                reason=(
+                    f"Insufficient data for {symbol}: warming up "
+                    f"({current}/{self._window_size} ticks)"
+                ),
+                risk_level=RiskLevel.LOW,
+            )
+
+        # Calculate price range as a percentage of the minimum price
+        price_min = min(window)
+        price_max = max(window)
+        range_pct = (price_max - price_min) / price_min * Decimal("100")
+
+        if range_pct < self._threshold:
+            return RuleResult(
+                decision=RuleDecision.DENY,
+                reason=(
+                    f"commission_gate: {symbol} range {float(range_pct):.4f}% "
+                    f"< {float(self._threshold):.4f}% threshold "
+                    f"(commission={float(self._commission_percent):.2f}% "
+                    f"x2 x{float(self._min_ratio):.1f} ratio)"
+                ),
+                risk_level=RiskLevel.LOW,
+            )
+
+        return RuleResult(
+            decision=RuleDecision.APPROVE,
+            reason=(
+                f"Commission gate passed: {symbol} range {float(range_pct):.4f}% "
+                f">= {float(self._threshold):.4f}% threshold"
+            ),
+            risk_level=RiskLevel.LOW,
+        )
