@@ -66,5 +66,12 @@ MOMENTUM_CONFIG = StrategyConfig(
         "min_tp_percent": "0.3",
     },
     initial_balance=Decimal("1666.67"),  # 1/6 of $10k for 6-strategy split
-    symbols=["BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD"],
+    # @decision DEC-TUNE-006
+    # @title Remove BTC/USD from momentum strategy
+    # @status accepted
+    # @rationale Session 18: momentum bought BTC at $67,653 and sold at $67,342 (-$311 move).
+    #   Short-timeframe momentum signals aren't catching BTC trends. BTC exposure remains via
+    #   mean_reversion (top performer, +$877) and news_driven (+$650). Per-pair thresholds
+    #   tabled for future implementation.
+    symbols=["ETH/USD", "SOL/USD", "DOGE/USD"],
 )

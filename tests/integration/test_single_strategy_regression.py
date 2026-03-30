@@ -107,9 +107,11 @@ class TestMomentumConfigValues:
         assert ec["adaptive_tp"] is True
 
     def test_symbols_match_paper_trading_symbols(self):
-        """Default symbols are BTC/USD and ETH/USD."""
-        assert "BTC/USD" in MOMENTUM_CONFIG.symbols
+        """Momentum symbols: ETH/USD, SOL/USD, DOGE/USD. BTC/USD removed (DEC-TUNE-006)."""
+        assert "BTC/USD" not in MOMENTUM_CONFIG.symbols
         assert "ETH/USD" in MOMENTUM_CONFIG.symbols
+        assert "SOL/USD" in MOMENTUM_CONFIG.symbols
+        assert "DOGE/USD" in MOMENTUM_CONFIG.symbols
 
     def test_strategy_name(self):
         """Strategy name is 'momentum'."""

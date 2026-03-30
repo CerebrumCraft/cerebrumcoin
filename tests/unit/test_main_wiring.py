@@ -240,10 +240,17 @@ class TestStrategyConfigs:
         """Breakout requires strong conviction to avoid false breakouts."""
         assert BREAKOUT_CONFIG.aggregator_threshold > MOMENTUM_CONFIG.aggregator_threshold
 
-    def test_all_have_btc_eth_symbols(self):
+    def test_all_have_eth_symbol(self):
+        """All three base configs trade ETH/USD."""
         for cfg in (MOMENTUM_CONFIG, MEAN_REVERSION_CONFIG, BREAKOUT_CONFIG):
-            assert "BTC/USD" in cfg.symbols
             assert "ETH/USD" in cfg.symbols
+
+    def test_btc_only_in_mean_reversion(self):
+        """BTC/USD removed from momentum (DEC-TUNE-006) and breakout (DEC-TUNE-007).
+        mean_reversion retains BTC/USD as top Session 18 performer (+$877)."""
+        assert "BTC/USD" not in MOMENTUM_CONFIG.symbols
+        assert "BTC/USD" in MEAN_REVERSION_CONFIG.symbols
+        assert "BTC/USD" not in BREAKOUT_CONFIG.symbols
 
     def test_all_have_technical_weight(self):
         for cfg in (MOMENTUM_CONFIG, MEAN_REVERSION_CONFIG, BREAKOUT_CONFIG):
@@ -574,7 +581,8 @@ class TestSetupMultiStrategy:
             await app._setup_multi_strategy()
 
             active = set(app.strategy_registry.active_strategy_names())
-            assert active == {"momentum", "mean_reversion", "breakout", "range_trading", "swing_trading", "news_driven"}
+            # swing_trading disabled (DEC-TUNE-005) — excluded from active set
+            assert active == {"momentum", "mean_reversion", "breakout", "range_trading", "news_driven"}
         finally:
             if app.conductor:
                 await app.conductor.stop()
@@ -616,7 +624,8 @@ class TestSetupMultiStrategy:
             app.bus = bus
             await app._setup_multi_strategy()
 
-            assert set(app.allocator._strategies) == {"momentum", "mean_reversion", "breakout", "range_trading", "swing_trading", "news_driven"}
+            # swing_trading disabled (DEC-TUNE-005) — excluded from allocator set
+            assert set(app.allocator._strategies) == {"momentum", "mean_reversion", "breakout", "range_trading", "news_driven"}
         finally:
             if app.conductor:
                 await app.conductor.stop()

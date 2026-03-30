@@ -500,7 +500,12 @@ class CerebrumCoin:
         self.strategy_registry.register(MEAN_REVERSION_CONFIG)
         self.strategy_registry.register(BREAKOUT_CONFIG)
         self.strategy_registry.register(RANGE_TRADING_CONFIG)
-        self.strategy_registry.register(SWING_TRADING_CONFIG)
+        # @decision DEC-TUNE-005
+        # @title Disable swing_trading — Session 18 sole loser
+        # @status accepted
+        # @rationale Session 18: -$51 PnL, zero realized trades, only 1 position held (short DOGE).
+        #   Only losing strategy of 6. Disable until tuning is revisited. Re-enable by uncommenting.
+        # self.strategy_registry.register(SWING_TRADING_CONFIG)
         self.strategy_registry.register(NEWS_DRIVEN_CONFIG)
 
         # Build and start all strategy pipelines, injecting shared global guards

@@ -151,5 +151,10 @@ BREAKOUT_CONFIG = StrategyConfig(
         "min_tp_percent": "0.5",
     },
     initial_balance=Decimal("1666.67"),  # 1/6 of $10k for 6-strategy split
-    symbols=["BTC/USD", "ETH/USD", "SOL/USD"],
+    # @decision DEC-TUNE-007
+    # @title Remove BTC/USD from breakout strategy
+    # @status accepted
+    # @rationale Same as DEC-TUNE-006 — BTC/USD better served by mean_reversion and news_driven.
+    #   Breakout keeps ETH and SOL where shorter-timeframe signals perform better.
+    symbols=["ETH/USD", "SOL/USD"],
 )

@@ -177,8 +177,9 @@ class TestPipelineWiring:
 
             active = registry.active_strategy_names()
             expected = {
+                # swing_trading disabled (DEC-TUNE-005)
                 "momentum", "mean_reversion", "breakout",
-                "range_trading", "swing_trading", "news_driven",
+                "range_trading", "news_driven",
             }
             assert expected.issubset(set(active)), (
                 f"Missing strategies: {expected - set(active)}"
