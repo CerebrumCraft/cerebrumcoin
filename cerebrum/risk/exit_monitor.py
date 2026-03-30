@@ -25,6 +25,29 @@ In a 0.4% range market, effective_tp = max(0.3%, 0.4% * 1.5) = 0.6% — still
 reachable while covering commission. In a 2% range market, effective_tp = 3.0%
 (the fixed default). The min_tp floor ensures we never set TP below commission
 cost. Backward-compatible: adaptive_tp=False keeps the fixed behaviour.
+
+@decision DEC-EXIT-003
+@title ExitMonitor carries strategy_id and tags emitted OrderEvents
+@status accepted
+@rationale In multi-strategy mode, PortfolioTracker filters fills by
+strategy_id. If ExitMonitor emits a SELL OrderEvent without strategy_id, the
+paper adapter propagates a FillEvent with strategy_id=None, which bypasses the
+per-strategy portfolio. The position in the strategy's portfolio never
+decreases, causing the exit monitor to re-fire on every subsequent tick
+(infinite exit loop). Passing strategy_id=None (default) preserves backward
+compatibility with the single-strategy path in main.py, where every fill is
+accepted regardless of strategy tag.
+
+@decision DEC-EXIT-004
+@title _on_fill clears pending_exits only when position is actually gone
+@status accepted
+@rationale The original implementation cleared pending_exits on any SELL fill,
+even partial fills or fills for a different strategy's order on the same symbol.
+The correct invariant is: the pending flag should stay set until the portfolio
+confirms the position has been fully closed (amount < 0.0001). This prevents a
+second exit order being emitted between the fill arriving and the portfolio
+processing it, while still allowing the exit monitor to re-arm once the
+position genuinely reaches zero.
 """
 
 import time
@@ -75,6 +98,7 @@ class ExitMonitor:
         tp_multiplier: Decimal = Decimal("1.5"),
         min_tp_percent: Decimal = Decimal("0.3"),
         tp_window_size: int = 18000,
+        strategy_id: str | None = None,
     ) -> None:
         """
         Initialize exit monitor.
@@ -95,12 +119,19 @@ class ExitMonitor:
                             Should exceed round-trip commission cost (~0.32%).
             tp_window_size: Number of recent price ticks to use for adaptive TP
                             range calculation. Default ~18000 = 5 hours at 1 tick/sec.
+            strategy_id: Optional strategy identifier. When set, all emitted
+                         OrderEvents are tagged with this strategy_id so that
+                         per-strategy PortfolioTrackers correctly attribute fills
+                         (DEC-EXIT-003). None (default) = accept all fills,
+                         backward-compatible with single-strategy mode.
         """
         self._bus = bus
         self._portfolio = portfolio
         self._stop_loss_pct = stop_loss_percent
         self._take_profit_pct = take_profit_percent
         self._max_age_seconds = max_position_age_minutes * 60
+        # DEC-EXIT-003: tag emitted orders so per-strategy portfolios route fills correctly
+        self._strategy_id = strategy_id
 
         # Adaptive TP parameters (DEC-EXIT-002)
         self._adaptive_tp = adaptive_tp
@@ -181,14 +212,27 @@ class ExitMonitor:
         return effective
 
     async def _on_fill(self, event: Event) -> None:
-        """Clear pending exit flag when a fill confirms the position is closing."""
+        """Clear pending exit flag only when the position is fully closed.
+
+        DEC-EXIT-004: Clearing on any SELL fill was too eager — partial fills
+        and fills routed to other strategies (strategy_id mismatch) would
+        prematurely re-arm the exit monitor, causing a second exit order to be
+        emitted before the portfolio had processed the fill. We now only clear
+        pending_exits when the portfolio confirms the position amount is gone.
+        """
         from cerebrum.core.events import FillEvent
         if not isinstance(event, FillEvent):
             return
-        # If we get a SELL fill, the position is closing/closed — remove from pending
-        if event.side == Side.SELL and event.symbol in self._pending_exits:
-            self._pending_exits.discard(event.symbol)
-            self._log.debug("exit_pending_cleared", symbol=event.symbol)
+        if event.side != Side.SELL:
+            return
+        symbol = event.symbol
+        if symbol not in self._pending_exits:
+            return
+        # Only clear the pending flag once the position is actually gone
+        pos = self._portfolio.get_position(symbol)
+        if pos is None or abs(pos.amount) < Decimal("0.0001"):
+            self._pending_exits.discard(symbol)
+            self._log.debug("exit_pending_cleared", symbol=symbol)
 
     async def _on_market_data(self, event: Event) -> None:
         """Check exit criteria for the position in the updated symbol."""
@@ -261,6 +305,7 @@ class ExitMonitor:
             return
 
         # Emit a SELL market order to close the position
+        # DEC-EXIT-003: tag with strategy_id so per-strategy portfolios route the fill
         order = OrderEvent(
             event_type=EventType.ORDER,
             timestamp=current_time,
@@ -271,6 +316,7 @@ class ExitMonitor:
             amount=abs(pos.amount),
             status=OrderStatus.PENDING,
             metadata={"exit_reason": exit_reason, "source": "exit_monitor"},
+            strategy_id=self._strategy_id,
         )
 
         self._pending_exits.add(symbol)

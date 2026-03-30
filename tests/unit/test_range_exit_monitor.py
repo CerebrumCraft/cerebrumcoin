@@ -2,9 +2,10 @@
 Unit tests for RangeExitMonitor.
 
 Tests cover structural S/R exits, regime invalidation exits, time-based exits,
-the mid-range no-exit guard, and fallback percentage exits when no confirmed
-range exists. All tests use real EventBus, PortfolioTracker, and RangeDetector
-instances — no internal module mocking.
+the mid-range no-exit guard, fallback percentage exits when no confirmed range
+exists, strategy_id tagging on emitted orders, and the pending_exits regression
+guard for the infinite exit loop fix. All tests use real EventBus,
+PortfolioTracker, and RangeDetector instances — no internal module mocking.
 
 @decision DEC-TEST-012
 @title Test RangeExitMonitor with real bus, portfolio, and range_detector
@@ -412,3 +413,128 @@ async def test_regime_change_non_sideways_origin_ignored(bus, portfolio, range_d
     await asyncio.sleep(0.15)
 
     assert len(orders) == 0, "BEAR→SIDEWAYS should not trigger forced exits"
+
+
+# ---------------------------------------------------------------------------
+# strategy_id routing tests (DEC-RANGE-007 / DEC-EXIT-003 / DEC-EXIT-004)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_range_exit_monitor_emits_order_with_strategy_id(bus, portfolio, range_detector):
+    """RangeExitMonitor tags emitted OrderEvents with strategy_id.
+
+    DEC-RANGE-007: In multi-strategy mode, a SELL order without strategy_id
+    causes fills to bypass the per-strategy PortfolioTracker, leaving the
+    position open and triggering an infinite re-fire loop.
+    """
+    monitor = RangeExitMonitor(
+        bus=bus,
+        portfolio=portfolio,
+        range_detector=range_detector,
+        resistance_proximity_pct=Decimal("0.3"),
+        breakdown_margin_pct=Decimal("0.3"),
+        max_hold_minutes=60,
+        fallback_tp_pct=Decimal("1.0"),
+        fallback_sl_pct=Decimal("0.8"),
+        strategy_id="range_trading",
+    )
+
+    orders = _capture_orders(bus)
+    symbol = "BTC/USD"
+    _seed_confirmed_range(range_detector, symbol, Decimal("68000"), Decimal("70000"))
+
+    await _open_position(bus, symbol, Decimal("0.1"), Decimal("69000"))
+    # Price near resistance — triggers resistance_exit
+    await _send_price(bus, symbol, Decimal("69850"))
+
+    assert len(orders) == 1, f"Expected 1 SELL order, got {len(orders)}"
+    assert orders[0].strategy_id == "range_trading", (
+        f"Expected strategy_id='range_trading', got {orders[0].strategy_id!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_range_exit_monitor_strategy_id_none_by_default(bus, portfolio, range_detector, monitor):
+    """RangeExitMonitor without strategy_id emits OrderEvents with strategy_id=None.
+
+    Backward compatibility: single-strategy path passes no strategy_id.
+    The emitted order must have strategy_id=None.
+    """
+    orders = _capture_orders(bus)
+    symbol = "ETH/USD"
+    _seed_confirmed_range(range_detector, symbol, Decimal("3000"), Decimal("3200"))
+
+    await _open_position(bus, symbol, Decimal("1.0"), Decimal("3100"))
+    # Price near resistance
+    await _send_price(bus, symbol, Decimal("3192"))
+
+    assert len(orders) == 1, f"Expected 1 SELL order, got {len(orders)}"
+    assert orders[0].strategy_id is None, (
+        f"Expected strategy_id=None (default single-strategy mode), got {orders[0].strategy_id!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_range_exit_pending_stays_set_while_position_open(bus):
+    """Regression: pending_exits must stay set if position is still open after partial fill.
+
+    DEC-EXIT-004 / DEC-RANGE-007: Mirrors the ExitMonitor regression test.
+    After a partial SELL fill that leaves the position open, the exit monitor
+    must not re-arm and fire a second exit order on the next tick.
+    """
+    portfolio = PortfolioTracker(bus, initial_balance=Decimal("10000.0"))
+    range_detector = RangeDetector(bus)
+    await range_detector.start()
+
+    monitor = RangeExitMonitor(
+        bus=bus,
+        portfolio=portfolio,
+        range_detector=range_detector,
+        resistance_proximity_pct=Decimal("0.3"),
+        breakdown_margin_pct=Decimal("0.3"),
+        max_hold_minutes=60,
+        fallback_tp_pct=Decimal("1.0"),
+        fallback_sl_pct=Decimal("0.8"),
+        strategy_id="range_trading",
+    )
+
+    symbol = "BTC/USD"
+    orders = _capture_orders(bus)
+    _seed_confirmed_range(range_detector, symbol, Decimal("68000"), Decimal("70000"))
+
+    # Open position with 0.2 BTC
+    await _open_position(bus, symbol, Decimal("0.2"), Decimal("69000"))
+
+    # Trigger resistance exit
+    await _send_price(bus, symbol, Decimal("69850"))
+    assert len(orders) == 1, "Expected exactly 1 exit order after resistance trigger"
+    assert symbol in monitor._pending_exits
+
+    # Partial SELL fill (0.1 of 0.2 — position not fully closed)
+    partial_fill = FillEvent(
+        event_type=EventType.FILL,
+        timestamp=time.time(),
+        order_id=str(uuid4()),
+        symbol=symbol,
+        side=Side.SELL,
+        filled_amount=Decimal("0.1"),
+        fill_price=Decimal("69850"),
+        commission=Decimal("0.0"),
+        commission_asset="USD",
+        strategy_id="range_trading",
+    )
+    await bus.publish(partial_fill)
+    await asyncio.sleep(0.15)
+
+    # pending_exits must stay set — position still has 0.1 BTC
+    assert symbol in monitor._pending_exits, (
+        "pending_exits must stay set while position amount > 0 (partial fill)"
+    )
+
+    # Next market data tick must not fire a second exit order
+    await _send_price(bus, symbol, Decimal("69900"))
+    assert len(orders) == 1, (
+        f"Expected 1 exit order total, got {len(orders)} "
+        "(infinite exit loop regression: second order fired after partial fill)"
+    )

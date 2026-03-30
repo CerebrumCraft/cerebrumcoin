@@ -23,6 +23,15 @@ bounces, there is no structural reference frame. Rather than holding positions
 with no exit criteria, we fall back to fixed-percentage TP/SL (defaults 1.0%
 TP / 0.8% SL) which are narrow enough to be reachable in the low-volatility
 markets where range trading operates.
+
+@decision DEC-RANGE-007
+@title RangeExitMonitor carries strategy_id (same rationale as DEC-EXIT-003)
+@status accepted
+@rationale Mirrors the fix in ExitMonitor: without strategy_id on emitted
+OrderEvents, fills bypass the per-strategy PortfolioTracker routing, leaving
+positions open and causing an infinite re-fire loop on every market tick.
+_on_fill also uses the position-amount guard (DEC-EXIT-004) to prevent
+premature pending_exits clearance on partial fills.
 """
 
 import time
@@ -74,6 +83,7 @@ class RangeExitMonitor:
         max_hold_minutes: int = 60,
         fallback_tp_pct: Decimal = Decimal("1.0"),
         fallback_sl_pct: Decimal = Decimal("0.8"),
+        strategy_id: str | None = None,
     ) -> None:
         """
         Initialize RangeExitMonitor.
@@ -94,6 +104,10 @@ class RangeExitMonitor:
                 exists. Should be reachable in low-vol markets (< 1%).
             fallback_sl_pct: Stop-loss percentage when no confirmed range
                 exists. Tight to limit losses on failed range entries.
+            strategy_id: Optional strategy identifier. When set, all emitted
+                         OrderEvents are tagged so per-strategy PortfolioTrackers
+                         route fills correctly (DEC-RANGE-007 / DEC-EXIT-003).
+                         None (default) = backward-compatible single-strategy mode.
         """
         self._bus = bus
         self._portfolio = portfolio
@@ -103,6 +117,8 @@ class RangeExitMonitor:
         self._max_hold_seconds = max_hold_minutes * 60
         self._fallback_tp_pct = fallback_tp_pct
         self._fallback_sl_pct = fallback_sl_pct
+        # DEC-RANGE-007: tag emitted orders so per-strategy portfolios route fills correctly
+        self._strategy_id = strategy_id
 
         # Symbols for which a SELL order is already in-flight (dedup guard)
         self._pending_exits: set[Symbol] = set()
@@ -135,12 +151,25 @@ class RangeExitMonitor:
         )
 
     async def _on_fill(self, event: Event) -> None:
-        """Clear pending exit flag when a SELL fill confirms position is closing."""
+        """Clear pending exit flag only when the position is fully closed.
+
+        DEC-EXIT-004 / DEC-RANGE-007: Mirror the ExitMonitor fix. Clearing on
+        any SELL fill was too eager — we check the portfolio position amount
+        before clearing so that partial fills or cross-strategy fills don't
+        prematurely re-arm the exit monitor.
+        """
         if not isinstance(event, FillEvent):
             return
-        if event.side == Side.SELL and event.symbol in self._pending_exits:
-            self._pending_exits.discard(event.symbol)
-            self._log.debug("range_exit_pending_cleared", symbol=event.symbol)
+        if event.side != Side.SELL:
+            return
+        symbol = event.symbol
+        if symbol not in self._pending_exits:
+            return
+        # Only clear the pending flag once the position is actually gone
+        pos = self._portfolio.get_position(symbol)
+        if pos is None or abs(pos.amount) < Decimal("0.0001"):
+            self._pending_exits.discard(symbol)
+            self._log.debug("range_exit_pending_cleared", symbol=symbol)
 
     async def _on_regime_change(self, event: Event) -> None:
         """Emit SELL for all open positions when regime leaves SIDEWAYS."""
@@ -288,6 +317,7 @@ class RangeExitMonitor:
             timestamp: Event timestamp.
             reason: Human-readable exit reason stored in order metadata.
         """
+        # DEC-RANGE-007: tag with strategy_id so per-strategy portfolios route the fill
         order = OrderEvent(
             event_type=EventType.ORDER,
             timestamp=timestamp,
@@ -299,6 +329,7 @@ class RangeExitMonitor:
             price=None,
             status=OrderStatus.PENDING,
             metadata={"exit_reason": reason, "source": "range_exit_monitor"},
+            strategy_id=self._strategy_id,
         )
 
         self._pending_exits.add(symbol)

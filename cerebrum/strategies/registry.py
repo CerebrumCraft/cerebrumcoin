@@ -339,6 +339,8 @@ class StrategyRegistry:
                     exit_overrides.get("min_tp_percent",
                                        str(self._config.risk.min_tp_percent))
                 ),
+                # DEC-EXIT-003: tag emitted orders with strategy_id for per-strategy routing
+                strategy_id=cfg.name,
             )
 
         # --- Per-strategy risk rules ---

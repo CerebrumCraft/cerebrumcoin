@@ -8,6 +8,8 @@ Tests cover:
 4. No duplicate exit orders (pending_exits guard)
 5. Aggregator consensus multiplier rewards agreement
 6. VWAP neutral zone suppresses near-VWAP signals
+7. ExitMonitor emits OrderEvent with correct strategy_id (DEC-EXIT-003)
+8. Regression: pending_exits stays set while position > 0 (DEC-EXIT-004)
 
 @decision DEC-TEST-009
 @title Test exit monitor with real EventBus and PortfolioTracker
@@ -234,6 +236,214 @@ async def test_exit_monitor_no_exit_within_thresholds(bus, portfolio):
     await _update_price(bus, symbol, entry_price * Decimal("1.02"))
 
     assert len(orders) == 0, f"Expected no orders within thresholds, got {len(orders)}"
+
+
+# ---------------------------------------------------------------------------
+# strategy_id routing tests (DEC-EXIT-003 / DEC-EXIT-004)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exit_monitor_emits_order_with_strategy_id(bus, portfolio):
+    """ExitMonitor with strategy_id tags emitted OrderEvents for per-strategy routing.
+
+    DEC-EXIT-003: In multi-strategy mode, exit orders must carry strategy_id
+    so the paper adapter propagates a tagged FillEvent that reaches the correct
+    per-strategy PortfolioTracker.
+    """
+    monitor = ExitMonitor(
+        bus,
+        portfolio,
+        stop_loss_percent=Decimal("2.0"),
+        take_profit_percent=Decimal("3.0"),
+        max_position_age_minutes=120,
+        strategy_id="momentum",
+    )
+
+    orders: list[OrderEvent] = []
+
+    async def collect(event):
+        if isinstance(event, OrderEvent):
+            orders.append(event)
+
+    bus.subscribe(EventType.ORDER, collect, "order_collector")
+
+    symbol = "BTC/USD"
+    entry_price = Decimal("50000")
+    await _open_position(bus, symbol, Decimal("0.1"), entry_price)
+
+    # Drop price beyond stop-loss to trigger exit
+    await _update_price(bus, symbol, entry_price * Decimal("0.97"))
+
+    assert len(orders) == 1, f"Expected 1 SELL order, got {len(orders)}"
+    assert orders[0].strategy_id == "momentum", (
+        f"Expected strategy_id='momentum', got {orders[0].strategy_id!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_exit_monitor_strategy_id_none_by_default(bus, portfolio):
+    """ExitMonitor without strategy_id emits OrderEvents with strategy_id=None.
+
+    Backward compatibility: single-strategy path passes no strategy_id.
+    The emitted order must have strategy_id=None so the paper adapter accepts
+    it and all downstream components handle it as before.
+    """
+    monitor = _make_exit_monitor(bus, portfolio, stop_loss=Decimal("2.0"))
+
+    orders: list[OrderEvent] = []
+
+    async def collect(event):
+        if isinstance(event, OrderEvent):
+            orders.append(event)
+
+    bus.subscribe(EventType.ORDER, collect, "order_collector")
+
+    symbol = "BTC/USD"
+    await _open_position(bus, symbol, Decimal("0.1"), Decimal("50000"))
+    await _update_price(bus, symbol, Decimal("48000"))  # -4%, triggers stop-loss
+
+    assert len(orders) == 1
+    assert orders[0].strategy_id is None, (
+        f"Expected strategy_id=None for single-strategy mode, got {orders[0].strategy_id!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_exit_monitor_pending_stays_set_while_position_open(bus):
+    """Regression: pending_exits must stay set if position is still open after fill.
+
+    DEC-EXIT-004: Simulates the infinite exit loop scenario. ExitMonitor emits
+    a SELL, we send a SELL fill but the portfolio still shows an open position
+    (e.g., partial fill or multi-strategy mismatch). The pending flag must stay
+    set so no second exit order is fired on the next market data tick.
+
+    Steps:
+    1. Open a position (BUY fill, 0.2 BTC)
+    2. Trigger stop-loss → exit order emitted, symbol added to pending_exits
+    3. Send a partial SELL fill (0.1 BTC — position still has 0.1 BTC remaining)
+    4. Verify pending_exits still contains the symbol
+    5. Send a second market data tick → verify NO second order is emitted
+    """
+    portfolio = PortfolioTracker(bus, initial_balance=Decimal("10000.0"))
+    monitor = ExitMonitor(
+        bus,
+        portfolio,
+        stop_loss_percent=Decimal("2.0"),
+        take_profit_percent=Decimal("3.0"),
+        max_position_age_minutes=120,
+        strategy_id="test_strategy",
+    )
+
+    orders: list[OrderEvent] = []
+
+    async def collect(event):
+        if isinstance(event, OrderEvent):
+            orders.append(event)
+
+    bus.subscribe(EventType.ORDER, collect, "order_collector")
+
+    symbol = "BTC/USD"
+    entry_price = Decimal("50000")
+    amount = Decimal("0.2")
+
+    # Step 1: open position with 0.2 BTC
+    await _open_position(bus, symbol, amount, entry_price)
+
+    # Step 2: trigger stop-loss
+    drop_price = entry_price * Decimal("0.97")  # -3%, exceeds 2% stop-loss
+    await _update_price(bus, symbol, drop_price)
+
+    assert len(orders) == 1, "Expected exactly 1 exit order after stop-loss trigger"
+    assert symbol in monitor._pending_exits, "Symbol should be in pending_exits after trigger"
+
+    # Step 3: simulate a PARTIAL SELL fill (only 0.1 of 0.2 BTC filled)
+    # Portfolio processes this fill first (subscribed before ExitMonitor),
+    # leaving 0.1 BTC remaining in position.
+    partial_fill = FillEvent(
+        event_type=EventType.FILL,
+        timestamp=time(),
+        order_id=str(uuid4()),
+        symbol=symbol,
+        side=Side.SELL,
+        filled_amount=Decimal("0.1"),  # partial — position not gone
+        fill_price=drop_price,
+        commission=Decimal("0.0"),
+        commission_asset="USD",
+        strategy_id="test_strategy",
+    )
+    await bus.publish(partial_fill)
+    await asyncio.sleep(0.15)
+
+    # Step 4: pending_exits must still be set (position is not fully closed)
+    assert symbol in monitor._pending_exits, (
+        "pending_exits must stay set while position amount > 0 (partial fill)"
+    )
+
+    # Step 5: another market data tick must not emit a second exit order
+    await _update_price(bus, symbol, drop_price * Decimal("0.99"))
+
+    assert len(orders) == 1, (
+        f"Expected exactly 1 exit order total — got {len(orders)} "
+        "(infinite exit loop regression: second order fired after partial fill)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_exit_monitor_pending_cleared_when_position_fully_closed(bus):
+    """After position reaches zero, pending_exits is cleared and re-arming is possible.
+
+    DEC-EXIT-004: Verifies the happy path — a full SELL fill closes the position,
+    pending_exits is cleared, and a brand-new position can trigger a fresh exit.
+    """
+    portfolio = PortfolioTracker(bus, initial_balance=Decimal("10000.0"))
+    monitor = ExitMonitor(
+        bus,
+        portfolio,
+        stop_loss_percent=Decimal("2.0"),
+        take_profit_percent=Decimal("3.0"),
+        max_position_age_minutes=120,
+        strategy_id="test_strategy",
+    )
+
+    orders: list[OrderEvent] = []
+
+    async def collect(event):
+        if isinstance(event, OrderEvent):
+            orders.append(event)
+
+    bus.subscribe(EventType.ORDER, collect, "order_collector")
+
+    symbol = "BTC/USD"
+    entry_price = Decimal("50000")
+    amount = Decimal("0.1")
+
+    # Open position and trigger stop-loss
+    await _open_position(bus, symbol, amount, entry_price)
+    drop_price = entry_price * Decimal("0.97")
+    await _update_price(bus, symbol, drop_price)
+    assert len(orders) == 1
+
+    # Full SELL fill — closes the position entirely
+    full_fill = FillEvent(
+        event_type=EventType.FILL,
+        timestamp=time(),
+        order_id=str(uuid4()),
+        symbol=symbol,
+        side=Side.SELL,
+        filled_amount=amount,
+        fill_price=drop_price,
+        commission=Decimal("0.0"),
+        commission_asset="USD",
+        strategy_id="test_strategy",
+    )
+    await bus.publish(full_fill)
+    await asyncio.sleep(0.15)
+
+    # pending_exits should be cleared once position reaches zero
+    assert symbol not in monitor._pending_exits, (
+        "pending_exits should be cleared after full position closure"
+    )
 
 
 # ---------------------------------------------------------------------------

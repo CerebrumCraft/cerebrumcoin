@@ -51,6 +51,8 @@ def _create_range_exit_monitor(bus, portfolio, config, app_config):
         bus=bus,
         portfolio=portfolio,
         range_detector=detector,
+        # DEC-RANGE-007: tag emitted orders so per-strategy portfolio routes fills
+        strategy_id=config.name,
     )
     # Attach detector to monitor for external access (registry / conductor).
     monitor._range_detector = detector
