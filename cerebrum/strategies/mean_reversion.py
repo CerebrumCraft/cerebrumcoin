@@ -131,7 +131,7 @@ MEAN_REVERSION_CONFIG = StrategyConfig(
     risk_overrides={
         "min_signal_strength": "0.5",
         "position_size_percent": "5.0",  # DEC-TUNE-002: at $2,500 capital, 5%=$125 matches momentum/breakout sizing; 3%=$75 loses too much to commission drag
-        "post_fill_cooldown_seconds": 900,  # DEC-TUNE-003: matches momentum's 900s; session 4 showed 64% commission drag from frequent trading
+        "post_fill_cooldown_seconds": 1800,  # DEC-TUNE-009: cooldown 900→1800s with consolidated capital
     },
     exit_config={
         "stop_loss_percent": "1.0",
@@ -141,6 +141,6 @@ MEAN_REVERSION_CONFIG = StrategyConfig(
         "tp_multiplier": "1.2",
         "min_tp_percent": "0.2",
     },
-    initial_balance=Decimal("1666.67"),  # 1/6 of $10k for 6-strategy split
+    initial_balance=Decimal("5000.00"),  # DEC-TUNE-008: 2-strategy split — $5,000 each (was $1,667 across 6)
     symbols=["BTC/USD", "ETH/USD"],
 )
