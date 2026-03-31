@@ -570,7 +570,7 @@ class TestSetupMultiStrategy:
             await bus.stop()
 
     @pytest.mark.asyncio
-    async def test_all_five_pipelines_active(self):
+    async def test_two_pipelines_active(self):
         from cerebrum.main import CerebrumCoin
         bus = EventBus()
         await bus.start()
@@ -581,8 +581,10 @@ class TestSetupMultiStrategy:
             await app._setup_multi_strategy()
 
             active = set(app.strategy_registry.active_strategy_names())
-            # swing_trading disabled (DEC-TUNE-005) — excluded from active set
-            assert active == {"momentum", "mean_reversion", "breakout", "range_trading", "news_driven"}
+            # Only mean_reversion and range_trading active (DEC-TUNE-008).
+            # momentum, breakout, news_driven disabled (signal cannibalization).
+            # swing_trading disabled (DEC-TUNE-005).
+            assert active == {"mean_reversion", "range_trading"}
         finally:
             if app.conductor:
                 await app.conductor.stop()
@@ -614,7 +616,7 @@ class TestSetupMultiStrategy:
             await bus.stop()
 
     @pytest.mark.asyncio
-    async def test_allocator_knows_all_three_strategies(self):
+    async def test_allocator_knows_active_strategies(self):
         from cerebrum.main import CerebrumCoin
         bus = EventBus()
         await bus.start()
@@ -624,8 +626,9 @@ class TestSetupMultiStrategy:
             app.bus = bus
             await app._setup_multi_strategy()
 
-            # swing_trading disabled (DEC-TUNE-005) — excluded from allocator set
-            assert set(app.allocator._strategies) == {"momentum", "mean_reversion", "breakout", "range_trading", "news_driven"}
+            # Only mean_reversion and range_trading active (DEC-TUNE-008).
+            # swing_trading disabled (DEC-TUNE-005).
+            assert set(app.allocator._strategies) == {"mean_reversion", "range_trading"}
         finally:
             if app.conductor:
                 await app.conductor.stop()
