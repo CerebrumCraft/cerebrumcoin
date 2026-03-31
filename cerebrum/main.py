@@ -577,9 +577,10 @@ class CerebrumCoin:
                 conductor=self.conductor,
                 global_portfolio=self.strategy_registry.global_portfolio,
                 paper_adapter=self.paper_adapter,
+                port=7980,
             )
             await self.web_dashboard.start()
-            self._log.info("web_dashboard_started", url="http://127.0.0.1:8080")
+            self._log.info("web_dashboard_started", url="http://127.0.0.1:7980")
         except ImportError:
             self._log.warning(
                 "web_dashboard_unavailable",
