@@ -71,8 +71,8 @@ RANGE_TRADING_CONFIG = StrategyConfig(
     signal_source_filter="SupportResistance",
     risk_overrides={
         "min_signal_strength": "0.3",
-        "position_size_percent": "2.0",
-        "post_fill_cooldown_seconds": 300,
+        "position_size_percent": "2.0",  # DEC-TUNE-008: keep 2% — with $5k capital that's $100/trade, matching the min_trade_value_usd floor
+        "post_fill_cooldown_seconds": 900,  # DEC-TUNE-009: cooldown 300→900s to reduce trade frequency
     },
     exit_config={
         "stop_loss_percent": "0.5",
@@ -82,7 +82,7 @@ RANGE_TRADING_CONFIG = StrategyConfig(
         "tp_multiplier": "1.5",
         "min_tp_percent": "0.2",
     },
-    initial_balance=Decimal("1666.67"),  # 1/6 of $10k for 6-strategy split
+    initial_balance=Decimal("5000.00"),  # DEC-TUNE-008: 2-strategy split — $5,000 each (was $1,667 across 6)
     symbols=["BTC/USD", "ETH/USD"],
     exit_monitor_factory=_create_range_exit_monitor,
 )

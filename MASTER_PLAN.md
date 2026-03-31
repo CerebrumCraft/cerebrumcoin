@@ -473,11 +473,62 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 
 | ID | Decision | Rationale | Date |
 |----|----------|-----------|------|
+| DEC-ALPACA-CONFIG-001 | AlpacaConfig as optional BaseSettings with all safe defaults | Alpaca is an optional extension for stock trading. Adding it as a separate config class with empty-string API key defaults means the system boots without Alpaca credentials and only activates stock trading when the user explicitly configures keys. Default symbols list is empty so no stock trades fire without explicit config | 2026-03-28 |
 | DEC-ALPACA-FIX-001 | Propagate `strategy_id` from OrderEvent to FillEvent in AlpacaAdapter and KrakenAdapter | All three adapters must propagate strategy_id consistently so Conductor can attribute stock fills to the correct strategy. Omission was a Phase 6 POC gap | 2026-03-28 |
 | DEC-HOURS-001 | Local NYSE calendar in MarketHoursRule — no external API | External clock API calls introduce network dependency in the risk path. Local calendar using `zoneinfo` + Anonymous Gregorian Easter algorithm covers all 10 NYSE holidays deterministically. Crypto symbols (`/`) always bypass the rule | 2026-03-28 |
 | DEC-ROUTE-001 | Symbol format determines adapter: `/` → crypto (Kraken/paper), no `/` → stocks (Alpaca) | Crypto pairs use ccxt format (`BTC/USD`); stock tickers have no slash (`AAPL`). Universal convention, no extra config needed for common cases | TBD (13D) |
 | DEC-ALPACA-002 | WebSocket streaming via `StockDataStream`, polling as fallback | Alpaca free tier provides IEX data via WebSocket — sufficient for paper validation | TBD (13C) |
 | DEC-ALPACA-003 | Alpaca's built-in paper mode serves as the stocks paper adapter | No separate PaperTradingAdapter needed for stocks. `paper=True` config flag controls endpoint | TBD (13D) |
+| DEC-TEST-HOURS-001 | Test market hours with datetime monkeypatching at module level | MarketHoursRule._compute_market_open() calls datetime.now(tz=...) internally. To control "what time is it" without mocking, monkeypatch datetime.now on the market_hours module directly. Standard pattern for testing time-dependent code without freezegun | 2026-03-28 |
+
+---
+
+### Session 18 Bug Fixes + Tuning (COMPLETED)
+**Goal**: Fix infinite exit loop bug discovered in Session 18 (37 rapid-fire SOL sells), add CommissionGateRule to block unprofitable micro-trades, and apply empirical tuning based on 60-hour session data.
+
+- [x] Fix ExitMonitor: carry strategy_id, tag emitted OrderEvents (DEC-EXIT-003)
+- [x] Fix ExitMonitor: clear pending_exits only when position is fully gone (DEC-EXIT-004)
+- [x] Fix RangeExitMonitor: same strategy_id fix (DEC-RANGE-007)
+- [x] Add `CommissionGateRule` — deny orders where range can't cover round-trip commission (DEC-COMMISSION-001)
+- [x] Disable swing_trading — Session 18 sole loser (DEC-TUNE-005)
+- [x] Remove BTC/USD from momentum strategy (DEC-TUNE-006)
+- [x] Remove BTC/USD from breakout strategy (DEC-TUNE-007)
+- [x] Normalize LLM allocation fractions to percentages in Conductor (DEC-CONDUCTOR-005)
+- [x] Add `fix_orphaned_trades.py` script + tests (DEC-TEST-CLEANUP-001)
+- [x] Add `tests/unit/test_commission_gate.py` (DEC-TEST-COMMISSION-001)
+- **Verification**: All tests pass (committed in 0c7558d, eb40e8e)
+
+**Session 18 Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-EXIT-003 | ExitMonitor carries strategy_id and tags emitted OrderEvents | In multi-strategy mode, PortfolioTracker filters fills by strategy_id. If ExitMonitor emits a SELL OrderEvent without strategy_id, the paper adapter propagates a FillEvent with strategy_id=None, bypassing the per-strategy portfolio. Position never decreases, causing the exit monitor to re-fire on every subsequent tick (infinite exit loop). strategy_id=None (default) preserves backward compat | 2026-03-30 |
+| DEC-EXIT-004 | _on_fill clears pending_exits only when position is actually gone | Original implementation cleared pending_exits on any SELL fill, even partial fills or fills for a different strategy's order on the same symbol. Correct invariant: pending flag stays set until portfolio confirms position amount < 0.0001. Prevents second exit order being emitted before portfolio processes the fill | 2026-03-30 |
+| DEC-RANGE-007 | RangeExitMonitor carries strategy_id (same rationale as DEC-EXIT-003) | Mirrors the fix in ExitMonitor: without strategy_id on emitted OrderEvents, fills bypass the per-strategy PortfolioTracker routing, leaving positions open and causing infinite re-fire loop on every market tick. _on_fill uses the position-amount guard (DEC-EXIT-004) to prevent premature clearing | 2026-03-30 |
+| DEC-COMMISSION-001 | Commission-aware minimum trade viability gate | Session 17 showed trades too small to overcome 0.32% round-trip commission. Expected profit = position_value * recent_range_pct. Commission cost = position_value * commission_pct * 2 (round-trip). If range_pct < round_trip_commission * min_ratio, the trade is denied. Default min_ratio=3.0 requires range to be 3× commission before entering | 2026-03-30 |
+| DEC-TUNE-005 | Disable swing_trading — Session 18 sole loser | Session 18: -$51 PnL, zero realized trades, only 1 position held (short DOGE). Only losing strategy of 6. Disabled until tuning is revisited. Re-enable by uncommenting in main.py | 2026-03-30 |
+| DEC-TUNE-006 | Remove BTC/USD from momentum strategy | Session 18: momentum bought BTC at $67,653 and sold at $67,342 (-$311 move). Short-timeframe momentum signals not catching BTC trends. BTC exposure remains via mean_reversion (+$877) and news_driven (+$650). Per-pair thresholds tabled for future | 2026-03-30 |
+| DEC-TUNE-007 | Remove BTC/USD from breakout strategy | Same as DEC-TUNE-006 — BTC/USD better served by mean_reversion and news_driven. Breakout keeps ETH and SOL where shorter-timeframe signals perform better | 2026-03-30 |
+| DEC-CONDUCTOR-005 | Normalize LLM allocation fractions to percentages | Haiku returns 0.25 instead of 25 for "25%". Rather than relying on prompt engineering, detect sum(allocations) <= 2 and multiply by 100. Single normalization point in _apply_allocations() since it is called by all allocation sources | 2026-03-30 |
+| DEC-TEST-CLEANUP-001 | Tests for fix_orphaned_trades using in-memory SQLite | fix_orphaned_trades uses raw sqlite3. Tests use an in-memory SQLite DB with seeded trade data to verify mutation correctness without touching the production database. Follows DEC-TEST-016 / DEC-ANALYZE-002 pattern. All assertions read back from DB after function returns | 2026-03-30 |
+| DEC-TEST-COMMISSION-001 | Test CommissionGateRule with real EventBus and injected prices | CommissionGateRule self-subscribes to MARKET_DATA events. Testing with a real EventBus validates subscription wiring and per-symbol deque logic. No wall-clock dependency — tests inject prices directly via bus.publish() and verify evaluate() outcomes | 2026-03-30 |
+
+### Strategy Consolidation: min_trade_value_usd (IN PROGRESS)
+**Goal**: Add a minimum trade value floor to PositionSizingRule to prevent commission-dominated micro-trades. Part of the strategy consolidation effort addressing multi-strategy mode generating tiny $20 trades.
+
+- [x] Add `min_trade_value_usd` parameter to `PositionSizingRule` (DEC-SIZING-001)
+- [x] Add `tests/unit/test_position_sizing_min_value.py` — 4 test cases (DEC-TEST-SIZING-001)
+- [ ] Wire `min_trade_value_usd` into `StrategyRegistry` per-strategy config (Task 4)
+- [ ] Disable momentum, breakout, news_driven strategies (Task 2)
+- [ ] Update capital allocation and cooldowns (Task 3)
+- [ ] Integration test: 2-strategy consolidated pipeline (Task 5)
+
+**Strategy Consolidation Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-SIZING-001 | Minimum trade value floor to prevent commission-killed micro-trades | Multi-strategy mode with $1,666 capital per strategy generates $20 trades where 0.32% round-trip commission eats 33% of wins. Floor at $100 keeps commission below 10%. Check uses strength-adjusted value (not raw target) since that is the actual amount risked. min_trade_value_usd=None default preserves backward compatibility | 2026-03-30 |
+| DEC-TEST-SIZING-001 | Tests for PositionSizingRule min_trade_value_usd using simple MockPortfolio | PositionSizingRule.evaluate() is a pure synchronous function — no event bus needed. Tests use a minimal MockPortfolio class (2 methods) rather than MagicMock to keep intent clear. All 4 cases: above-min MODIFY, below-min DENY, None MODIFY (backward compat), strength-adjusted DENY | 2026-03-30 |
 
 ---
 

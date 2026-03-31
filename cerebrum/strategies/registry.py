@@ -348,7 +348,11 @@ class StrategyRegistry:
         per_strategy_rules: list[RiskRule] = [
             PositionSizingRule(
                 Decimal(overrides.get("position_size_percent",
-                                      str(self._config.risk.position_size_percent)))
+                                      str(self._config.risk.position_size_percent))),
+                # DEC-SIZING-001: $100 floor prevents commission-killed micro-trades
+                min_trade_value_usd=Decimal(
+                    overrides.get("min_trade_value_usd", "100")
+                ),
             ),
             MaxPositionSizeRule(self._config.risk.max_position_size_usd),
             MaxTotalExposureRule(self._config.risk.max_total_exposure_usd),

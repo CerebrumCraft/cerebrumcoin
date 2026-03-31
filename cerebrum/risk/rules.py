@@ -261,18 +261,34 @@ class MinSignalStrengthRule(RiskRule):
 
 
 class PositionSizingRule(RiskRule):
-    """Calculate position size as percentage of portfolio."""
-    
-    def __init__(self, position_size_percent: Decimal = Decimal("2.0")) -> None:
+    """Calculate position size as percentage of portfolio.
+
+    # @decision DEC-SIZING-001
+    # @title Minimum trade value floor to prevent commission-killed micro-trades
+    # @status accepted
+    # @rationale Investigation showed $20 range_trading trades where 0.32% round-trip
+    # commission ate 33% of wins. Floor at $100 keeps commission below 10%.
+    # min_trade_value_usd=None (default) preserves full backward compatibility.
+    """
+
+    def __init__(
+        self,
+        position_size_percent: Decimal = Decimal("2.0"),
+        min_trade_value_usd: Decimal | None = None,
+    ) -> None:
         """
         Initialize position sizing rule.
-        
+
         Args:
             position_size_percent: Position size as % of equity
+            min_trade_value_usd: Minimum trade value in USD. Orders whose
+                strength-adjusted value falls below this floor are denied.
+                None (default) disables the check for backward compatibility.
         """
         super().__init__("position_sizing")
         self._size_percent = position_size_percent
-    
+        self._min_trade_value = min_trade_value_usd
+
     def evaluate(
         self,
         signal: SignalEvent,
@@ -302,6 +318,19 @@ class PositionSizingRule(RiskRule):
 
         # Adjust by signal strength
         adjusted_amount = target_amount * signal.strength
+
+        # DEC-SIZING-001: check strength-adjusted trade value against floor
+        if self._min_trade_value is not None:
+            actual_value = adjusted_amount * price
+            if actual_value < self._min_trade_value:
+                return RuleResult(
+                    decision=RuleDecision.DENY,
+                    reason=(
+                        f"Trade value ${actual_value:.2f} below minimum "
+                        f"${self._min_trade_value}. Commission would dominate."
+                    ),
+                    risk_level=RiskLevel.LOW,
+                )
 
         return RuleResult(
             decision=RuleDecision.MODIFY,

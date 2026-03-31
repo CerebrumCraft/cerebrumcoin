@@ -219,9 +219,12 @@ class TestStrategyConfigs:
         """MOMENTUM_CONFIG uses 1/6 of $10k for the 6-strategy equal split."""
         assert MOMENTUM_CONFIG.initial_balance == Decimal("1666.67")
 
-    def test_mean_reversion_and_breakout_have_sixth_balance(self):
-        """New strategy configs each start at 1/6 of $10k for 6-way split."""
-        assert MEAN_REVERSION_CONFIG.initial_balance == Decimal("1666.67")
+    def test_mean_reversion_has_half_balance(self):
+        """DEC-TUNE-008: mean_reversion gets $5k — 2-strategy split of $10k."""
+        assert MEAN_REVERSION_CONFIG.initial_balance == Decimal("5000.00")
+
+    def test_breakout_has_sixth_balance(self):
+        """Breakout is inactive (DEC-TUNE-006) but config retains its original allocation."""
         assert BREAKOUT_CONFIG.initial_balance == Decimal("1666.67")
 
     def test_mean_reversion_has_tighter_tp(self):
@@ -272,9 +275,9 @@ class TestStrategyConfigs:
         assert isinstance(RANGE_TRADING_CONFIG, StrategyConfig)
         assert RANGE_TRADING_CONFIG.name == "range_trading"
 
-    def test_range_trading_has_sixth_balance(self):
-        """Range trading uses 1/6 of $10k — equal split with other 5 strategies."""
-        assert RANGE_TRADING_CONFIG.initial_balance == Decimal("1666.67")
+    def test_range_trading_has_half_balance(self):
+        """DEC-TUNE-008: range_trading gets $5k — 2-strategy split of $10k."""
+        assert RANGE_TRADING_CONFIG.initial_balance == Decimal("5000.00")
 
     def test_range_trading_filters_to_support_resistance(self):
         """Only S/R signals feed range trading — other sources are excluded."""
@@ -329,9 +332,9 @@ class TestStrategyRegistryAllConfigs:
     def _three_equal_configs(self) -> list[StrategyConfig]:
         """Return three StrategyConfig instances for registry lifecycle tests.
 
-        Uses a $3333.33 momentum copy so this fixture's totals don't change
-        when multi-strategy splits evolve. mean_reversion and breakout use
-        their real configs ($2500 each after 4-way split).
+        Uses a $3333.33 momentum copy so this fixture's totals are predictable.
+        mean_reversion uses its real config ($5000 after DEC-TUNE-008 2-way split).
+        breakout uses its real config ($1666.67, inactive but config unchanged).
         """
         return [
             StrategyConfig(
@@ -407,8 +410,8 @@ class TestStrategyRegistryAllConfigs:
 
             gp = registry.global_portfolio
             total = gp.get_total_equity()
-            # momentum=$3333.33 (test fixture) + mean_reversion=$1666.67 + breakout=$1666.67
-            expected = Decimal("3333.33") + Decimal("1666.67") + Decimal("1666.67")
+            # momentum=$3333.33 (test fixture) + mean_reversion=$5000.00 (DEC-TUNE-008) + breakout=$1666.67
+            expected = Decimal("3333.33") + Decimal("5000.00") + Decimal("1666.67")
             assert total == expected
         finally:
             await bus.stop()
@@ -570,7 +573,7 @@ class TestSetupMultiStrategy:
             await bus.stop()
 
     @pytest.mark.asyncio
-    async def test_all_five_pipelines_active(self):
+    async def test_two_pipelines_active(self):
         from cerebrum.main import CerebrumCoin
         bus = EventBus()
         await bus.start()
@@ -581,8 +584,10 @@ class TestSetupMultiStrategy:
             await app._setup_multi_strategy()
 
             active = set(app.strategy_registry.active_strategy_names())
-            # swing_trading disabled (DEC-TUNE-005) — excluded from active set
-            assert active == {"momentum", "mean_reversion", "breakout", "range_trading", "news_driven"}
+            # Only mean_reversion and range_trading active (DEC-TUNE-008).
+            # momentum, breakout, news_driven disabled (signal cannibalization).
+            # swing_trading disabled (DEC-TUNE-005).
+            assert active == {"mean_reversion", "range_trading"}
         finally:
             if app.conductor:
                 await app.conductor.stop()
@@ -614,7 +619,7 @@ class TestSetupMultiStrategy:
             await bus.stop()
 
     @pytest.mark.asyncio
-    async def test_allocator_knows_all_three_strategies(self):
+    async def test_allocator_knows_active_strategies(self):
         from cerebrum.main import CerebrumCoin
         bus = EventBus()
         await bus.start()
@@ -624,8 +629,9 @@ class TestSetupMultiStrategy:
             app.bus = bus
             await app._setup_multi_strategy()
 
-            # swing_trading disabled (DEC-TUNE-005) — excluded from allocator set
-            assert set(app.allocator._strategies) == {"momentum", "mean_reversion", "breakout", "range_trading", "news_driven"}
+            # Only mean_reversion and range_trading active (DEC-TUNE-008).
+            # swing_trading disabled (DEC-TUNE-005).
+            assert set(app.allocator._strategies) == {"mean_reversion", "range_trading"}
         finally:
             if app.conductor:
                 await app.conductor.stop()

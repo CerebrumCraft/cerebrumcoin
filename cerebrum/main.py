@@ -485,20 +485,30 @@ class CerebrumCoin:
                 # other strategies are suppressed (DEC-RANGE-006).
                 exempt_strategies={"range_trading"},
             ),
-            # ~10 trades/hour per strategy * 5 strategies = 50 global cap
-            # swing_trading targets ~2-4 trades/day so the 1h strategy contributes
-            # very few; the cap is kept at 40 to maintain pre-swing budget.
+            # ~10 trades/hour per strategy * 2 active strategies = 20 budget;
+            # cap set to 15 to leave headroom after disabling momentum/breakout/news_driven
+            # (DEC-TUNE-008). Down from 40 (5-strategy budget).
             GlobalTradeRateLimitRule(
-                max_trades_per_hour=40,
+                max_trades_per_hour=15,
                 bus=self.bus,
             ),
         ]
 
         # --- StrategyRegistry ---
         self.strategy_registry = StrategyRegistry(bus=self.bus, config=config)
-        self.strategy_registry.register(MOMENTUM_CONFIG)
+        # @decision DEC-TUNE-008
+        # @title Disable momentum, breakout, news_driven — signal cannibalization
+        # @status accepted
+        # @rationale Investigation of 219 multi-strategy trades (Mar 24-30) showed all 4
+        #   unfiltered strategies (momentum, mean_reversion, breakout, news_driven) consume
+        #   identical RSI/MACD/BB/VWAP signals. 78 simultaneous entry pairs confirmed: same
+        #   signal, same symbol, same second, all lost money together. Only mean_reversion
+        #   and range_trading are kept — range_trading has differentiated S/R-only signal
+        #   filtering; mean_reversion is the core technical strategy with best WR (30.6%)
+        #   of the 4 duplicates. Capital redistributed from $1,667/ea to $5,000/ea.
+        # self.strategy_registry.register(MOMENTUM_CONFIG)
         self.strategy_registry.register(MEAN_REVERSION_CONFIG)
-        self.strategy_registry.register(BREAKOUT_CONFIG)
+        # self.strategy_registry.register(BREAKOUT_CONFIG)
         self.strategy_registry.register(RANGE_TRADING_CONFIG)
         # @decision DEC-TUNE-005
         # @title Disable swing_trading — Session 18 sole loser
@@ -506,7 +516,7 @@ class CerebrumCoin:
         # @rationale Session 18: -$51 PnL, zero realized trades, only 1 position held (short DOGE).
         #   Only losing strategy of 6. Disable until tuning is revisited. Re-enable by uncommenting.
         # self.strategy_registry.register(SWING_TRADING_CONFIG)
-        self.strategy_registry.register(NEWS_DRIVEN_CONFIG)
+        # self.strategy_registry.register(NEWS_DRIVEN_CONFIG)
 
         # Build and start all strategy pipelines, injecting shared global guards
         await self.strategy_registry.start_all(shared_global_rules=global_guards)
