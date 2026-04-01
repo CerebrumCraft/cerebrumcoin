@@ -95,8 +95,15 @@ class TradeTracker:
         # Get signal snapshot from pending orders
         signal_snapshot = self._pending_signals.pop(event.order_id, {})
 
-        # Check for open trades to close (FIFO matching)
-        open_trades = await self._state.get_open_trades(event.symbol)
+        # Check for open trades to close (FIFO matching, strategy-scoped).
+        # Bug fix (Session 20): pass strategy_id so get_open_trades filters to
+        # only this strategy's open positions. Prevents cross-strategy FIFO
+        # collisions where strategy-A's SELL fill closes strategy-B's open BUY
+        # trade (DEC-TRACK-001). getattr guards callers that pre-date the field.
+        open_trades = await self._state.get_open_trades(
+            event.symbol,
+            strategy_id=getattr(event, 'strategy_id', None),
+        )
 
         # Session 7 debug: log FIFO matching state for every fill
         self._log.debug(
@@ -221,6 +228,102 @@ class TradeTracker:
             symbol=open_trade.symbol,
             pnl=float(pnl),
         )
+
+    async def close_orphan_trades(self, active_strategies: list[str]) -> int:
+        """Close OPEN trades from inactive or unknown strategies.
+
+        Called once at startup (after strategy registry init) to neutralise
+        stale OPEN rows left by previous sessions that ran different strategies.
+        Two categories of orphans are closed:
+
+        - strategy_id IS NULL — trades opened before strategy_id was added to
+          FillEvent (pre-Session-7 sessions) or opened by the single-strategy
+          legacy path which stamps no strategy_id.
+        - strategy_id NOT IN active_strategies — trades from a strategy that
+          is registered in this session's config (e.g. momentum) but was later
+          disabled (DEC-TUNE-008). These will never receive a matching SELL fill,
+          so they must be closed at startup to avoid corrupting FIFO matching for
+          the active strategies.
+
+        Each orphan is closed with pnl=0 and a log line so the closure is
+        visible in session logs without distorting P&L statistics. Returns the
+        number of rows closed.
+
+        @decision DEC-TRACK-002
+        @title Orphan trade cleanup at startup
+        @status accepted
+        @rationale Disabled strategies accumulate OPEN trades across sessions.
+        Without cleanup, a future session that re-enables a strategy would pick
+        up stale OPEN trades and immediately close them on the first SELL fill,
+        producing phantom P&L. Cleaning at startup (before the event loop begins
+        accepting live fills) is safe and race-free. pnl=0 is used instead of
+        marking as CANCELLED because the trades table has no CANCELLED status and
+        pnl=0 correctly signals "no realized gain/loss from this row".
+        """
+        import time as _time_mod
+
+        assert self._state._db is not None
+
+        # Fetch orphan trade IDs before the bulk UPDATE so we can log them
+        # individually. Two queries (SELECT then UPDATE) is acceptable here
+        # because close_orphan_trades runs once at startup before any live
+        # fills arrive — there is no concurrent writer to race with.
+        if active_strategies:
+            placeholders = ",".join("?" * len(active_strategies))
+            select_sql = (
+                f"SELECT id, symbol, strategy_id FROM trades "
+                f"WHERE status = 'OPEN' AND "
+                f"(strategy_id IS NULL OR strategy_id NOT IN ({placeholders}))"
+            )
+            select_params: list = list(active_strategies)
+        else:
+            # No active strategies — every OPEN trade is an orphan
+            select_sql = (
+                "SELECT id, symbol, strategy_id FROM trades WHERE status = 'OPEN'"
+            )
+            select_params = []
+
+        async with self._state._db.execute(select_sql, select_params) as cursor:
+            orphan_rows = await cursor.fetchall()
+
+        count = len(orphan_rows)
+        if count == 0:
+            self._log.info("orphan_scan_no_orphans", active_strategies=active_strategies)
+            return 0
+
+        now = _time_mod.time()
+        if active_strategies:
+            update_sql = (
+                f"UPDATE trades SET status = 'CLOSED', pnl = '0', exit_time = ? "
+                f"WHERE status = 'OPEN' AND "
+                f"(strategy_id IS NULL OR strategy_id NOT IN ({placeholders}))"
+            )
+            update_params: list = [now] + list(active_strategies)
+        else:
+            update_sql = (
+                "UPDATE trades SET status = 'CLOSED', pnl = '0', exit_time = ? "
+                "WHERE status = 'OPEN'"
+            )
+            update_params = [now]
+
+        await self._state._db.execute(update_sql, update_params)
+        await self._state._db.commit()
+
+        for row in orphan_rows:
+            self._log.warning(
+                "orphan_trade_closed",
+                trade_id=row["id"] if hasattr(row, "__getitem__") else row[0],
+                symbol=row["symbol"] if hasattr(row, "__getitem__") else row[1],
+                strategy_id=row["strategy_id"] if hasattr(row, "__getitem__") else row[2],
+                reason="strategy_not_active_in_this_session",
+            )
+
+        self._log.info(
+            "orphan_scan_complete",
+            closed_count=count,
+            active_strategies=active_strategies,
+        )
+        return count
 
     def update_regime(self, regime: str) -> None:
         """Update current regime for new trades."""

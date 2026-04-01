@@ -683,6 +683,24 @@ class CerebrumCoin:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         await self._start_learning_system(db_path)
 
+        # Orphan trade cleanup (DEC-TRACK-002): close any OPEN trades from
+        # strategies that are not active in this session. Must run after both
+        # the strategy registry and learning system are initialised, and before
+        # the event loop starts accepting live fills — so there is no race
+        # between orphan closure and incoming SELL fills.
+        if self.trade_tracker is not None:
+            if multi_strategy and self.strategy_registry is not None:
+                active_names = self.strategy_registry.active_strategy_names()
+            else:
+                # Single-strategy mode: no strategy_id is stamped on trades,
+                # so treat all NULL-strategy_id trades as valid and close only
+                # unknown (non-NULL) strategy_id orphans. Pass an empty list so
+                # the orphan scanner closes only rows with non-NULL unknown ids.
+                # In practice single-strategy mode stamps strategy_id=None so
+                # this is a no-op — but it is safe to call either way.
+                active_names = []
+            await self.trade_tracker.close_orphan_trades(active_names)
+
         # Legacy terminal dashboard (single-strategy mode only — it needs a
         # single RiskManager reference; multi-strategy uses WebDashboard)
         if not multi_strategy and config.monitoring.dashboard_enabled:

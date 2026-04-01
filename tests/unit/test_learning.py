@@ -449,3 +449,213 @@ async def test_tracker_unmatched_sell_fill_is_skipped(event_bus, state_manager):
     assert len(open_trades) == 1, "BUY after unmatched SELL must open a new long trade"
     assert open_trades[0].side == Side.BUY
     assert open_trades[0].entry_price == Decimal("3600")
+
+
+# ---------------------------------------------------------------------------
+# Tests: strategy-aware FIFO matching (Session 20 fix — DEC-TRACK-001)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_strategy_aware_fifo_closes_only_matching_strategy(event_bus, state_manager):
+    """SELL fill with strategy_id=A must close only strategy-A's open trade.
+
+    Regression test for DEC-TRACK-001: before the fix, get_open_trades() was
+    called without strategy_id, so the oldest OPEN trade across ALL strategies
+    for a symbol was returned. If strategy-B had an earlier BUY than strategy-A,
+    a SELL fill from strategy-A would incorrectly close strategy-B's trade.
+
+    Setup: two open BUY trades for BTC/USDT — one from "mean_reversion" (older)
+    and one from "range_trading" (newer). A SELL fill arrives tagged with
+    strategy_id="range_trading". After the fix, only the range_trading trade
+    is closed; mean_reversion's trade remains open.
+    """
+    from cerebrum.core.state import TradeRecord
+
+    # Insert two OPEN BUY trades directly into the DB (bypassing the event bus)
+    # so we control entry_time precisely.
+    older_trade = TradeRecord(
+        id=None,
+        symbol="BTC/USDT",
+        side=Side.BUY,
+        entry_time=5000.0,   # older
+        entry_price=Decimal("62000"),
+        exit_time=None,
+        exit_price=None,
+        quantity=Decimal("0.1"),
+        pnl=None,
+        signal_snapshot={},
+        regime="BULL",
+        status="OPEN",
+        strategy_id="mean_reversion",
+    )
+    newer_trade = TradeRecord(
+        id=None,
+        symbol="BTC/USDT",
+        side=Side.BUY,
+        entry_time=5100.0,   # newer
+        entry_price=Decimal("62500"),
+        exit_time=None,
+        exit_price=None,
+        quantity=Decimal("0.1"),
+        pnl=None,
+        signal_snapshot={},
+        regime="BULL",
+        status="OPEN",
+        strategy_id="range_trading",
+    )
+    older_id = await state_manager.save_trade(older_trade)
+    newer_id = await state_manager.save_trade(newer_trade)
+
+    # Verify both trades are open before the SELL fill
+    all_open = await state_manager.get_open_trades("BTC/USDT")
+    assert len(all_open) == 2, "precondition: two open trades"
+
+    closed_events = []
+
+    async def capture_closed(event):
+        closed_events.append(event)
+
+    event_bus.subscribe(EventType.TRADE_CLOSED, capture_closed, "test_strategy_fifo")
+
+    tracker = TradeTracker(event_bus, state_manager, "BULL")
+    await tracker.start()
+    await asyncio.sleep(0.05)
+
+    # SELL fill tagged with range_trading — must close newer_trade only
+    sell_fill = FillEvent(
+        event_type=EventType.FILL,
+        timestamp=5200.0,
+        order_id="sell_range_1",
+        symbol="BTC/USDT",
+        side=Side.SELL,
+        filled_amount=Decimal("0.1"),
+        fill_price=Decimal("63000"),
+        commission=Decimal("6"),
+        commission_asset="USDT",
+        strategy_id="range_trading",
+    )
+    await event_bus.publish(sell_fill)
+
+    # Wait for TradeClosedEvent
+    for _ in range(20):
+        await asyncio.sleep(0.1)
+        if closed_events:
+            break
+
+    assert len(closed_events) == 1, "exactly one trade must be closed"
+    closed_event = closed_events[0]
+    assert isinstance(closed_event, TradeClosedEvent)
+
+    # The closed trade must be the range_trading one (newer_id), not mean_reversion
+    closed_db = await state_manager.get_trade(newer_id)
+    assert closed_db is not None
+    assert closed_db.status == "CLOSED", "range_trading trade must be CLOSED"
+    assert closed_db.exit_price == Decimal("63000")
+
+    # mean_reversion trade must remain open — strategy isolation preserved
+    open_mr = await state_manager.get_trade(older_id)
+    assert open_mr is not None
+    assert open_mr.status == "OPEN", "mean_reversion trade must remain OPEN"
+
+
+# ---------------------------------------------------------------------------
+# Tests: orphan trade scanner (DEC-TRACK-002)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_close_orphan_trades_cleans_inactive_and_null_strategies(event_bus, state_manager):
+    """close_orphan_trades() closes NULL-strategy and inactive-strategy OPEN trades.
+
+    Three OPEN trades:
+      1. strategy_id=None (pre-strategy-id session)
+      2. strategy_id="momentum" (disabled strategy)
+      3. strategy_id="mean_reversion" (active strategy — must NOT be closed)
+
+    After calling close_orphan_trades(["mean_reversion"]):
+      - Trades 1 and 2 must be CLOSED with pnl=0
+      - Trade 3 must remain OPEN
+      - Return value must be 2
+    """
+    from cerebrum.core.state import TradeRecord
+
+    def make_trade(strategy_id):
+        return TradeRecord(
+            id=None,
+            symbol="ETH/USDT",
+            side=Side.BUY,
+            entry_time=6000.0,
+            entry_price=Decimal("3000"),
+            exit_time=None,
+            exit_price=None,
+            quantity=Decimal("0.5"),
+            pnl=None,
+            signal_snapshot={},
+            regime="SIDEWAYS",
+            status="OPEN",
+            strategy_id=strategy_id,
+        )
+
+    null_id = await state_manager.save_trade(make_trade(None))
+    momentum_id = await state_manager.save_trade(make_trade("momentum"))
+    active_id = await state_manager.save_trade(make_trade("mean_reversion"))
+
+    tracker = TradeTracker(event_bus, state_manager, "SIDEWAYS")
+    await tracker.start()
+    await asyncio.sleep(0.05)
+
+    closed_count = await tracker.close_orphan_trades(["mean_reversion"])
+
+    assert closed_count == 2, f"expected 2 orphans closed, got {closed_count}"
+
+    # NULL-strategy trade must be CLOSED
+    null_trade = await state_manager.get_trade(null_id)
+    assert null_trade is not None
+    assert null_trade.status == "CLOSED", "NULL-strategy trade must be closed"
+    assert null_trade.pnl == Decimal("0"), "orphan pnl must be 0"
+
+    # momentum trade must be CLOSED
+    momentum_trade = await state_manager.get_trade(momentum_id)
+    assert momentum_trade is not None
+    assert momentum_trade.status == "CLOSED", "momentum (inactive) trade must be closed"
+    assert momentum_trade.pnl == Decimal("0"), "orphan pnl must be 0"
+
+    # mean_reversion trade must remain OPEN — it is active
+    active_trade = await state_manager.get_trade(active_id)
+    assert active_trade is not None
+    assert active_trade.status == "OPEN", "active strategy trade must NOT be closed"
+
+
+@pytest.mark.asyncio
+async def test_close_orphan_trades_returns_zero_when_no_orphans(event_bus, state_manager):
+    """close_orphan_trades() returns 0 when all OPEN trades belong to active strategies."""
+    from cerebrum.core.state import TradeRecord
+
+    trade = TradeRecord(
+        id=None,
+        symbol="BTC/USDT",
+        side=Side.BUY,
+        entry_time=7000.0,
+        entry_price=Decimal("65000"),
+        exit_time=None,
+        exit_price=None,
+        quantity=Decimal("0.05"),
+        pnl=None,
+        signal_snapshot={},
+        regime="BULL",
+        status="OPEN",
+        strategy_id="range_trading",
+    )
+    await state_manager.save_trade(trade)
+
+    tracker = TradeTracker(event_bus, state_manager, "BULL")
+    await tracker.start()
+    await asyncio.sleep(0.05)
+
+    count = await tracker.close_orphan_trades(["range_trading"])
+    assert count == 0, "no orphans when all trades belong to active strategies"
+
+    # Trade must still be open
+    open_trades = await state_manager.get_open_trades("BTC/USDT")
+    assert len(open_trades) == 1

@@ -196,8 +196,12 @@ class StateManager:
             row = await cursor.fetchone()
             return self._row_to_trade_record(row) if row else None
 
-    async def get_open_trades(self, symbol: Symbol | None = None) -> list[TradeRecord]:
-        """Get all open trades, optionally filtered by symbol.
+    async def get_open_trades(
+        self,
+        symbol: Symbol | None = None,
+        strategy_id: str | None = None,
+    ) -> list[TradeRecord]:
+        """Get all open trades, optionally filtered by symbol and/or strategy_id.
 
         Results are always ordered by entry_time ASC so that FIFO matching
         in TradeTracker._on_fill() reliably picks the oldest open trade
@@ -207,18 +211,28 @@ class StateManager:
         SQLite returns rows in an unspecified order without it, which meant
         FIFO matching was non-deterministic and could close the wrong trade
         when multiple open positions existed for the same symbol.
+
+        Bug fix (Session 20): added strategy_id parameter. When provided,
+        adds ``AND strategy_id = ?`` so FIFO matching stays within the
+        originating strategy's trades and never closes an orphan trade from
+        a previous session or a different strategy. The symbol-only path is
+        preserved for backward compatibility with callers that don't pass
+        strategy_id (DEC-TRACK-001).
         """
         assert self._db is not None
+        conditions = ["status = 'OPEN'"]
+        params: list[str] = []
+
         if symbol:
-            query, params = (
-                "SELECT * FROM trades WHERE status = 'OPEN' AND symbol = ? ORDER BY entry_time ASC",
-                (symbol,),
-            )
-        else:
-            query, params = (
-                "SELECT * FROM trades WHERE status = 'OPEN' ORDER BY entry_time ASC",
-                (),
-            )
+            conditions.append("symbol = ?")
+            params.append(symbol)
+
+        if strategy_id is not None:
+            conditions.append("strategy_id = ?")
+            params.append(strategy_id)
+
+        where = " AND ".join(conditions)
+        query = f"SELECT * FROM trades WHERE {where} ORDER BY entry_time ASC"
         async with self._db.execute(query, params) as cursor:
             return [self._row_to_trade_record(row) for row in await cursor.fetchall()]
 
