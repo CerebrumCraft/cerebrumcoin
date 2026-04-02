@@ -12,6 +12,7 @@ Provides a live trading terminal UI with:
 - Go-live scorecard panel (Phase 12F)
 - Commission drag visualization (Phase 12F)
 - Guard denial heatmap with color-coded counts (Phase 12F)
+- Risk profile selector (Phase 14B)
 
 @decision DEC-DASH-001
 @title FastAPI + uvicorn run in background asyncio task, not a subprocess
@@ -53,6 +54,17 @@ than querying the SQLite trade database. This is sufficient for real-time
 visualization. For authoritative scorecard analysis (Sharpe, full attribution),
 scripts/analyze.py queries the trade DB directly and is noted in the scorecard
 as a supplement for criteria that cannot be computed inline.
+
+@decision DEC-DASH-005
+@title ProfileManager wired into WebDashboard as Optional — None means unavailable
+@status accepted
+@rationale Phase 14B adds profile switching to the dashboard, but Phase 14C
+handles wiring ProfileManager from main.py. To keep these phases independent,
+profile_manager is Optional in WebDashboard.__init__. When None, the /api/profiles
+and /api/profile/* endpoints return {"available": false} (503-style). Phase 14C
+passes the real ProfileManager in, enabling the full UI without any dashboard
+changes. This avoids an import-time circular dependency and lets each phase ship
+independently.
 """
 
 from __future__ import annotations
@@ -84,6 +96,7 @@ from cerebrum.core.types import EventType
 if TYPE_CHECKING:
     from cerebrum.adapters.paper import PaperTradingAdapter
     from cerebrum.conductor.conductor import Conductor
+    from cerebrum.profiles.manager import ProfileManager
     from cerebrum.strategies.global_portfolio import GlobalPortfolio
     from cerebrum.strategies.registry import StrategyRegistry
 
@@ -145,6 +158,7 @@ class WebDashboard:
         host: str = "127.0.0.1",
         port: int = 8080,
         paper_adapter: "PaperTradingAdapter | None" = None,
+        profile_manager: "ProfileManager | None" = None,
     ) -> None:
         """
         Initialise the web dashboard.
@@ -160,6 +174,11 @@ class WebDashboard:
             paper_adapter: Optional PaperTradingAdapter — when present, used as
                 ground truth for global equity to avoid double-counting six
                 strategy PortfolioTracker equities (see _get_global_equity).
+            profile_manager: Optional ProfileManager — when provided, the
+                /api/profiles, /api/profile/active, and /api/profile/apply
+                endpoints are fully operational. When None (Phase 14C wires it
+                from main.py), those endpoints return {"available": false}.
+                See DEC-DASH-005.
         """
         if not _FASTAPI_AVAILABLE:
             raise ImportError(
@@ -171,6 +190,7 @@ class WebDashboard:
         self._conductor = conductor
         self._global_portfolio = global_portfolio
         self._paper_adapter = paper_adapter
+        self._profile_manager = profile_manager
         self._host = host
         self._port = port
 
@@ -376,6 +396,93 @@ class WebDashboard:
             """Toggle copilot mode on/off."""
             self._conductor.copilot_mode = not self._conductor.copilot_mode
             return {"copilot_mode": self._conductor.copilot_mode}
+
+        # --- Profile API (Phase 14B) ---
+
+        @app.get("/api/profiles")
+        async def get_profiles() -> dict:
+            """List all available risk profiles with their configurations.
+
+            Returns {"available": false} when no ProfileManager is wired in
+            (Phase 14C wires it from main.py — see DEC-DASH-005).
+            """
+            if self._profile_manager is None:
+                return {"available": False, "profiles": [], "configs": {}}
+            profiles = self._profile_manager.list_profiles()
+            configs: dict = {}
+            for name in profiles:
+                cfg = self._profile_manager.get_profile_config(name)
+                # Serialise only non-None override fields so the UI can show
+                # what each profile changes vs the base config.
+                configs[name] = {
+                    k: str(v)
+                    for k, v in cfg.model_dump().items()
+                    if v is not None and k != "name" and v != []
+                }
+            return {
+                "available": True,
+                "profiles": profiles,
+                "configs": configs,
+            }
+
+        @app.get("/api/profile/active")
+        async def get_active_profile() -> dict:
+            """Return the currently active profile name.
+
+            Returns {"available": false} when no ProfileManager is wired in.
+            """
+            if self._profile_manager is None:
+                return {"available": False, "active": ""}
+            return {
+                "available": True,
+                "active": self._profile_manager.get_active_profile(),
+            }
+
+        @app.post("/api/profile/apply")
+        async def apply_profile(body: dict) -> dict:
+            """Apply a named risk profile to all active strategy pipelines.
+
+            Request body: {"profile": "<name>"}
+
+            Returns:
+                {"status": "ok", "profile": "<name>", "changes": {...}} on success.
+                {"status": "error", "message": "..."} with HTTP 400 for unknown profiles.
+                {"available": false} when no ProfileManager is wired in.
+            """
+            from fastapi import HTTPException  # noqa: PLC0415
+
+            if self._profile_manager is None:
+                return {"available": False}
+
+            profile_name = body.get("profile", "")
+            if not profile_name:
+                raise HTTPException(status_code=400, detail="Missing 'profile' field in request body")
+
+            try:
+                changes = self._profile_manager.apply_profile(profile_name)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+            # Broadcast profile change to all connected WebSocket clients so
+            # multiple open tabs stay in sync without a page refresh.
+            await self._broadcast({
+                "type": "profile_change",
+                "data": {
+                    "profile": profile_name,
+                    "changes": {k: str(v) for k, v in changes.items()},
+                },
+            })
+
+            self._log.info(
+                "profile_applied_via_dashboard",
+                profile=profile_name,
+                changes_count=len(changes),
+            )
+            return {
+                "status": "ok",
+                "profile": profile_name,
+                "changes": {k: str(v) for k, v in changes.items()},
+            }
 
         # --- WebSocket ---
 

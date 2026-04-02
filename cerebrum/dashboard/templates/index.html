@@ -271,6 +271,51 @@
     .flash-buy  { animation: flash-green 0.5s ease; }
     .flash-sell { animation: flash-red   0.5s ease; }
 
+    /* ── Profile selector (Phase 14B) ──────────────────────── */
+    .profile-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .profile-wrap label {
+      color: var(--dim);
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    #profile-select {
+      background: var(--bg3);
+      color: var(--cyan);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 4px 8px;
+      font-family: var(--font);
+      font-size: 11px;
+      cursor: pointer;
+      min-width: 110px;
+    }
+    #profile-select:focus { outline: 1px solid var(--cyan); }
+    #profile-select option { background: var(--bg3); color: var(--text); }
+    #profile-select option.active-profile { color: var(--cyan); font-weight: bold; }
+    #profile-notify {
+      position: fixed;
+      top: 46px;
+      right: 16px;
+      background: var(--bg3);
+      border: 1px solid var(--cyan);
+      border-left: 3px solid var(--cyan);
+      padding: 6px 14px;
+      font-size: 11px;
+      color: var(--cyan);
+      border-radius: 3px;
+      display: none;
+      z-index: 100;
+      max-width: 420px;
+      white-space: pre-wrap;
+    }
+    #profile-notify.visible { display: block; }
+    #profile-notify.error   { border-color: var(--red); color: var(--red); }
+
     /* ── Scrollbar ──────────────────────────────────────────── */
     ::-webkit-scrollbar { width: 5px; }
     ::-webkit-scrollbar-track { background: var(--bg); }
@@ -294,6 +339,13 @@
       <div class="confidence-bar-wrap">
         <div id="confidence-bar"></div>
       </div>
+    </div>
+    <!-- Profile selector — populated by loadProfiles() on page load -->
+    <div class="profile-wrap">
+      <label for="profile-select">Profile</label>
+      <select id="profile-select" onchange="applyProfile(this.value)" title="Switch risk profile">
+        <option value="">— none —</option>
+      </select>
     </div>
     <button class="btn btn-toggle" id="copilot-toggle-btn"
             onclick="toggleCopilot()">
@@ -395,10 +447,13 @@
 
 <!-- ── Status bar ─────────────────────────────────────────── -->
 <div id="status-bar">
-  <span>CerebrumCoin v2 &mdash; Phase 12F</span>
+  <span>CerebrumCoin v2 &mdash; Phase 14B</span>
   <span id="ws-status">WS: disconnected</span>
   <span id="last-update">—</span>
 </div>
+
+<!-- Profile change notification (appears top-right, auto-dismisses) -->
+<div id="profile-notify"></div>
 
 <script>
 // ── Sanitise helper (prevent XSS on any server-sourced strings) ──
@@ -409,7 +464,7 @@ function esc(str) {
 }
 
 // ── State ─────────────────────────────────────────────────
-const state = { copilotMode: false };
+const state = { copilotMode: false, profileNotifyTimer: null };
 
 // ── Global Equity Chart ───────────────────────────────────
 const ctx = document.getElementById('equity-chart').getContext('2d');
@@ -1062,6 +1117,101 @@ function handleWsMessage(msg) {
         .then(renderDenials)
         .catch(() => {});
       break;
+
+    case 'profile_change': {
+      // Another tab applied a profile — sync our dropdown + show notification
+      const pName = esc(msg.data.profile || '');
+      syncProfileDropdown(pName);
+      const changes = msg.data.changes || {};
+      const summary = Object.entries(changes)
+        .slice(0, 5)
+        .map(([k, v]) => k.split('.').pop() + ': ' + v)
+        .join(', ');
+      showProfileNotify('Profile switched to ' + pName + (summary ? '\n' + summary : ''), false);
+      break;
+    }
+  }
+}
+
+// ── Profile selector (Phase 14B) ──────────────────────────
+
+function showProfileNotify(message, isError) {
+  const el = document.getElementById('profile-notify');
+  el.textContent = message;
+  el.className = 'visible' + (isError ? ' error' : '');
+  if (state.profileNotifyTimer) clearTimeout(state.profileNotifyTimer);
+  state.profileNotifyTimer = setTimeout(() => {
+    el.className = '';
+    el.textContent = '';
+    state.profileNotifyTimer = null;
+  }, 4000);
+}
+
+function syncProfileDropdown(activeName) {
+  const sel = document.getElementById('profile-select');
+  for (const opt of sel.options) {
+    opt.className = opt.value === activeName ? 'active-profile' : '';
+    if (opt.value === activeName) sel.value = activeName;
+  }
+}
+
+async function loadProfiles() {
+  try {
+    const [profResp, activeResp] = await Promise.all([
+      fetch('/api/profiles'),
+      fetch('/api/profile/active'),
+    ]);
+    const profData   = await profResp.json();
+    const activeData = await activeResp.json();
+
+    if (!profData.available) return;  // ProfileManager not wired yet
+
+    const sel = document.getElementById('profile-select');
+    // Clear existing options except the placeholder
+    while (sel.options.length > 1) sel.remove(1);
+
+    const active = activeData.active || '';
+    for (const name of (profData.profiles || [])) {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === active) {
+        opt.className = 'active-profile';
+        sel.value = name;
+      }
+      sel.appendChild(opt);
+    }
+    if (active && sel.value !== active) sel.value = active;
+  } catch(e) {}
+}
+
+async function applyProfile(profileName) {
+  if (!profileName) return;
+  try {
+    const resp = await fetch('/api/profile/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: profileName }),
+    });
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      showProfileNotify('Error: ' + esc(data.detail || 'Unknown error'), true);
+      return;
+    }
+
+    // Build a human-readable summary of what changed
+    const changes = data.changes || {};
+    const entries = Object.entries(changes).slice(0, 5);
+    const summary = entries
+      .map(([k, v]) => k.split('.').pop() + ': ' + v)
+      .join(', ');
+    const notifyText = 'Switched to ' + esc(profileName) +
+      (summary ? ':\n' + summary : '');
+    showProfileNotify(notifyText, false);
+    syncProfileDropdown(profileName);
+  } catch(e) {
+    showProfileNotify('Network error applying profile', true);
   }
 }
 
@@ -1110,6 +1260,7 @@ window.addEventListener('DOMContentLoaded', async function() {
   await pollStrategyEquityHistory();
   await pollScorecard();
   await pollCommission();
+  await loadProfiles();  // Phase 14B: populate profile dropdown
 
   setInterval(pollStrategies,             5000);
   setInterval(pollRegime,                 5000);
