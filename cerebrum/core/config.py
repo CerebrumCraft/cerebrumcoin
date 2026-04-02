@@ -450,9 +450,28 @@ class AlpacaConfig(BaseSettings):
 
 
 class ProfileConfig(BaseSettings):
-    """User-facing risk profile selection."""
+    """
+    User-facing risk profile selection.
+
+    All override fields are Optional — a profile only changes what it explicitly
+    specifies. Fields left as None fall through to the base config values.
+    Profiles are applied at runtime via ProfileManager.apply_profile().
+    """
     name: str = ""
     symbols: list[str] = Field(default_factory=list)
+    # Risk overrides
+    position_size_percent: Decimal | None = None
+    stop_loss_percent: Decimal | None = None
+    take_profit_percent: Decimal | None = None
+    max_position_age_minutes: int | None = None
+    post_fill_cooldown_seconds: int | None = None
+    min_signal_strength: Decimal | None = None
+    # Signal overrides
+    aggregation_threshold: Decimal | None = None
+    # Exit monitor overrides
+    adaptive_tp: bool | None = None
+    tp_multiplier: Decimal | None = None
+    min_tp_percent: Decimal | None = None
 
     model_config = SettingsConfigDict(
         env_prefix="PROFILE_",
