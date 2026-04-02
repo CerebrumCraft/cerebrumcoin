@@ -146,6 +146,70 @@ def test_no_minimum_allows_any_size():
     )
 
 
+def test_signal_multiplier_floored_at_06():
+    """DEC-SIZING-002: signal strength below 0.6 is floored to 0.6.
+
+    Scenario: 5% of $5000 = $250 target. Strength=0.3 -> floored to 0.6 -> $150 value.
+    Without floor: 0.3 -> $75 -> DENY. With floor: 0.6 -> $150 -> MODIFY.
+    """
+    rule = PositionSizingRule(
+        position_size_percent=Decimal("5.0"),
+        min_trade_value_usd=Decimal("100"),
+    )
+    portfolio = MockPortfolio(equity=Decimal("5000"), price=Decimal("1000"))
+    signal = make_signal(strength=Decimal("0.3"))
+    order = make_order(price=Decimal("1000"))
+
+    result = rule.evaluate(signal, order, portfolio)
+
+    assert result.decision == RuleDecision.MODIFY, (
+        f"Expected MODIFY (0.3 floored to 0.6 -> $150 > $100), got {result.decision}: {result.reason}"
+    )
+    # 5% of 5000 = 250, at price 1000 = 0.25 units, floored strength 0.6 -> 0.15
+    assert result.modified_amount == Decimal("0.15"), (
+        f"Expected 0.15 (0.25 * 0.6 floor), got {result.modified_amount}"
+    )
+
+
+def test_signal_multiplier_above_floor_unchanged():
+    """DEC-SIZING-002: signal strength above 0.6 is used as-is.
+
+    Scenario: 5% of $5000 = $250 target. Strength=0.8 -> $200 value (no floor).
+    """
+    rule = PositionSizingRule(
+        position_size_percent=Decimal("5.0"),
+        min_trade_value_usd=Decimal("100"),
+    )
+    portfolio = MockPortfolio(equity=Decimal("5000"), price=Decimal("1000"))
+    signal = make_signal(strength=Decimal("0.8"))
+    order = make_order(price=Decimal("1000"))
+
+    result = rule.evaluate(signal, order, portfolio)
+
+    assert result.decision == RuleDecision.MODIFY
+    # 5% of 5000 = 250, at price 1000 = 0.25 units, strength 0.8 -> 0.20
+    assert result.modified_amount == Decimal("0.200"), (
+        f"Expected 0.200 (0.25 * 0.8), got {result.modified_amount}"
+    )
+
+
+def test_signal_multiplier_in_log_message():
+    """DEC-SIZING-002: log message includes the effective multiplier value."""
+    rule = PositionSizingRule(
+        position_size_percent=Decimal("5.0"),
+        min_trade_value_usd=Decimal("100"),
+    )
+    portfolio = MockPortfolio(equity=Decimal("5000"), price=Decimal("1000"))
+    signal = make_signal(strength=Decimal("0.4"))
+    order = make_order(price=Decimal("1000"))
+
+    result = rule.evaluate(signal, order, portfolio)
+
+    assert "multiplier=0.60" in result.reason, (
+        f"Expected 'multiplier=0.60' (floored from 0.4) in reason, got: {result.reason}"
+    )
+
+
 def test_strength_adjusted_value_checked_not_raw():
     """Strength-adjusted value (not raw target) is compared against floor.
 

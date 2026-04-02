@@ -269,6 +269,16 @@ class PositionSizingRule(RiskRule):
     # @rationale Investigation showed $20 range_trading trades where 0.32% round-trip
     # commission ate 33% of wins. Floor at $100 keeps commission below 10%.
     # min_trade_value_usd=None (default) preserves full backward compatibility.
+    #
+    # @decision DEC-SIZING-002
+    # @title Floor signal multiplier at 0.6 to prevent position starvation
+    # @status accepted
+    # @rationale At 2% sizing × $5k capital, base target is exactly $100 — the
+    # min_trade_value_usd floor. Any signal_strength < 1.0 shrinks adjusted_amount
+    # below the floor, causing blanket DENY. The min_signal_strength rule already
+    # gates weak signals; the sizer's job is to size viable trades, not re-filter.
+    # Fix: clamp multiplier to max(signal.strength, 0.6). Range_trading also raised
+    # from 2% → 5% so 0.6 floor × 5% × $5k = $150, comfortably above $100 min.
     """
 
     def __init__(
@@ -316,8 +326,13 @@ class PositionSizingRule(RiskRule):
 
         target_amount = target_value / price
 
-        # Adjust by signal strength
-        adjusted_amount = target_amount * signal.strength
+        # DEC-SIZING-002: Floor signal multiplier at 0.6 to prevent position
+        # starvation. Without this, low-strength signals (e.g., 0.3) shrink
+        # position size below the min_trade_value_usd floor, causing blanket
+        # denials. The min_signal_strength rule already filters weak signals;
+        # the position sizer should size viable trades, not double-filter.
+        strength_multiplier = max(signal.strength, Decimal("0.6"))
+        adjusted_amount = target_amount * strength_multiplier
 
         # DEC-SIZING-001: check strength-adjusted trade value against floor
         if self._min_trade_value is not None:
@@ -334,7 +349,7 @@ class PositionSizingRule(RiskRule):
 
         return RuleResult(
             decision=RuleDecision.MODIFY,
-            reason=f"Position sized at {self._size_percent}% of equity, adjusted by signal strength",
+            reason=f"Position sized at {self._size_percent}% of equity, adjusted by signal strength (multiplier={strength_multiplier:.2f})",
             risk_level=RiskLevel.LOW,
             modified_amount=adjusted_amount,
         )

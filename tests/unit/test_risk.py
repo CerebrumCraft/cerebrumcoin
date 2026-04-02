@@ -322,8 +322,8 @@ def test_position_sizing_rule():
     
     # Check sizing: 2% of 10000 = 200 USD
     # At price 50000, amount = 200/50000 = 0.004
-    # Adjusted by strength 0.5 = 0.002
-    expected_amount = Decimal("10000") * Decimal("0.02") / Decimal("50000") * Decimal("0.5")
+    # DEC-SIZING-002: strength 0.5 floored to 0.6 -> 0.004 * 0.6 = 0.0024
+    expected_amount = Decimal("10000") * Decimal("0.02") / Decimal("50000") * Decimal("0.6")
     assert result.modified_amount == expected_amount
 
 

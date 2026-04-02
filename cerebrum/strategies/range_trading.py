@@ -71,7 +71,7 @@ RANGE_TRADING_CONFIG = StrategyConfig(
     signal_source_filter="SupportResistance",
     risk_overrides={
         "min_signal_strength": "0.3",
-        "position_size_percent": "2.0",  # DEC-TUNE-008: keep 2% — with $5k capital that's $100/trade, matching the min_trade_value_usd floor
+        "position_size_percent": "5.0",  # DEC-SIZING-002: raised from 2% — at 2% × $5k = $100, any signal_strength < 1.0 caused denial. At 5% × 0.6 floor × $5k = $150, comfortably above $100 min.
         "post_fill_cooldown_seconds": 900,  # DEC-TUNE-009: cooldown 300→900s to reduce trade frequency
     },
     exit_config={
