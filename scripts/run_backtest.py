@@ -1012,7 +1012,7 @@ def main() -> None:
     end_date = datetime.now()
     start_date = end_date - timedelta(days=args.days)
 
-    config = Config.from_toml(args.config)
+    config, _raw_toml = Config.from_toml(args.config)
 
     async def _run() -> None:
         # Fetch OHLCV data for all symbols

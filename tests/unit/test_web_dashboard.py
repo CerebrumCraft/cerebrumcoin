@@ -92,7 +92,8 @@ async def bus():
 @pytest.fixture
 def config():
     """Real Config with defaults."""
-    return Config.from_toml(CONFIG_PATH)
+    config, _raw_toml = Config.from_toml(CONFIG_PATH)
+    return config
 
 
 @pytest.fixture

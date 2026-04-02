@@ -52,7 +52,8 @@ async def bus():
 
 @pytest.fixture
 def config():
-    return Config.from_toml(CONFIG_PATH)
+    config, _raw_toml = Config.from_toml(CONFIG_PATH)
+    return config
 
 
 @pytest.fixture

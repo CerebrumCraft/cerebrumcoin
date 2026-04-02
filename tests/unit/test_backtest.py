@@ -135,7 +135,7 @@ class TestPipelineWiring:
         from cerebrum.core.config import Config
         from cerebrum.core.types import EventType
 
-        config = Config.from_toml(Path("config/paper.toml"))
+        config, _raw_toml = Config.from_toml(Path("config/paper.toml"))
 
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             state_file = Path(f.name)
@@ -163,7 +163,7 @@ class TestPipelineWiring:
         from scripts.run_backtest import build_backtest_pipeline
         from cerebrum.core.config import Config
 
-        config = Config.from_toml(Path("config/paper.toml"))
+        config, _raw_toml = Config.from_toml(Path("config/paper.toml"))
 
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             state_file = Path(f.name)
@@ -244,7 +244,7 @@ class TestResultsCollection:
         from scripts.run_backtest import build_backtest_pipeline, collect_results
         from cerebrum.core.config import Config
 
-        config = Config.from_toml(Path("config/paper.toml"))
+        config, _raw_toml = Config.from_toml(Path("config/paper.toml"))
 
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             state_file = Path(f.name)
@@ -274,7 +274,7 @@ class TestResultsCollection:
         from scripts.run_backtest import build_backtest_pipeline, collect_results
         from cerebrum.core.config import Config
 
-        config = Config.from_toml(Path("config/paper.toml"))
+        config, _raw_toml = Config.from_toml(Path("config/paper.toml"))
 
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             state_file = Path(f.name)
@@ -469,7 +469,7 @@ class TestScaleBacktestParams:
         from scripts.run_backtest import build_backtest_pipeline
         from cerebrum.core.config import Config
 
-        config = Config.from_toml(Path("config/paper.toml"))
+        config, _raw_toml = Config.from_toml(Path("config/paper.toml"))
 
         async def _check() -> None:
             with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
@@ -507,7 +507,7 @@ class TestScaleBacktestParams:
         from scripts.run_backtest import build_backtest_pipeline
         from cerebrum.core.config import Config
 
-        config = Config.from_toml(Path("config/paper.toml"))
+        config, _raw_toml = Config.from_toml(Path("config/paper.toml"))
         config_window = config.signals.aggregation_window_seconds  # 120
 
         async def _check() -> None:
@@ -674,7 +674,7 @@ class TestBacktestClock:
         from scripts.run_backtest import build_backtest_pipeline, BacktestClock
         from cerebrum.core.config import Config
 
-        config = Config.from_toml(Path("config/paper.toml"))
+        config, _raw_toml = Config.from_toml(Path("config/paper.toml"))
 
         async def _check() -> None:
             with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:

@@ -143,14 +143,16 @@ class CerebrumCoin:
     See DEC-MAIN-002 for the rationale.
     """
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, raw_toml: dict | None = None) -> None:
         """
         Initialize CerebrumCoin.
 
         Args:
             config: Application configuration
+            raw_toml: Raw TOML dict for profile override detection
         """
         self.config = config
+        self._raw_toml = raw_toml or {}
         self.bus = EventBus()
 
         # Shared infrastructure (both modes)
@@ -873,13 +875,13 @@ async def async_main(config_path: Path) -> None:
     Args:
         config_path: Path to TOML configuration file
     """
-    config = Config.from_toml(config_path)
+    config, raw_toml = Config.from_toml(config_path)
 
     # Reconfigure logging with user's preferred level from config.
     # This supersedes the module-level INFO default.
     _configure_logging(config.logging.level)
 
-    app = CerebrumCoin(config)
+    app = CerebrumCoin(config, raw_toml=raw_toml)
 
     loop = asyncio.get_running_loop()
 

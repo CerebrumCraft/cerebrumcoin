@@ -449,6 +449,17 @@ class AlpacaConfig(BaseSettings):
     )
 
 
+class ProfileConfig(BaseSettings):
+    """User-facing risk profile selection."""
+    name: str = ""
+    symbols: list[str] = Field(default_factory=list)
+
+    model_config = SettingsConfigDict(
+        env_prefix="PROFILE_",
+        extra="ignore",
+    )
+
+
 class Config(BaseSettings):
     """Master configuration combining all subsystems."""
     exchange: ExchangeConfig = Field(default_factory=ExchangeConfig)
@@ -462,6 +473,7 @@ class Config(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     alpaca: AlpacaConfig = Field(default_factory=AlpacaConfig)
+    profile: ProfileConfig = Field(default_factory=ProfileConfig)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -470,17 +482,21 @@ class Config(BaseSettings):
     )
 
     @classmethod
-    def from_toml(cls, toml_path: Path) -> "Config":
-        """Load configuration from a TOML file, with env var overrides."""
+    def from_toml(cls, toml_path: Path) -> tuple["Config", dict]:
+        """Load configuration from a TOML file, with env var overrides.
+
+        Returns:
+            Tuple of (Config, raw_toml_dict).
+        """
         try:
             import tomllib
         except ImportError:
             import tomli as tomllib  # type: ignore
 
         if not toml_path.exists():
-            return cls()
+            return cls(), {}
 
         with open(toml_path, "rb") as f:
             toml_data = tomllib.load(f)
 
-        return cls(**toml_data)
+        return cls(**toml_data), toml_data

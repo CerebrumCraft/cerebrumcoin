@@ -20,6 +20,7 @@ from cerebrum.core.config import (
     ExchangeConfig,
     LoggingConfig,
     PaperTradingConfig,
+    ProfileConfig,
     RiskConfig,
     SignalConfig,
     TradingConfig,
@@ -126,7 +127,7 @@ symbols = ["BTC/USD", "ETH/USD", "SOL/USD"]
         temp_path = Path(f.name)
 
     try:
-        config = Config.from_toml(temp_path)
+        config, raw_toml = Config.from_toml(temp_path)
 
         assert config.exchange.name == "kraken"
         assert config.exchange.testnet is True
@@ -134,6 +135,8 @@ symbols = ["BTC/USD", "ETH/USD", "SOL/USD"]
         assert config.risk.max_drawdown_percent == Decimal("10.0")
         assert config.paper.initial_balance_usd == Decimal("50000.0")
         assert config.trading.symbols == ["BTC/USD", "ETH/USD", "SOL/USD"]
+        assert isinstance(raw_toml, dict)
+        assert raw_toml["exchange"]["name"] == "kraken"
 
     finally:
         temp_path.unlink()
@@ -141,11 +144,12 @@ symbols = ["BTC/USD", "ETH/USD", "SOL/USD"]
 
 def test_config_from_nonexistent_toml():
     """Test loading from non-existent file returns defaults."""
-    config = Config.from_toml(Path("/nonexistent/path.toml"))
+    config, raw_toml = Config.from_toml(Path("/nonexistent/path.toml"))
 
     # Should return default config
     assert config.exchange.name == "kraken"
     assert config.paper.initial_balance_usd == Decimal("10000.0")
+    assert raw_toml == {}
 
 
 def test_config_partial_toml():
@@ -160,7 +164,7 @@ max_drawdown_percent = "3.0"
         temp_path = Path(f.name)
 
     try:
-        config = Config.from_toml(temp_path)
+        config, _raw_toml = Config.from_toml(temp_path)
 
         # Overridden value
         assert config.risk.max_drawdown_percent == Decimal("3.0")
@@ -195,7 +199,7 @@ format = "console"
         temp_path = Path(f.name)
 
     try:
-        config = Config.from_toml(temp_path)
+        config, _raw_toml = Config.from_toml(temp_path)
 
         assert config.logging.level == "DEBUG"
         assert config.logging.format == "console"
@@ -217,7 +221,7 @@ def test_paper_toml_tuned_parameters():
     if not paper_config_path.exists():
         pytest.skip("paper.toml not found - may be in different environment")
 
-    config = Config.from_toml(paper_config_path)
+    config, _raw_toml = Config.from_toml(paper_config_path)
 
     # Verify tuned signal parameters (tighter than defaults)
     assert config.signals.aggregation_threshold == Decimal("0.4"), \
@@ -267,7 +271,7 @@ def test_paper_toml_loads_four_symbols():
     if not paper_config_path.exists():
         pytest.skip("paper.toml not found")
 
-    config = Config.from_toml(paper_config_path)
+    config, _raw_toml = Config.from_toml(paper_config_path)
 
     expected = ["BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD"]
     assert config.trading.symbols == expected, (
@@ -282,7 +286,7 @@ def test_default_toml_loads_four_symbols():
     if not default_config_path.exists():
         pytest.skip("config/default.toml not found")
 
-    config = Config.from_toml(default_config_path)
+    config, _raw_toml = Config.from_toml(default_config_path)
 
     expected = ["BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD"]
     assert config.trading.symbols == expected, (

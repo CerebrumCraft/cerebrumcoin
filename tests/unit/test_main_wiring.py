@@ -52,7 +52,8 @@ def _load_config():
     from cerebrum.core.config import Config
     paper = Path(__file__).parents[2] / "config" / "paper.toml"
     default = Path(__file__).parents[2] / "config" / "default.toml"
-    return Config.from_toml(paper if paper.exists() else default)
+    config, _raw_toml = Config.from_toml(paper if paper.exists() else default)
+    return config
 
 
 def _make_fill(strategy_id: str | None, symbol: str = "BTC/USD") -> FillEvent:
