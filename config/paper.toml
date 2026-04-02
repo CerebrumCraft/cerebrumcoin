@@ -90,3 +90,37 @@ enabled = true
 # paper = true
 # symbols = ["AAPL", "MSFT", "NVDA"]
 # websocket_enabled = true
+
+# Hot-swappable risk profiles (Phase 14A, DEC-PROFILE-001)
+# Switch profiles at runtime via ProfileManager.apply_profile(name).
+# Only fields listed here are overridden — unset fields keep the base [risk]/[signals] values.
+
+[profiles.conservative]
+# Smallest positions, tightest stops, long cooldowns — for choppy or unknown-regime sessions.
+position_size_percent = "3.0"
+stop_loss_percent = "0.8"
+take_profit_percent = "2.0"
+max_position_age_minutes = 60
+post_fill_cooldown_seconds = 3600
+min_signal_strength = "0.75"
+aggregation_threshold = "0.5"
+
+[profiles.moderate]
+# Current paper.toml values — the proven baseline from 20 sessions of tuning.
+position_size_percent = "5.0"
+stop_loss_percent = "1.0"
+take_profit_percent = "3.0"
+max_position_age_minutes = 120
+post_fill_cooldown_seconds = 1800
+min_signal_strength = "0.65"
+aggregation_threshold = "0.4"
+
+[profiles.aggressive]
+# Larger positions, wider stops, shorter cooldowns — for high-volatility trending sessions.
+position_size_percent = "7.0"
+stop_loss_percent = "1.5"
+take_profit_percent = "4.0"
+max_position_age_minutes = 180
+post_fill_cooldown_seconds = 900
+min_signal_strength = "0.55"
+aggregation_threshold = "0.35"

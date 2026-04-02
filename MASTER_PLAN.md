@@ -513,6 +513,7 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 | DEC-TUNE-007 | Remove BTC/USD from breakout strategy | Same as DEC-TUNE-006 — BTC/USD better served by mean_reversion and news_driven. Breakout keeps ETH and SOL where shorter-timeframe signals perform better | 2026-03-30 |
 | DEC-CONDUCTOR-005 | Normalize LLM allocation fractions to percentages | Haiku returns 0.25 instead of 25 for "25%". Rather than relying on prompt engineering, detect sum(allocations) <= 2 and multiply by 100. Single normalization point in _apply_allocations() since it is called by all allocation sources | 2026-03-30 |
 | DEC-TEST-CLEANUP-001 | Tests for fix_orphaned_trades using in-memory SQLite | fix_orphaned_trades uses raw sqlite3. Tests use an in-memory SQLite DB with seeded trade data to verify mutation correctness without touching the production database. Follows DEC-TEST-016 / DEC-ANALYZE-002 pattern. All assertions read back from DB after function returns | 2026-03-30 |
+| DEC-CLEANUP-001 | One-time orphaned-trade fix using pure stdlib sqlite3 | The cleanup must not import any cerebrum module because StateManager is async and requires an event loop. A self-contained stdlib script can be run outside the venv by any operator without spinning up the full system. signal_snapshot JSON is patched in Python (not SQL) so that NULL and malformed values are handled consistently | 2026-03-30 |
 | DEC-TEST-COMMISSION-001 | Test CommissionGateRule with real EventBus and injected prices | CommissionGateRule self-subscribes to MARKET_DATA events. Testing with a real EventBus validates subscription wiring and per-symbol deque logic. No wall-clock dependency — tests inject prices directly via bus.publish() and verify evaluate() outcomes | 2026-03-30 |
 
 ### Strategy Consolidation: min_trade_value_usd (IN PROGRESS)
@@ -531,6 +532,24 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 |----|----------|-----------|------|
 | DEC-SIZING-001 | Minimum trade value floor to prevent commission-killed micro-trades | Multi-strategy mode with $1,666 capital per strategy generates $20 trades where 0.32% round-trip commission eats 33% of wins. Floor at $100 keeps commission below 10%. Check uses strength-adjusted value (not raw target) since that is the actual amount risked. min_trade_value_usd=None default preserves backward compatibility | 2026-03-30 |
 | DEC-TEST-SIZING-001 | Tests for PositionSizingRule min_trade_value_usd using simple MockPortfolio | PositionSizingRule.evaluate() is a pure synchronous function — no event bus needed. Tests use a minimal MockPortfolio class (2 methods) rather than MagicMock to keep intent clear. All 4 cases: above-min MODIFY, below-min DENY, None MODIFY (backward compat), strength-adjusted DENY | 2026-03-30 |
+| DEC-TRACK-002 | Orphan trade cleanup at startup | Disabled strategies accumulate OPEN trades across sessions. Without cleanup, a future session that re-enabling a strategy would pick up stale OPEN trades and immediately close them on the first SELL fill, producing phantom P&L. Cleaning at startup (before the event loop begins) prevents this contamination | 2026-03-31 |
+| DEC-TUNE-008 | Disable momentum, breakout, news_driven — signal cannibalization | Investigation of 219 multi-strategy trades (Mar 24-30) showed all 4 unfiltered strategies (momentum, mean_reversion, breakout, news_driven) consume identical RSI/MACD/BB/VWAP signals. 78 simultaneous entry pairs confirmed: same signal, same symbol, same second, all lost money together. Only mean_reversion and range_trading have differentiated signal sources and survive consolidation | 2026-03-31 |
+
+---
+
+### Phase 14: Hot-Swappable Profile Selector (IN PROGRESS)
+**Goal**: Runtime risk profile switching without restarting the process. Three predefined profiles (conservative, moderate, aggressive) cover the spectrum from choppy markets to trending sessions. Dashboard UI in Phase 14B.
+
+- [x] 14A: ProfileConfig schema expansion + ProfileManager + TOML profiles (DEC-PROFILE-001, DEC-PROFILE-002)
+- [ ] 14B: Dashboard profile selector UI (dropdown + apply button)
+- [ ] 14C: Wire ProfileManager into main.py startup
+
+**Phase 14 Decisions:**
+
+| ID | Decision | Rationale | Date |
+|----|----------|-----------|------|
+| DEC-PROFILE-001 | Three predefined profiles in paper.toml: conservative / moderate / aggressive | 20 sessions of tuning data confirm the moderate profile as the proven baseline. Conservative tightens all thresholds for choppy/unknown-regime sessions. Aggressive widens them for high-volatility trending sessions. Three discrete profiles are easier to reason about and switch between than a continuous tuning surface | 2026-04-01 |
+| DEC-PROFILE-002 | ProfileManager mutates private pipeline attributes for hot-swap | Two options: (A) add public setters to each component class, (B) ProfileManager mutates private attrs directly. Chose B: zero changes to component classes; single choke-point for all overrides; easy to extend. Trade-off: relies on private naming convention; documented in manager.py with full attribute map and rationale | 2026-04-01 |
 
 ---
 

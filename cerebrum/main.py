@@ -570,6 +570,19 @@ class CerebrumCoin:
         )
         await self.conductor.start()
 
+        # --- ProfileManager (hot-swappable risk profiles) ---
+        from cerebrum.profiles.manager import ProfileManager
+        self.profile_manager = ProfileManager(
+            registry=self.strategy_registry,
+            raw_toml=self._raw_toml,
+            default_profile="moderate",
+        )
+        self._log.info(
+            "profile_manager_started",
+            profiles=self.profile_manager.list_profiles(),
+            active=self.profile_manager.get_active_profile(),
+        )
+
         # --- WebDashboard (optional — requires fastapi/uvicorn) ---
         try:
             from cerebrum.dashboard.web import WebDashboard
@@ -580,6 +593,7 @@ class CerebrumCoin:
                 global_portfolio=self.strategy_registry.global_portfolio,
                 paper_adapter=self.paper_adapter,
                 port=7980,
+                profile_manager=self.profile_manager,
             )
             await self.web_dashboard.start()
             self._log.info("web_dashboard_started", url="http://127.0.0.1:7980")
