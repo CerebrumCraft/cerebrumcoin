@@ -142,5 +142,5 @@ MEAN_REVERSION_CONFIG = StrategyConfig(
         "min_tp_percent": "0.2",
     },
     initial_balance=Decimal("5000.00"),  # DEC-TUNE-008: 2-strategy split — $5,000 each (was $1,667 across 6)
-    symbols=["BTC/USD", "ETH/USD"],
+    symbols=["ETH/USD", "SOL/USD", "DOGE/USD"],  # DEC-TUNE-009: BTC removed (8% WR over 14 days)
 )

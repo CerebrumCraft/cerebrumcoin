@@ -249,12 +249,16 @@ class TestStrategyConfigs:
         for cfg in (MOMENTUM_CONFIG, MEAN_REVERSION_CONFIG, BREAKOUT_CONFIG):
             assert "ETH/USD" in cfg.symbols
 
-    def test_btc_only_in_mean_reversion(self):
-        """BTC/USD removed from momentum (DEC-TUNE-006) and breakout (DEC-TUNE-007).
-        mean_reversion retains BTC/USD as top Session 18 performer (+$877)."""
+    def test_btc_removed_from_all_strategies(self):
+        """BTC/USD removed from momentum (DEC-TUNE-006), breakout (DEC-TUNE-007),
+        and mean_reversion (DEC-TUNE-009: 8% WR over 14 days).
+        mean_reversion now trades ETH/USD, SOL/USD, DOGE/USD."""
         assert "BTC/USD" not in MOMENTUM_CONFIG.symbols
-        assert "BTC/USD" in MEAN_REVERSION_CONFIG.symbols
+        assert "BTC/USD" not in MEAN_REVERSION_CONFIG.symbols
         assert "BTC/USD" not in BREAKOUT_CONFIG.symbols
+        assert "ETH/USD" in MEAN_REVERSION_CONFIG.symbols
+        assert "SOL/USD" in MEAN_REVERSION_CONFIG.symbols
+        assert "DOGE/USD" in MEAN_REVERSION_CONFIG.symbols
 
     def test_all_have_technical_weight(self):
         for cfg in (MOMENTUM_CONFIG, MEAN_REVERSION_CONFIG, BREAKOUT_CONFIG):
