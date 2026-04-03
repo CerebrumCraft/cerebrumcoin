@@ -160,6 +160,13 @@ class RiskConfig(BaseSettings):
             "Raise to be more conservative; lower to allow thinner-margin trades."
         )
     )
+    max_open_positions_per_symbol: int = Field(
+        default=2,
+        description=(
+            "Maximum concurrent open positions per (strategy, symbol) pair. "
+            "Prevents position pile-up."
+        ),
+    )
 
     @field_validator("max_drawdown_percent", "position_size_percent")
     @classmethod
@@ -318,6 +325,14 @@ class RegimeConfig(BaseSettings):
     min_hold_count: int = Field(
         default=3,
         description="Consecutive readings required before committing to a regime transition (DEC-REGIME-005)"
+    )
+    halt_regimes: list[str] = Field(
+        default=["BEAR", "UNKNOWN"],
+        description=(
+            "Regimes that trigger full trade halt. UNKNOWN blocks trading "
+            "before the regime detector has enough data (startup/reconnect). "
+            "DEC-REGIME-006."
+        ),
     )
 
     model_config = SettingsConfigDict(

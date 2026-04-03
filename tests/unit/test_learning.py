@@ -87,6 +87,7 @@ async def test_trade_tracker_lifecycle(event_bus, state_manager):
         fill_price=Decimal("50000"),
         commission=Decimal("5"),
         commission_asset="USDT",
+        strategy_id="mean_reversion",  # DEC-CLEANUP-002: guard rejects fills with no strategy_id
     )
     await event_bus.publish(fill_open)
 
@@ -117,6 +118,7 @@ async def test_trade_tracker_lifecycle(event_bus, state_manager):
         fill_price=Decimal("51000"),
         commission=Decimal("5"),
         commission_asset="USDT",
+        strategy_id="mean_reversion",  # DEC-CLEANUP-002: guard rejects fills with no strategy_id
     )
     await event_bus.publish(fill_close)
 
@@ -346,6 +348,7 @@ async def test_tracker_sell_fill_closes_matching_buy_trade(event_bus, state_mana
         fill_price=Decimal("60000"),
         commission=Decimal("12"),
         commission_asset="USDT",
+        strategy_id="mean_reversion",  # DEC-CLEANUP-002: guard rejects fills with no strategy_id
     )
     await event_bus.publish(buy_fill)
 
@@ -370,6 +373,7 @@ async def test_tracker_sell_fill_closes_matching_buy_trade(event_bus, state_mana
         fill_price=Decimal("61000"),
         commission=Decimal("12"),
         commission_asset="USDT",
+        strategy_id="mean_reversion",  # DEC-CLEANUP-002: guard rejects fills with no strategy_id
     )
     await event_bus.publish(sell_fill)
 
@@ -404,7 +408,10 @@ async def test_tracker_unmatched_sell_fill_is_skipped(event_bus, state_manager):
     await tracker.start()
     await asyncio.sleep(0.05)
 
-    # SELL fill with no preceding BUY — should be silently skipped
+    # SELL fill with no preceding BUY — should be silently skipped.
+    # Note: this fill has no strategy_id, so it will be skipped by DEC-CLEANUP-002
+    # before even reaching the unmatched-sell check. The observable outcome is the
+    # same: no trade is created. We also test the case with strategy_id below.
     unmatched_sell = FillEvent(
         event_type=EventType.FILL,
         timestamp=3000.0,
@@ -415,6 +422,7 @@ async def test_tracker_unmatched_sell_fill_is_skipped(event_bus, state_manager):
         fill_price=Decimal("3500"),
         commission=Decimal("3.5"),
         commission_asset="USDT",
+        strategy_id="mean_reversion",  # DEC-CLEANUP-002: provide strategy_id so guard passes
     )
     await event_bus.publish(unmatched_sell)
     await asyncio.sleep(0.3)
@@ -437,6 +445,7 @@ async def test_tracker_unmatched_sell_fill_is_skipped(event_bus, state_manager):
         fill_price=Decimal("3600"),
         commission=Decimal("3.6"),
         commission_asset="USDT",
+        strategy_id="mean_reversion",  # DEC-CLEANUP-002: guard rejects fills with no strategy_id
     )
     await event_bus.publish(real_buy)
 

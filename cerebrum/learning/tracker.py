@@ -92,6 +92,18 @@ class TradeTracker:
         Debug logging (Session 7): log open trade count and matched trade ID on
         every fill to make FIFO matching decisions observable in session logs.
         """
+        # DEC-CLEANUP-002: skip fills with no strategy_id to prevent orphan trades.
+        strategy_id = getattr(event, 'strategy_id', None)
+        if strategy_id is None:
+            self._log.warning(
+                "null_strategy_fill_skipped",
+                symbol=event.symbol,
+                side=event.side.value,
+                order_id=event.order_id,
+                reason="no_strategy_id",
+            )
+            return
+
         # Get signal snapshot from pending orders
         signal_snapshot = self._pending_signals.pop(event.order_id, {})
 

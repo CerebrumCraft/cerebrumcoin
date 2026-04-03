@@ -39,7 +39,7 @@ position_size_percent = "5.0"  # Up from 3% — larger trades reduce commission'
 # Exit rules: tighter stop-loss to cut losses faster in sideways conditions
 stop_loss_percent = "1.0"    # 1.5 → 1.0%: session 13 0% WR, cut losses faster
 take_profit_percent = "3.0"  # 3.0% reachable in normal ranges; 4.0% never triggered
-max_position_age_minutes = 120
+max_position_age_minutes = 60  # DEC-EXIT-005: >2hr holds -$216/14d (25% WR); 15-60min 40% WR
 # Post-fill cooldown: longer cooldown to reduce churn in range-bound markets
 post_fill_cooldown_seconds = 1800  # 900 → 1800: 30 min cooldown in choppy markets
 # Volatility gate: deny orders when market too flat to cover commission (0.32%) + slippage (0.1%)
@@ -57,6 +57,7 @@ tp_multiplier = "1.5"   # effective_tp = range_pct * 1.5 (e.g. 0.4% range -> 0.6
 min_tp_percent = "0.3"  # Floor: never set TP below 0.3% (covers commission)
 # Commission gate: deny orders when range < commission*2*ratio (0.16%*2*3.0 = 0.96% threshold)
 min_profit_to_commission_ratio = "3.0"  # 3x round-trip commission required in recent range
+max_open_positions_per_symbol = 2  # DEC-RISK-005: cap prevents position pile-up
 
 [monitoring]
 dashboard_enabled = true
@@ -75,6 +76,7 @@ ma_period = 10
 buy_suppression_factor = "0.2"
 buy_suppression_min_confidence = "0.8"
 bear_halt_min_confidence = "0.7"   # Halt all trading when BEAR confidence >= 0.7 (session 4: 39% WR in BEAR)
+halt_regimes = ["BEAR", "UNKNOWN"]  # DEC-REGIME-006: block trading before regime detector has data
 long_window_size = 6000           # 3000 → 6000: ~100 min long window for macro trend
 long_cumulative_threshold = 0.001  # 0.1% drift in long window triggers BEAR/BULL
 min_hold_count = 3                 # Hysteresis: require 3 consecutive readings before regime transition
