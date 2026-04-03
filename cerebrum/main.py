@@ -64,6 +64,7 @@ from cerebrum.risk.rules import (
     CommissionGateRule,
     MacroVolatilityGateRule,
     MaxDrawdownRule,
+    MaxOpenPositionsRule,
     MaxPositionSizeRule,
     MaxTotalExposureRule,
     MinSignalStrengthRule,
@@ -386,6 +387,10 @@ class CerebrumCoin:
                 cooldown_seconds=config.risk.post_fill_cooldown_seconds,
                 bus=self.bus,
             ),
+            MaxOpenPositionsRule(
+                max_positions=config.risk.max_open_positions_per_symbol,
+                bus=self.bus,
+            ),
             VolatilityGateRule(
                 min_range_pct=config.risk.volatility_gate_min_range_pct,
                 window_size=config.risk.volatility_gate_window_size,
@@ -494,6 +499,10 @@ class CerebrumCoin:
             # (DEC-TUNE-008). Down from 40 (5-strategy budget).
             GlobalTradeRateLimitRule(
                 max_trades_per_hour=15,
+                bus=self.bus,
+            ),
+            MaxOpenPositionsRule(
+                max_positions=config.risk.max_open_positions_per_symbol,
                 bus=self.bus,
             ),
         ]

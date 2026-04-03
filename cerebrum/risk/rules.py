@@ -1156,3 +1156,71 @@ class CommissionGateRule(RiskRule):
             ),
             risk_level=RiskLevel.LOW,
         )
+
+
+class MaxOpenPositionsRule(RiskRule):
+    """
+    Cap the number of open positions per (strategy, symbol) pair.
+
+    Subscribes to FillEvents and maintains an in-memory counter. BUY fills
+    increment, SELL fills decrement. Orders are denied when the count reaches
+    max_positions. SELL orders are always approved.
+
+    @decision DEC-RISK-005
+    @title Cap open positions per strategy/symbol
+    @status accepted
+    @rationale Session 23 data showed 10 DOGE positions piling up in mean_reversion.
+    Limit of 2 allows one position + one averaging opportunity.
+    """
+
+    def __init__(self, max_positions: int, bus: "EventBus") -> None:
+        super().__init__("max_open_positions")
+        self._max_positions = max_positions
+        self._open_counts: dict[tuple[str, str], int] = {}
+
+        bus.subscribe(
+            EventType.FILL, self._on_fill,
+            subscriber_name="max_open_positions_rule",
+        )
+        self._log.info("max_open_positions_initialized", max_positions=max_positions)
+
+    async def _on_fill(self, event: Event) -> None:
+        if not isinstance(event, FillEvent):
+            return
+        strategy = getattr(event, "strategy_id", None) or "unknown"
+        key = (strategy, event.symbol)
+        if event.side == Side.BUY:
+            self._open_counts[key] = self._open_counts.get(key, 0) + 1
+        else:
+            self._open_counts[key] = max(0, self._open_counts.get(key, 0) - 1)
+        self._log.debug(
+            "position_count_updated", strategy=strategy, symbol=event.symbol,
+            side=event.side.value, open_count=self._open_counts[key],
+        )
+
+    def evaluate(
+        self,
+        signal: SignalEvent,
+        order: OrderEvent,
+        portfolio: PortfolioTracker,
+    ) -> RuleResult:
+        if order.side == Side.SELL:
+            return RuleResult(
+                decision=RuleDecision.APPROVE,
+                reason="Sell always approved (closing position)",
+                risk_level=RiskLevel.LOW,
+            )
+        strategy = getattr(order, "strategy_id", None) or "unknown"
+        key = (strategy, order.symbol)
+        count = self._open_counts.get(key, 0)
+        if count >= self._max_positions:
+            return RuleResult(
+                decision=RuleDecision.DENY,
+                reason=f"Max open positions reached for {strategy}/{order.symbol}: {count} >= {self._max_positions}",
+                risk_level=RiskLevel.MEDIUM,
+            )
+        return RuleResult(
+            decision=RuleDecision.APPROVE,
+            reason=f"Open positions {count}/{self._max_positions} for {strategy}/{order.symbol}",
+            risk_level=RiskLevel.LOW,
+        )

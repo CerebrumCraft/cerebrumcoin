@@ -160,6 +160,13 @@ class RiskConfig(BaseSettings):
             "Raise to be more conservative; lower to allow thinner-margin trades."
         )
     )
+    max_open_positions_per_symbol: int = Field(
+        default=2,
+        description=(
+            "Maximum concurrent open positions per (strategy, symbol) pair. "
+            "Prevents position pile-up."
+        ),
+    )
 
     @field_validator("max_drawdown_percent", "position_size_percent")
     @classmethod
