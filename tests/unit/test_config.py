@@ -240,8 +240,8 @@ def test_paper_toml_tuned_parameters():
         "stop_loss_percent should be 1.0 (down from 1.5, session 13 0% WR — cut losses faster)"
     assert config.risk.take_profit_percent == Decimal("3.0"), \
         "take_profit_percent should be 3.0 (new exit rule)"
-    assert config.risk.max_position_age_minutes == 120, \
-        "max_position_age_minutes should be 120 (2 hour time-based exit)"
+    assert config.risk.max_position_age_minutes == 60, \
+        "max_position_age_minutes should be 60 (DEC-EXIT-005: >2hr holds 25% WR; 15-60min 40% WR)"
     assert config.risk.position_size_percent == Decimal("5.0"), \
         "position_size_percent should be 5.0 (tuned in session 4 to reduce commission drag on larger trades)"
     assert config.risk.post_fill_cooldown_seconds == 1800, \
