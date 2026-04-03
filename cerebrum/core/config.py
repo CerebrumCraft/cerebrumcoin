@@ -319,6 +319,14 @@ class RegimeConfig(BaseSettings):
         default=3,
         description="Consecutive readings required before committing to a regime transition (DEC-REGIME-005)"
     )
+    halt_regimes: list[str] = Field(
+        default=["BEAR", "UNKNOWN"],
+        description=(
+            "Regimes that trigger full trade halt. UNKNOWN blocks trading "
+            "before the regime detector has enough data (startup/reconnect). "
+            "DEC-REGIME-006."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="REGIME_",

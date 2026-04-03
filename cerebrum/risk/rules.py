@@ -452,7 +452,8 @@ class PostFillCooldownRule(RiskRule):
 
 class RegimeTradeHaltRule(RiskRule):
     """
-    Halt all trading for a symbol when regime is BEAR with high confidence.
+    Halt all trading for a symbol when regime is BEAR with high confidence,
+    or when regime is UNKNOWN (startup/reconnect window).
 
     @decision DEC-REGIME-004
     @title Trade halt in BEAR regime
@@ -465,19 +466,40 @@ class RegimeTradeHaltRule(RiskRule):
     and maintains a per-symbol registry of the current regime and confidence.
     Orders for any symbol currently in BEAR with confidence >= min_confidence
     are denied regardless of direction (buy or sell).
+
+    @decision DEC-REGIME-006
+    @title Block trading during UNKNOWN regime (startup/reconnect window)
+    @status accepted
+    @rationale UNKNOWN regime trades lost $168.50 over 14 days (57 trades, 12% WR).
+    The regime detector starts each symbol at UNKNOWN until ~30 ticks arrive.
+    Making halt_regimes configurable lets operators add UNKNOWN without hardcoding.
+    UNKNOWN skips the confidence check — it has no meaningful confidence value
+    and should always be blocked when included in halt_regimes. No regime data
+    yet (symbol not seen) is treated the same as UNKNOWN for the same reason:
+    the system hasn't observed enough ticks to form a view.
     """
 
-    def __init__(self, min_confidence: Decimal, bus: "EventBus") -> None:
+    def __init__(
+        self,
+        min_confidence: Decimal,
+        bus: "EventBus",
+        halt_regimes: set[str] | None = None,
+    ) -> None:
         """
         Initialize regime trade halt rule.
 
         Args:
-            min_confidence: Minimum BEAR confidence required to halt trading.
-                            BEAR detections below this threshold are ignored.
+            min_confidence: Minimum confidence required to halt trading for
+                            confidence-gated regimes (e.g. BEAR). Regimes like
+                            UNKNOWN bypass the confidence check entirely.
             bus: Event bus to subscribe to REGIME_CHANGE events.
+            halt_regimes: Set of regime names that trigger a full trade halt.
+                          Defaults to {"BEAR"} for backward compatibility.
+                          Pass {"BEAR", "UNKNOWN"} to also block startup trades.
         """
         super().__init__("regime_trade_halt")
         self._min_confidence = min_confidence
+        self._halt_regimes: set[str] = halt_regimes if halt_regimes is not None else {"BEAR"}
         # symbol -> (regime, confidence)
         self._regimes: dict[str, tuple[str, Decimal]] = {}
 
@@ -490,6 +512,7 @@ class RegimeTradeHaltRule(RiskRule):
         self._log.info(
             "regime_halt_rule_initialized",
             min_confidence=float(min_confidence),
+            halt_regimes=sorted(self._halt_regimes),
         )
 
     async def _on_regime_change(self, event: Event) -> None:
@@ -512,10 +535,21 @@ class RegimeTradeHaltRule(RiskRule):
         order: OrderEvent,
         portfolio: PortfolioTracker,
     ) -> RuleResult:
-        """Deny the order if the symbol is currently in a high-confidence BEAR regime."""
+        """Deny the order if the symbol is in a halted regime or has no regime data yet."""
         symbol = order.symbol
         regime_info = self._regimes.get(symbol)
+
+        # No data yet: treat as UNKNOWN — deny if UNKNOWN is in halt_regimes
         if regime_info is None:
+            if "UNKNOWN" in self._halt_regimes:
+                return RuleResult(
+                    decision=RuleDecision.DENY,
+                    reason=(
+                        f"Trading halted: {symbol} regime UNKNOWN "
+                        f"(no regime data received yet — startup window)"
+                    ),
+                    risk_level=RiskLevel.HIGH,
+                )
             return RuleResult(
                 decision=RuleDecision.APPROVE,
                 reason="No regime data — trading allowed",
@@ -523,11 +557,24 @@ class RegimeTradeHaltRule(RiskRule):
             )
 
         regime, confidence = regime_info
-        if regime == "BEAR" and confidence >= self._min_confidence:
+
+        # UNKNOWN regime: skip confidence check — block unconditionally when halted
+        if regime == "UNKNOWN" and "UNKNOWN" in self._halt_regimes:
             return RuleResult(
                 decision=RuleDecision.DENY,
                 reason=(
-                    f"Trading halted: {symbol} in BEAR regime "
+                    f"Trading halted: {symbol} in UNKNOWN regime "
+                    f"(regime detector still warming up)"
+                ),
+                risk_level=RiskLevel.HIGH,
+            )
+
+        # Other halted regimes (e.g. BEAR): apply confidence gate
+        if regime in self._halt_regimes and confidence >= self._min_confidence:
+            return RuleResult(
+                decision=RuleDecision.DENY,
+                reason=(
+                    f"Trading halted: {symbol} in {regime} regime "
                     f"(confidence={float(confidence):.2f}, "
                     f"threshold={float(self._min_confidence):.2f})"
                 ),

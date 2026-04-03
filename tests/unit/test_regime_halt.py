@@ -243,3 +243,52 @@ async def test_reason_includes_confidence_and_threshold(halt_rule):
     assert "0.85" in result.reason
     assert "0.70" in result.reason
     assert "BTC/USD" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# DEC-REGIME-006: UNKNOWN regime halt tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unknown_regime_halts_trading(bus):
+    """UNKNOWN regime should be halted when included in halt_regimes."""
+    rule = RegimeTradeHaltRule(
+        min_confidence=Decimal("0.7"),
+        bus=bus,
+        halt_regimes={"BEAR", "UNKNOWN"},
+    )
+    event = _make_regime_event("BTC/USD", "UNKNOWN", "0.5")
+    await rule._on_regime_change(event)
+
+    result = rule.evaluate(_make_signal(), _make_order("BTC/USD", "buy"), None)  # type: ignore[arg-type]
+    assert result.decision == RuleDecision.DENY
+    assert "UNKNOWN" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_unknown_regime_allowed_when_not_in_halt_regimes(bus):
+    """UNKNOWN should be allowed when halt_regimes only contains BEAR."""
+    rule = RegimeTradeHaltRule(
+        min_confidence=Decimal("0.7"),
+        bus=bus,
+        halt_regimes={"BEAR"},
+    )
+    event = _make_regime_event("BTC/USD", "UNKNOWN", "0.5")
+    await rule._on_regime_change(event)
+
+    result = rule.evaluate(_make_signal(), _make_order("BTC/USD", "buy"), None)  # type: ignore[arg-type]
+    assert result.decision == RuleDecision.APPROVE
+
+
+@pytest.mark.asyncio
+async def test_no_regime_data_halts_when_unknown_in_halt_regimes(bus):
+    """When no regime event received yet and UNKNOWN is in halt_regimes, should deny."""
+    rule = RegimeTradeHaltRule(
+        min_confidence=Decimal("0.7"),
+        bus=bus,
+        halt_regimes={"BEAR", "UNKNOWN"},
+    )
+    # No regime event published — _regimes is empty for this symbol
+    result = rule.evaluate(_make_signal(), _make_order("BTC/USD", "buy"), None)  # type: ignore[arg-type]
+    assert result.decision == RuleDecision.DENY

@@ -75,6 +75,7 @@ ma_period = 10
 buy_suppression_factor = "0.2"
 buy_suppression_min_confidence = "0.8"
 bear_halt_min_confidence = "0.7"   # Halt all trading when BEAR confidence >= 0.7 (session 4: 39% WR in BEAR)
+halt_regimes = ["BEAR", "UNKNOWN"]  # DEC-REGIME-006: block trading before regime detector has data
 long_window_size = 6000           # 3000 → 6000: ~100 min long window for macro trend
 long_cumulative_threshold = 0.001  # 0.1% drift in long window triggers BEAR/BULL
 min_hold_count = 3                 # Hysteresis: require 3 consecutive readings before regime transition

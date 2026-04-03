@@ -380,6 +380,7 @@ class CerebrumCoin:
             RegimeTradeHaltRule(
                 min_confidence=Decimal(str(config.regime.bear_halt_min_confidence)),
                 bus=self.bus,
+                halt_regimes=set(config.regime.halt_regimes),
             ),
             PostFillCooldownRule(
                 cooldown_seconds=config.risk.post_fill_cooldown_seconds,
@@ -462,6 +463,7 @@ class CerebrumCoin:
             RegimeTradeHaltRule(
                 min_confidence=Decimal(str(config.regime.bear_halt_min_confidence)),
                 bus=self.bus,
+                halt_regimes=set(config.regime.halt_regimes),
             ),
             VolatilityGateRule(
                 min_range_pct=config.risk.volatility_gate_min_range_pct,
