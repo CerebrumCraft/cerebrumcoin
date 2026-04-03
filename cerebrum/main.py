@@ -594,6 +594,7 @@ class CerebrumCoin:
                 paper_adapter=self.paper_adapter,
                 port=7980,
                 profile_manager=self.profile_manager,
+                db_path=Path("data/cerebrum.db"),
             )
             await self.web_dashboard.start()
             self._log.info("web_dashboard_started", url="http://127.0.0.1:7980")

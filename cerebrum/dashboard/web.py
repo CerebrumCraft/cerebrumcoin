@@ -159,6 +159,7 @@ class WebDashboard:
         port: int = 8080,
         paper_adapter: "PaperTradingAdapter | None" = None,
         profile_manager: "ProfileManager | None" = None,
+        db_path: "Path | None" = None,
     ) -> None:
         """
         Initialise the web dashboard.
@@ -179,6 +180,11 @@ class WebDashboard:
                 endpoints are fully operational. When None (Phase 14C wires it
                 from main.py), those endpoints return {"available": false}.
                 See DEC-DASH-005.
+            db_path: Optional path to cerebrum.db — when provided, seeds
+                _first_fill_time from MIN(entry_time) in the trades table so
+                "Days Trading" survives bot restarts. When None (default), the
+                metric starts from the first fill observed in this session.
+                See DEC-DASH-006.
         """
         if not _FASTAPI_AVAILABLE:
             raise ImportError(
@@ -215,7 +221,10 @@ class WebDashboard:
         self._commission_totals: dict[str, float] = {}
 
         # Phase 12F: timestamp of first fill (for "days trading" criterion)
+        # Seeded from the trades DB on init so restarts don't reset the clock.
         self._first_fill_time: float | None = None
+        if db_path is not None:
+            self._seed_first_fill_time(db_path)
 
         self._log = logger.bind(component="web_dashboard")
         self._setup_routes()
@@ -232,6 +241,35 @@ class WebDashboard:
             summary = self._paper_adapter.get_portfolio_summary()
             return Decimal(summary["total_value_usd"])
         return self._global_portfolio.get_total_equity()
+
+    def _seed_first_fill_time(self, db_path: "Path") -> None:
+        """Seed _first_fill_time from the trades DB so restarts don't reset the clock.
+
+        @decision DEC-DASH-006
+        @title Seed "Days Trading" from MIN(entry_time) in trades DB on init
+        @status accepted
+        @rationale _first_fill_time was previously in-memory only, resetting to
+        zero on every restart and making the "Days Trading >= 30" go-live criterion
+        unreachable in practice. On __init__ we query MIN(entry_time) from the
+        trades table — a single cheap aggregate query — and pre-seed the value.
+        sqlite3 is stdlib, adds no dependency. Wrapped in try/except so a missing
+        or empty DB silently falls back to in-memory tracking (first live fill
+        sets the clock). This approach is read-only on init and does not affect
+        any write path.
+        """
+        import sqlite3
+
+        try:
+            conn = sqlite3.connect(str(db_path))
+            try:
+                row = conn.execute("SELECT MIN(entry_time) FROM trades").fetchone()
+                if row and row[0] is not None:
+                    self._first_fill_time = float(row[0])
+            finally:
+                conn.close()
+        except Exception:
+            # DB missing, locked, or schema mismatch — fall back to in-memory
+            pass
 
     # ------------------------------------------------------------------
     # Lifecycle

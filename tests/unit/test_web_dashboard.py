@@ -914,6 +914,90 @@ class TestScorecardEndpoint:
         # Has data now, but days_trading < 30, fill_count < 50 → NO-GO
         assert data["verdict"] == "NO-GO"
 
+    def test_days_trading_seeded_from_db(self, bus, registry, conductor, global_portfolio, tmp_path):
+        """DEC-DASH-006: days_trading > 0 after restart when trades DB has prior fills.
+
+        Creates a real SQLite DB with a trade entry_time 10 days in the past,
+        passes db_path to WebDashboard, and verifies /api/scorecard reports
+        days_trading >= 10 without any FillEvent being fired in this session.
+        """
+        import sqlite3
+        import time
+
+        # Build a minimal trades table with one old entry
+        db = tmp_path / "cerebrum.db"
+        ten_days_ago = time.time() - (10 * 86400)
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE trades (id INTEGER PRIMARY KEY, entry_time REAL)"
+        )
+        conn.execute("INSERT INTO trades (entry_time) VALUES (?)", (ten_days_ago,))
+        conn.commit()
+        conn.close()
+
+        dash = WebDashboard(
+            bus=bus,
+            registry=registry,
+            conductor=conductor,
+            global_portfolio=global_portfolio,
+            host="127.0.0.1",
+            port=18099,
+            db_path=db,
+        )
+
+        # _first_fill_time must be seeded immediately — no fill events needed
+        assert dash._first_fill_time is not None
+        assert abs(dash._first_fill_time - ten_days_ago) < 1.0
+
+        # Scorecard must reflect the seeded time
+        client = TestClient(dash.app)
+        resp = client.get("/api/scorecard")
+        assert resp.status_code == 200
+        data = resp.json()
+        days_criterion = next(
+            c for c in data["criteria"] if "Days" in c["name"]
+        )
+        # "current" is formatted as a string (e.g. "10.0") — parse before comparing
+        assert float(days_criterion["current"]) >= 10.0
+
+    def test_days_trading_defaults_zero_when_no_db(self, bus, registry, conductor, global_portfolio):
+        """Without db_path, _first_fill_time stays None and days_trading is 0."""
+        dash = WebDashboard(
+            bus=bus,
+            registry=registry,
+            conductor=conductor,
+            global_portfolio=global_portfolio,
+            host="127.0.0.1",
+            port=18098,
+        )
+        assert dash._first_fill_time is None
+
+        client = TestClient(dash.app)
+        resp = client.get("/api/scorecard")
+        data = resp.json()
+        days_criterion = next(
+            c for c in data["criteria"] if "Days" in c["name"]
+        )
+        # "current" is formatted as a string (e.g. "0.0") — parse before comparing
+        assert float(days_criterion["current"]) == 0.0
+
+    def test_days_trading_graceful_on_missing_db(self, bus, registry, conductor, global_portfolio, tmp_path):
+        """_seed_first_fill_time swallows errors for missing/empty DB paths."""
+        nonexistent = tmp_path / "does_not_exist.db"
+        # Should not raise — falls back to in-memory (None)
+        dash = WebDashboard(
+            bus=bus,
+            registry=registry,
+            conductor=conductor,
+            global_portfolio=global_portfolio,
+            host="127.0.0.1",
+            port=18097,
+            db_path=nonexistent,
+        )
+        # sqlite3.connect creates an empty file with no tables — MIN query fails
+        # gracefully, _first_fill_time stays None
+        assert dash._first_fill_time is None
+
 
 # ---------------------------------------------------------------------------
 # Test: Phase 12F — GET /api/commission
