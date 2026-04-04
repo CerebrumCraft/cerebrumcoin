@@ -647,3 +647,128 @@ async def test_vwap_outside_neutral_zone_produces_signal():
     assert buy_signals[-1].strength > Decimal("0.0")
 
     await b.stop()
+
+
+# ---------------------------------------------------------------------------
+# min_hold_minutes tests (DEC-EXIT-006)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exit_monitor_min_hold_blocks_sl_tp_before_threshold(bus, portfolio):
+    """SL and TP must NOT fire while position age < min_hold_minutes.
+
+    DEC-EXIT-006: A 15-minute min_hold means a position opened just now (age ~0)
+    should not trigger stop-loss or take-profit even if price crosses both thresholds.
+    """
+    monitor = ExitMonitor(
+        bus,
+        portfolio,
+        stop_loss_percent=Decimal("2.0"),
+        take_profit_percent=Decimal("3.0"),
+        max_position_age_minutes=120,
+        min_hold_minutes=15,
+    )
+
+    orders: list[OrderEvent] = []
+
+    async def collect(event):
+        if isinstance(event, OrderEvent):
+            orders.append(event)
+
+    bus.subscribe(EventType.ORDER, collect, "order_collector_mh")
+
+    symbol = "BTC/USD"
+    entry_price = Decimal("50000")
+    # Entry time is right now — age < 15 minutes
+    await _open_position(bus, symbol, Decimal("0.1"), entry_price, entry_time=time())
+
+    # Price drops 5% — would trigger 2% SL if min_hold not active
+    await _update_price(bus, symbol, entry_price * Decimal("0.95"))
+    # Price rises 5% — would trigger 3% TP if min_hold not active
+    await _update_price(bus, symbol, entry_price * Decimal("1.05"))
+
+    assert len(orders) == 0, (
+        f"Expected 0 exit orders (min_hold active), got {len(orders)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_exit_monitor_min_hold_allows_sl_tp_after_threshold(bus, portfolio):
+    """SL and TP MUST fire after position age >= min_hold_minutes.
+
+    DEC-EXIT-006: A position opened 20 minutes ago with min_hold=15 should
+    trigger stop-loss normally when price drops far enough.
+    """
+    monitor = ExitMonitor(
+        bus,
+        portfolio,
+        stop_loss_percent=Decimal("2.0"),
+        take_profit_percent=Decimal("3.0"),
+        max_position_age_minutes=120,
+        min_hold_minutes=15,
+    )
+
+    orders: list[OrderEvent] = []
+
+    async def collect(event):
+        if isinstance(event, OrderEvent):
+            orders.append(event)
+
+    bus.subscribe(EventType.ORDER, collect, "order_collector_mh2")
+
+    symbol = "ETH/USD"
+    entry_price = Decimal("3000")
+    # Entry time is 20 minutes ago — exceeds the 15-minute min_hold
+    old_entry_time = time() - 20 * 60
+    await _open_position(bus, symbol, Decimal("1.0"), entry_price, entry_time=old_entry_time)
+
+    # Price drops 3% — should trigger 2% SL (min_hold satisfied)
+    await _update_price(bus, symbol, entry_price * Decimal("0.97"))
+
+    assert len(orders) == 1, (
+        f"Expected 1 SL exit order after min_hold satisfied, got {len(orders)}"
+    )
+    assert orders[0].side == Side.SELL
+    assert "stop_loss" in orders[0].metadata.get("exit_reason", "")
+
+
+@pytest.mark.asyncio
+async def test_exit_monitor_min_hold_does_not_block_time_exit(bus, portfolio):
+    """Time-based (max_age) exit MUST fire even when min_hold is active.
+
+    DEC-EXIT-006: The min_hold guard protects against premature SL/TP, but the
+    time-based safety net must always fire to prevent indefinitely-held positions.
+    A position that is younger than min_hold but older than max_position_age
+    (contrived scenario showing the safety net) must still exit.
+    """
+    # min_hold=60 min, max_age=1 min — max_age fires first
+    monitor = ExitMonitor(
+        bus,
+        portfolio,
+        stop_loss_percent=Decimal("2.0"),
+        take_profit_percent=Decimal("3.0"),
+        max_position_age_minutes=1,
+        min_hold_minutes=60,  # 60-minute hold guard — but max_age overrides
+    )
+
+    orders: list[OrderEvent] = []
+
+    async def collect(event):
+        if isinstance(event, OrderEvent):
+            orders.append(event)
+
+    bus.subscribe(EventType.ORDER, collect, "order_collector_mh3")
+
+    symbol = "SOL/USD"
+    # Entry 10 minutes ago — exceeds max_age (1 min) but within min_hold (60 min)
+    old_entry_time = time() - 600
+    await _open_position(bus, symbol, Decimal("5.0"), Decimal("100"), entry_time=old_entry_time)
+
+    # Price is flat — no SL/TP trigger. But max_age should fire.
+    await _update_price(bus, symbol, Decimal("100"))
+
+    assert len(orders) == 1, (
+        f"Expected 1 time-exit order (max_age overrides min_hold), got {len(orders)}"
+    )
+    assert "time_exit" in orders[0].metadata.get("exit_reason", "")

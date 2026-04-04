@@ -53,6 +53,8 @@ def _create_range_exit_monitor(bus, portfolio, config, app_config):
         range_detector=detector,
         # DEC-RANGE-007: tag emitted orders so per-strategy portfolio routes fills
         strategy_id=config.name,
+        # DEC-EXIT-006: read min_hold_minutes from exit_config (default 0)
+        min_hold_minutes=int(config.exit_config.get("min_hold_minutes", 0)),
     )
     # Attach detector to monitor for external access (registry / conductor).
     monitor._range_detector = detector
@@ -70,9 +72,9 @@ RANGE_TRADING_CONFIG = StrategyConfig(
     aggregator_threshold=Decimal("0.2"),
     signal_source_filter="SupportResistance",
     risk_overrides={
-        "min_signal_strength": "0.3",
+        "min_signal_strength": "0.5",  # DEC-TUNE-012: raised from 0.3 — weaker S/R signals were generating commission-losing trades
         "position_size_percent": "5.0",  # DEC-SIZING-002: raised from 2% — at 2% × $5k = $100, any signal_strength < 1.0 caused denial. At 5% × 0.6 floor × $5k = $150, comfortably above $100 min.
-        "post_fill_cooldown_seconds": 900,  # DEC-TUNE-009: cooldown 300→900s to reduce trade frequency
+        "post_fill_cooldown_seconds": 1800,  # DEC-TUNE-010: cooldown 900→1800s (was DEC-TUNE-009: 300→900s) to further reduce trade frequency and commission drag
     },
     exit_config={
         "stop_loss_percent": "0.5",
@@ -81,8 +83,9 @@ RANGE_TRADING_CONFIG = StrategyConfig(
         "adaptive_tp": True,
         "tp_multiplier": "1.5",
         "min_tp_percent": "0.2",
+        "min_hold_minutes": 15,  # DEC-EXIT-006: skip SL/TP for first 15 min to reduce premature exits
     },
     initial_balance=Decimal("5000.00"),  # DEC-TUNE-008: 2-strategy split — $5,000 each (was $1,667 across 6)
-    symbols=["BTC/USD", "ETH/USD"],
+    symbols=["BTC/USD", "ETH/USD", "DOGE/USD"],  # DEC-TUNE-011: DOGE moved from mean_reversion → range_trading (S/R-driven, low-vol)
     exit_monitor_factory=_create_range_exit_monitor,
 )

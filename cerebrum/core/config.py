@@ -167,6 +167,14 @@ class RiskConfig(BaseSettings):
             "Prevents position pile-up."
         ),
     )
+    min_hold_minutes: int = Field(
+        default=0,
+        description=(
+            "Minimum minutes to hold a position before SL/TP/adaptive-TP exits are "
+            "evaluated. Time-based (max_position_age) exits still fire regardless. "
+            "Default 0 = no minimum hold (backward-compatible). DEC-EXIT-006."
+        ),
+    )
 
     @field_validator("max_drawdown_percent", "position_size_percent")
     @classmethod

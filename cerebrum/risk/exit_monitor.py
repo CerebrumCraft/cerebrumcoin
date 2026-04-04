@@ -48,6 +48,17 @@ confirms the position has been fully closed (amount < 0.0001). This prevents a
 second exit order being emitted between the fill arriving and the portfolio
 processing it, while still allowing the exit monitor to re-arm once the
 position genuinely reaches zero.
+
+@decision DEC-EXIT-006
+@title min_hold_minutes prevents premature SL/TP exits on freshly-opened positions
+@status accepted
+@rationale Session 24 showed gross PnL of -$9.75 but $49.27 in commission —
+commission is the entire loss. A key driver is rapid SL/TP exits triggered within
+minutes of entry, which generate commission without allowing the trade time to
+develop. min_hold_minutes (default 0 = backward-compatible) skips SL, TP, and
+adaptive-TP checks for positions younger than the threshold. Time-based exits
+(max_position_age) always fire regardless of min_hold to preserve the safety net
+against indefinitely-held stale positions.
 """
 
 import time
@@ -99,6 +110,7 @@ class ExitMonitor:
         min_tp_percent: Decimal = Decimal("0.3"),
         tp_window_size: int = 18000,
         strategy_id: str | None = None,
+        min_hold_minutes: int = 0,
     ) -> None:
         """
         Initialize exit monitor.
@@ -124,12 +136,18 @@ class ExitMonitor:
                          per-strategy PortfolioTrackers correctly attribute fills
                          (DEC-EXIT-003). None (default) = accept all fills,
                          backward-compatible with single-strategy mode.
+            min_hold_minutes: Minimum minutes to hold a position before SL/TP/adaptive-TP
+                              exits are evaluated. Time-based (max_age) exits still fire
+                              regardless of this threshold. Default 0 = no minimum hold
+                              (backward-compatible). DEC-EXIT-006.
         """
         self._bus = bus
         self._portfolio = portfolio
         self._stop_loss_pct = stop_loss_percent
         self._take_profit_pct = take_profit_percent
         self._max_age_seconds = max_position_age_minutes * 60
+        # DEC-EXIT-006: skip SL/TP checks for positions younger than this threshold
+        self._min_hold_seconds = min_hold_minutes * 60
         # DEC-EXIT-003: tag emitted orders so per-strategy portfolios route fills correctly
         self._strategy_id = strategy_id
 
@@ -164,6 +182,7 @@ class ExitMonitor:
             stop_loss_pct=str(stop_loss_percent),
             take_profit_pct=str(take_profit_percent),
             max_age_minutes=max_position_age_minutes,
+            min_hold_minutes=min_hold_minutes,
             adaptive_tp=adaptive_tp,
             tp_multiplier=str(tp_multiplier) if adaptive_tp else "n/a",
             min_tp_percent=str(min_tp_percent) if adaptive_tp else "n/a",
@@ -264,9 +283,23 @@ class ExitMonitor:
         exit_reason: str | None = None
         order_type = OrderType.MARKET
 
+        age_seconds = current_time - pos.entry_time
+
+        # DEC-EXIT-006: skip SL/TP/adaptive-TP checks while position is younger
+        # than min_hold_minutes. Time-based (max_age) exit still fires normally.
+        sl_tp_allowed = (self._min_hold_seconds == 0) or (age_seconds >= self._min_hold_seconds)
+
+        if not sl_tp_allowed:
+            self._log.debug(
+                "exit_min_hold_skip",
+                symbol=symbol,
+                age_minutes=age_seconds / 60,
+                min_hold_minutes=self._min_hold_seconds / 60,
+            )
+
         # --- Stop-loss check ---
         # Loss% = (entry - current) / entry * 100  (positive = loss for long)
-        if pos.average_entry_price > Decimal("0"):
+        if sl_tp_allowed and pos.average_entry_price > Decimal("0"):
             loss_pct = (
                 (pos.average_entry_price - current_price)
                 / pos.average_entry_price
@@ -279,7 +312,7 @@ class ExitMonitor:
                 order_type = OrderType.STOP_LOSS
 
         # --- Take-profit check ---
-        if exit_reason is None and pos.average_entry_price > Decimal("0"):
+        if sl_tp_allowed and exit_reason is None and pos.average_entry_price > Decimal("0"):
             gain_pct = (
                 (current_price - pos.average_entry_price)
                 / pos.average_entry_price
@@ -292,9 +325,8 @@ class ExitMonitor:
                 )
                 order_type = OrderType.TAKE_PROFIT
 
-        # --- Time-based check ---
+        # --- Time-based check (always applies regardless of min_hold) ---
         if exit_reason is None and self._max_age_seconds > 0:
-            age_seconds = current_time - pos.entry_time
             if age_seconds >= self._max_age_seconds:
                 age_minutes = age_seconds / 60
                 exit_reason = (

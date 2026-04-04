@@ -140,7 +140,8 @@ MEAN_REVERSION_CONFIG = StrategyConfig(
         "adaptive_tp": True,
         "tp_multiplier": "1.2",
         "min_tp_percent": "0.2",
+        "min_hold_minutes": 15,  # DEC-EXIT-006: skip SL/TP for first 15 min to reduce premature exits
     },
     initial_balance=Decimal("5000.00"),  # DEC-TUNE-008: 2-strategy split — $5,000 each (was $1,667 across 6)
-    symbols=["ETH/USD", "SOL/USD", "DOGE/USD"],  # DEC-TUNE-009: BTC removed (8% WR over 14 days)
+    symbols=["ETH/USD", "SOL/USD"],  # DEC-TUNE-011: DOGE moved to range_trading (BTC already removed, DEC-TUNE-009)
 )

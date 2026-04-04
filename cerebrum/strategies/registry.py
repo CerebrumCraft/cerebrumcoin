@@ -341,6 +341,11 @@ class StrategyRegistry:
                 ),
                 # DEC-EXIT-003: tag emitted orders with strategy_id for per-strategy routing
                 strategy_id=cfg.name,
+                # DEC-EXIT-006: minimum hold time before SL/TP exits are allowed
+                min_hold_minutes=int(
+                    exit_overrides.get("min_hold_minutes",
+                                       self._config.risk.min_hold_minutes)
+                ),
             )
 
         # --- Per-strategy risk rules ---

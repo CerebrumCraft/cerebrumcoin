@@ -32,6 +32,15 @@ OrderEvents, fills bypass the per-strategy PortfolioTracker routing, leaving
 positions open and causing an infinite re-fire loop on every market tick.
 _on_fill also uses the position-amount guard (DEC-EXIT-004) to prevent
 premature pending_exits clearance on partial fills.
+
+@decision DEC-EXIT-006
+@title min_hold_minutes in RangeExitMonitor — mirrors ExitMonitor
+@status accepted
+@rationale Same rationale as DEC-EXIT-006 in exit_monitor.py. Structural S/R
+exits and fallback SL/TP exits are skipped while the position age is below
+min_hold_minutes. The time-based safety exit (max_hold_minutes) always fires.
+Regime invalidation exits also always fire — leaving a position open during
+a regime change is riskier than a premature exit.
 """
 
 import time
@@ -84,6 +93,7 @@ class RangeExitMonitor:
         fallback_tp_pct: Decimal = Decimal("1.0"),
         fallback_sl_pct: Decimal = Decimal("0.8"),
         strategy_id: str | None = None,
+        min_hold_minutes: int = 0,
     ) -> None:
         """
         Initialize RangeExitMonitor.
@@ -108,6 +118,11 @@ class RangeExitMonitor:
                          OrderEvents are tagged so per-strategy PortfolioTrackers
                          route fills correctly (DEC-RANGE-007 / DEC-EXIT-003).
                          None (default) = backward-compatible single-strategy mode.
+            min_hold_minutes: Minimum minutes to hold a position before structural
+                              S/R exits and fallback SL/TP exits are evaluated.
+                              Time-based (max_hold_minutes) and regime invalidation
+                              exits still fire regardless. Default 0 = no minimum
+                              hold (backward-compatible). DEC-EXIT-006.
         """
         self._bus = bus
         self._portfolio = portfolio
@@ -117,6 +132,8 @@ class RangeExitMonitor:
         self._max_hold_seconds = max_hold_minutes * 60
         self._fallback_tp_pct = fallback_tp_pct
         self._fallback_sl_pct = fallback_sl_pct
+        # DEC-EXIT-006: skip S/R and fallback SL/TP exits for positions younger than this
+        self._min_hold_seconds = min_hold_minutes * 60
         # DEC-RANGE-007: tag emitted orders so per-strategy portfolios route fills correctly
         self._strategy_id = strategy_id
 
@@ -146,6 +163,7 @@ class RangeExitMonitor:
             resistance_proximity_pct=str(resistance_proximity_pct),
             breakdown_margin_pct=str(breakdown_margin_pct),
             max_hold_minutes=max_hold_minutes,
+            min_hold_minutes=min_hold_minutes,
             fallback_tp_pct=str(fallback_tp_pct),
             fallback_sl_pct=str(fallback_sl_pct),
         )
@@ -226,9 +244,24 @@ class RangeExitMonitor:
 
         exit_reason: str | None = None
 
+        age_seconds = ts - pos.entry_time
+
+        # DEC-EXIT-006: skip structural S/R and fallback SL/TP exits while position
+        # is younger than min_hold_minutes. Time-based and regime invalidation exits
+        # always fire regardless of this threshold.
+        sl_tp_allowed = (self._min_hold_seconds == 0) or (age_seconds >= self._min_hold_seconds)
+
+        if not sl_tp_allowed:
+            self._log.debug(
+                "range_exit_min_hold_skip",
+                symbol=symbol,
+                age_minutes=age_seconds / 60,
+                min_hold_minutes=self._min_hold_seconds / 60,
+            )
+
         # --- Structural S/R exits (when a confirmed range exists) ---
         range_state = self._range_detector.get_range(symbol)
-        if range_state is not None and range_state.range_confirmed:
+        if sl_tp_allowed and range_state is not None and range_state.range_confirmed:
             resistance = range_state.resistance_level
             support = range_state.support_level
 
@@ -256,8 +289,8 @@ class RangeExitMonitor:
                         f"(support {support}, margin {self._breakdown_margin_pct}%)"
                     )
 
-        else:
-            # --- Fallback percentage-based exits ---
+        elif sl_tp_allowed:
+            # --- Fallback percentage-based exits (no confirmed range) ---
             if pos.average_entry_price > Decimal("0"):
                 gain_pct = (
                     (price - pos.average_entry_price)
@@ -279,9 +312,8 @@ class RangeExitMonitor:
                         f"fallback_stop_loss: loss {loss_pct:.2f}% >= {self._fallback_sl_pct}%"
                     )
 
-        # --- Time-based exit (always applies regardless of range state) ---
+        # --- Time-based exit (always applies regardless of min_hold or range state) ---
         if exit_reason is None and self._max_hold_seconds > 0:
-            age_seconds = ts - pos.entry_time
             if age_seconds >= self._max_hold_seconds:
                 age_minutes = age_seconds / 60
                 exit_reason = (

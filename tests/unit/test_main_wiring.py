@@ -252,13 +252,15 @@ class TestStrategyConfigs:
     def test_btc_removed_from_all_strategies(self):
         """BTC/USD removed from momentum (DEC-TUNE-006), breakout (DEC-TUNE-007),
         and mean_reversion (DEC-TUNE-009: 8% WR over 14 days).
-        mean_reversion now trades ETH/USD, SOL/USD, DOGE/USD."""
+        DEC-TUNE-011: DOGE/USD moved from mean_reversion to range_trading.
+        mean_reversion now trades ETH/USD, SOL/USD only."""
         assert "BTC/USD" not in MOMENTUM_CONFIG.symbols
         assert "BTC/USD" not in MEAN_REVERSION_CONFIG.symbols
         assert "BTC/USD" not in BREAKOUT_CONFIG.symbols
         assert "ETH/USD" in MEAN_REVERSION_CONFIG.symbols
         assert "SOL/USD" in MEAN_REVERSION_CONFIG.symbols
-        assert "DOGE/USD" in MEAN_REVERSION_CONFIG.symbols
+        assert "DOGE/USD" not in MEAN_REVERSION_CONFIG.symbols  # DEC-TUNE-011: moved to range_trading
+        assert "DOGE/USD" in RANGE_TRADING_CONFIG.symbols  # DEC-TUNE-011: DOGE now in range_trading
 
     def test_all_have_technical_weight(self):
         for cfg in (MOMENTUM_CONFIG, MEAN_REVERSION_CONFIG, BREAKOUT_CONFIG):

@@ -538,3 +538,120 @@ async def test_range_exit_pending_stays_set_while_position_open(bus):
         f"Expected 1 exit order total, got {len(orders)} "
         "(infinite exit loop regression: second order fired after partial fill)"
     )
+
+
+# ---------------------------------------------------------------------------
+# min_hold_minutes tests for RangeExitMonitor (DEC-EXIT-006)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_range_exit_min_hold_blocks_sr_exit_before_threshold(bus, portfolio, range_detector):
+    """Structural S/R exit must NOT fire while position age < min_hold_minutes.
+
+    DEC-EXIT-006: A freshly-opened position (age ~0) with min_hold=15 should
+    not trigger a resistance exit even when price reaches the resistance level.
+    """
+    monitor = RangeExitMonitor(
+        bus=bus,
+        portfolio=portfolio,
+        range_detector=range_detector,
+        resistance_proximity_pct=Decimal("0.3"),
+        breakdown_margin_pct=Decimal("0.3"),
+        max_hold_minutes=60,
+        fallback_tp_pct=Decimal("1.0"),
+        fallback_sl_pct=Decimal("0.8"),
+        min_hold_minutes=15,
+    )
+
+    symbol = "BTC/USD"
+    support = Decimal("49000")
+    resistance = Decimal("51000")
+    _seed_confirmed_range(range_detector, symbol, support, resistance)
+
+    orders = _capture_orders(bus)
+
+    # Entry right now — age < 15 minutes
+    await _open_position(bus, symbol, Decimal("0.1"), Decimal("49500"))
+
+    # Price at resistance — would trigger resistance_exit if min_hold not active
+    await _send_price(bus, symbol, resistance)
+
+    assert len(orders) == 0, (
+        f"Expected 0 orders (min_hold active), got {len(orders)}: "
+        f"{[o.metadata.get('exit_reason') for o in orders]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_range_exit_min_hold_allows_sr_exit_after_threshold(bus, portfolio, range_detector):
+    """Structural S/R exit MUST fire after position age >= min_hold_minutes.
+
+    DEC-EXIT-006: A position opened 20 minutes ago with min_hold=15 should
+    trigger a resistance exit when price reaches the resistance level.
+    """
+    monitor = RangeExitMonitor(
+        bus=bus,
+        portfolio=portfolio,
+        range_detector=range_detector,
+        resistance_proximity_pct=Decimal("0.3"),
+        breakdown_margin_pct=Decimal("0.3"),
+        max_hold_minutes=60,
+        fallback_tp_pct=Decimal("1.0"),
+        fallback_sl_pct=Decimal("0.8"),
+        min_hold_minutes=15,
+    )
+
+    symbol = "ETH/USD"
+    support = Decimal("2900")
+    resistance = Decimal("3100")
+    _seed_confirmed_range(range_detector, symbol, support, resistance)
+
+    orders = _capture_orders(bus)
+
+    # Entry 20 minutes ago — exceeds 15-minute min_hold
+    old_entry_time = time.time() - 20 * 60
+    await _open_position(bus, symbol, Decimal("1.0"), Decimal("2950"), entry_time=old_entry_time)
+
+    # Price at resistance — should trigger resistance_exit now
+    await _send_price(bus, symbol, resistance)
+
+    assert len(orders) == 1, (
+        f"Expected 1 resistance exit order (min_hold satisfied), got {len(orders)}"
+    )
+    assert "resistance_exit" in orders[0].metadata.get("exit_reason", "")
+
+
+@pytest.mark.asyncio
+async def test_range_exit_min_hold_does_not_block_time_exit(bus, portfolio, range_detector):
+    """Time-based exit MUST fire even when min_hold is active.
+
+    DEC-EXIT-006: The safety net (max_hold_minutes) must always fire regardless
+    of min_hold_minutes to prevent indefinitely-held positions.
+    """
+    monitor = RangeExitMonitor(
+        bus=bus,
+        portfolio=portfolio,
+        range_detector=range_detector,
+        resistance_proximity_pct=Decimal("0.3"),
+        breakdown_margin_pct=Decimal("0.3"),
+        max_hold_minutes=1,   # 1-minute max hold
+        fallback_tp_pct=Decimal("1.0"),
+        fallback_sl_pct=Decimal("0.8"),
+        min_hold_minutes=60,  # 60-minute min hold — but max_hold overrides
+    )
+
+    symbol = "SOL/USD"
+    orders = _capture_orders(bus)
+
+    # Entry 10 minutes ago — exceeds max_hold (1 min) but within min_hold (60 min)
+    old_entry_time = time.time() - 600
+    await _open_position(bus, symbol, Decimal("5.0"), Decimal("100"), entry_time=old_entry_time)
+
+    # Price is flat — no S/R trigger. But max_hold should fire.
+    await _send_price(bus, symbol, Decimal("100"))
+
+    assert len(orders) == 1, (
+        f"Expected 1 time-exit order (max_hold overrides min_hold), got {len(orders)}"
+    )
+    assert "time_exit" in orders[0].metadata.get("exit_reason", "")

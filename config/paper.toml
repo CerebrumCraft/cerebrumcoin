@@ -58,6 +58,7 @@ min_tp_percent = "0.3"  # Floor: never set TP below 0.3% (covers commission)
 # Commission gate: deny orders when range < commission*2*ratio (0.16%*2*3.0 = 0.96% threshold)
 min_profit_to_commission_ratio = "3.0"  # 3x round-trip commission required in recent range
 max_open_positions_per_symbol = 2  # DEC-RISK-005: cap prevents position pile-up
+min_hold_minutes = 15  # DEC-EXIT-006: skip SL/TP exits for first 15 min to reduce premature commission-generating exits
 
 [monitoring]
 dashboard_enabled = true
