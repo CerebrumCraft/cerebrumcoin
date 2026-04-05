@@ -555,6 +555,56 @@ class CerebrumCoin:
                         cash_balance=snapshot.get("cash_balance"),
                     )
                 portfolios[name] = portfolio
+
+            # @decision DEC-RECONCILE-001
+            # @title Startup position reconciliation between portfolio trackers and paper adapter
+            # @status accepted
+            # @rationale After restart, per-strategy PortfolioTracker positions restored from
+            # snapshots may exceed the global PaperTradingAdapter._positions ledger (which tracks
+            # actual simulated fills). This drift causes exit monitor sell orders to be rejected
+            # with `insufficient_position`, leaving zombie OPEN trades that can never close.
+            # Reconciliation scales down portfolio positions proportionally so their sum never
+            # exceeds the paper adapter amount for any symbol.
+            all_symbols: set[str] = set()
+            for pt in portfolios.values():
+                all_symbols.update(pt._positions.keys())
+
+            for symbol in all_symbols:
+                paper_amount = self.paper_adapter._positions.get(symbol, Decimal("0"))
+
+                portfolio_total = sum(
+                    pt._positions[symbol].amount
+                    for pt in portfolios.values()
+                    if symbol in pt._positions
+                )
+
+                if portfolio_total == Decimal("0"):
+                    continue  # Nothing to reconcile
+
+                if paper_amount == Decimal("0"):
+                    # Paper adapter has none — zero out all portfolio positions for this symbol
+                    for pt in portfolios.values():
+                        if symbol in pt._positions:
+                            pt._positions[symbol].amount = Decimal("0")
+                    self._log.warning(
+                        "position_reconciled_zeroed",
+                        symbol=symbol,
+                        portfolio_total=str(portfolio_total),
+                    )
+                elif portfolio_total > paper_amount:
+                    # Portfolio total exceeds paper ledger — scale each strategy down proportionally
+                    scale = paper_amount / portfolio_total
+                    for pt in portfolios.values():
+                        if symbol in pt._positions:
+                            pt._positions[symbol].amount = pt._positions[symbol].amount * scale
+                    self._log.warning(
+                        "position_reconciled_scaled",
+                        symbol=symbol,
+                        portfolio_total=str(portfolio_total),
+                        paper_amount=str(paper_amount),
+                        scale_factor=str(scale),
+                    )
+
             self.paper_adapter.set_strategy_portfolios(portfolios)
 
         active = self.strategy_registry.active_strategy_names()
