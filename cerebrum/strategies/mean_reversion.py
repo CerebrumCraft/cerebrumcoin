@@ -136,12 +136,12 @@ MEAN_REVERSION_CONFIG = StrategyConfig(
     exit_config={
         "stop_loss_percent": "1.0",
         "take_profit_percent": "1.5",
-        "max_position_age_minutes": 90,
+        "max_position_age_minutes": 45,  # DEC-TUNE-014: 90→45min; 90-min timeout exits were guaranteed losers (-$5.14/10 trades)
         "adaptive_tp": True,
         "tp_multiplier": "1.2",
         "min_tp_percent": "0.2",
         "min_hold_minutes": 15,  # DEC-EXIT-006: skip SL/TP for first 15 min to reduce premature exits
     },
     initial_balance=Decimal("5000.00"),  # DEC-TUNE-008: 2-strategy split — $5,000 each (was $1,667 across 6)
-    symbols=["ETH/USD", "SOL/USD"],  # DEC-TUNE-011: DOGE moved to range_trading (BTC already removed, DEC-TUNE-009)
+    symbols=["ETH/USD"],  # DEC-TUNE-013: SOL removed — 0% WR on 10 trades (-$28.90) in session 28; ETH-only
 )
