@@ -46,7 +46,7 @@ post_fill_cooldown_seconds = 1800  # 900 → 1800: 30 min cooldown in choppy mar
 volatility_gate_min_range_pct = "0.5"  # 0.5% threshold; 0.32% commission + 0.1% slippage = 0.42% floor
 volatility_gate_window_size = 300       # ~5 min rolling window (matches regime short window)
 # SIDEWAYS suppression: deny BUY entries in low-vol sideways markets (Issue #3 fix)
-sideways_suppression_min_range_pct = "1.0"  # 1.0% range required in SIDEWAYS; 3% TP unreachable in <0.5%
+sideways_suppression_min_range_pct = "1.5"  # DEC-TUNE-015: 1.0→1.5% range required in SIDEWAYS; session 28 showed 85% loss rate at 1.0%
 sideways_suppression_window_size = 18000    # ~5 hour window for session-level range assessment
 # Macro volatility gate: session-level flatness detection
 macro_volatility_min_range_pct = "0.8"  # Block entire session if range < 0.8% over 5 hours

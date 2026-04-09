@@ -86,6 +86,6 @@ RANGE_TRADING_CONFIG = StrategyConfig(
         "min_hold_minutes": 15,  # DEC-EXIT-006: skip SL/TP for first 15 min to reduce premature exits
     },
     initial_balance=Decimal("5000.00"),  # DEC-TUNE-008: 2-strategy split — $5,000 each (was $1,667 across 6)
-    symbols=["BTC/USD", "ETH/USD", "DOGE/USD"],  # DEC-TUNE-011: DOGE moved from mean_reversion → range_trading (S/R-driven, low-vol)
+    symbols=["BTC/USD", "ETH/USD"],  # DEC-TUNE-013: DOGE removed — only 2 trades in session 28 (insufficient data); BTC+ETH only
     exit_monitor_factory=_create_range_exit_monitor,
 )
