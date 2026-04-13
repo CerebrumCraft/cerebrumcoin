@@ -130,6 +130,74 @@ _configure_logging("INFO")
 logger = structlog.get_logger()
 
 
+def _maybe_build_alpaca_adapter(config: dict[str, Any], event_bus: Any) -> Any | None:
+    """Conditionally instantiate the Alpaca adapter.
+
+    Returns None when disabled/absent, or when alpaca-py isn't installed.
+    Raises RuntimeError when enabled but credentials missing — fail-fast by design.
+
+    The ``config`` argument is a plain dict (the raw TOML section), NOT the typed
+    ``Config`` dataclass.  This keeps the helper independently testable without
+    constructing the full Config object.
+
+    @decision DEC-ALPACA-002
+    @title Conditional Alpaca adapter wiring via raw TOML config
+    @status accepted
+    @rationale Alpaca is an optional dependency for stocks support.  Gating on
+    ``alpaca.enabled`` in the raw TOML keeps the crypto-only startup path
+    completely unchanged.  Credential absence → RuntimeError (fail-fast) so
+    operators know immediately when they misconfigure.  Module absence →
+    warning + None (graceful) because alpaca-py is intentionally optional.
+    """
+    alpaca_cfg = config.get("alpaca", {})
+    if not alpaca_cfg.get("enabled", False):
+        return None
+
+    api_key = os.getenv(alpaca_cfg.get("api_key_env", "ALPACA_API_KEY_ID"), "")
+    secret = os.getenv(alpaca_cfg.get("secret_key_env", "ALPACA_API_SECRET_KEY"), "")
+    if not api_key or not secret:
+        logger.error("alpaca_credentials_missing")
+        raise RuntimeError(
+            "alpaca_credentials_missing — set ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY"
+        )
+
+    try:
+        from cerebrum.adapters.alpaca import AlpacaAdapter
+    except ImportError as e:
+        logger.warning(
+            "alpaca_adapter_unavailable",
+            reason="module_not_found",
+            error=str(e),
+        )
+        return None
+
+    adapter_config = {
+        "api_key": api_key,
+        "secret_key": secret,
+        "paper": alpaca_cfg.get("paper", True),
+        "paper_base_url": alpaca_cfg.get("paper_base_url", "https://paper-api.alpaca.markets"),
+        "data_feed": alpaca_cfg.get("data_feed", "iex"),
+        "symbols": alpaca_cfg.get("symbols", []),
+    }
+
+    try:
+        adapter = AlpacaAdapter(bus=event_bus, config=adapter_config)
+    except ImportError as e:
+        # Handles side_effect=ImportError used in tests that patch AlpacaAdapter
+        logger.warning(
+            "alpaca_adapter_unavailable",
+            reason="module_not_found",
+            error=str(e),
+        )
+        return None
+    except Exception as e:
+        logger.error("alpaca_adapter_init_failed", error=str(e))
+        raise
+
+    logger.info("alpaca_adapter_built", symbols=alpaca_cfg.get("symbols", []))
+    return adapter
+
+
 class CerebrumCoin:
     """
     Main application controller.
@@ -159,6 +227,7 @@ class CerebrumCoin:
         # Shared infrastructure (both modes)
         self.kraken_adapter: KrakenAdapter | None = None
         self.paper_adapter: PaperTradingAdapter | None = None
+        self.alpaca_adapter: Any | None = None
         self.candle_agg: CandleAggregator | None = None
         self.candle_agg_1h: CandleAggregator | None = None
         self._signal_generators: list[Any] = []
@@ -695,6 +764,16 @@ class CerebrumCoin:
         )
         await self.kraken_adapter.connect()
 
+        # Conditionally wire Alpaca adapter for stocks (DEC-ALPACA-002).
+        # Disabled by default — crypto-only path is unchanged when alpaca.enabled is
+        # absent or false.  Raw TOML is used so this helper is testable without the
+        # typed Config dataclass.
+        self.alpaca_adapter = _maybe_build_alpaca_adapter(self._raw_toml, self.bus)
+        if self.alpaca_adapter is not None:
+            await self.alpaca_adapter.connect()
+            alpaca_symbols = self._raw_toml.get("alpaca", {}).get("symbols", [])
+            await self.alpaca_adapter.subscribe_market_data(alpaca_symbols)
+
         # Initialize execution adapter based on trading mode
         if config.trading.mode == TradingMode.LIVE:
             self._log.warning(
@@ -930,6 +1009,9 @@ class CerebrumCoin:
         # capturing the post-liquidation state with no open positions).
         if self.kraken_adapter:
             await self.kraken_adapter.disconnect()
+
+        if self.alpaca_adapter:
+            await self.alpaca_adapter.disconnect()
 
         if self.paper_adapter:
             await self.paper_adapter.disconnect()
