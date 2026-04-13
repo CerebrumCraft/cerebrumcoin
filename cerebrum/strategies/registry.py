@@ -293,6 +293,7 @@ class StrategyRegistry:
             strategy_id=cfg.name,
             signal_source_filter=cfg.signal_source_filter,
             signal_timeframe_filter=cfg.signal_timeframe_filter,
+            symbols=cfg.symbols if cfg.symbols else None,  # DEC-STOCKS-005
             clock=self._clock,
         )
 

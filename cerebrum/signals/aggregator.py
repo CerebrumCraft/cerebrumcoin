@@ -66,6 +66,7 @@ class SignalAggregator:
         strategy_id: str | None = None,
         signal_source_filter: str | None = None,
         signal_timeframe_filter: str | None = None,
+        symbols: list[str] | None = None,
         clock: Callable[[], float] | None = None,
     ) -> None:
         """
@@ -90,6 +91,11 @@ class SignalAggregator:
                          matches this string are admitted to the buffer. Signals
                          from generators with a different timeframe are silently
                          dropped. None disables filtering (default, backward-compatible).
+            symbols: When set, only signals for symbols in this list are admitted
+                     to the buffer. Signals for any other symbol are silently
+                     dropped before aggregation. None disables filtering (default,
+                     backward-compatible). Used to prevent crypto strategies from
+                     acting on stock signals and vice versa. (DEC-STOCKS-005)
             clock: Callable returning current time as float (Unix epoch seconds).
                    Default: time.time (wall-clock). Inject a BacktestClock instance
                    in backtest mode so signal expiry uses simulated historical time
@@ -118,6 +124,11 @@ class SignalAggregator:
         # Timeframe filter: when set, only signals with matching metadata["timeframe"] accepted.
         # DEC-SIGNAL-003: metadata["timeframe"] is injected by SignalGenerator._create_signal().
         self._signal_timeframe_filter = signal_timeframe_filter
+
+        # Symbol filter: when set, only signals for symbols in this set are admitted.
+        # DEC-STOCKS-005: prevents crypto aggregators acting on stock signals and vice versa.
+        # None = no filtering (backward-compatible default).
+        self._allowed_symbols: set[str] | None = set(symbols) if symbols else None
         
         # Default weights: technical signals weighted higher
         self._weights: dict[SignalType, Decimal] = weights or {
@@ -182,8 +193,20 @@ class SignalAggregator:
             window_seconds=window_seconds,
             signal_source_filter=signal_source_filter,
             signal_timeframe_filter=signal_timeframe_filter,
+            symbols_filter=sorted(self._allowed_symbols) if self._allowed_symbols else None,
         )
     
+    def _symbol_allowed(self, symbol: str) -> bool:
+        """Return True if this symbol should be processed by this aggregator.
+
+        When no filter is configured (None), all symbols are allowed for
+        backward compatibility. When a filter is set, only symbols in the
+        allow-list pass. (DEC-STOCKS-005)
+        """
+        if self._allowed_symbols is None:
+            return True
+        return symbol in self._allowed_symbols
+
     async def _on_signal(self, event: Event) -> None:
         """Handle incoming signals and aggregate."""
         if not isinstance(event, SignalEvent):
@@ -191,6 +214,12 @@ class SignalAggregator:
 
         # CRITICAL: Ignore our own combined signals to prevent feedback loop
         if event.signal_type == SignalType.COMBINED:
+            return
+
+        # Symbol filter: cheapest check first — drop signals for symbols this
+        # aggregator doesn't trade before any source/timeframe filtering.
+        # DEC-STOCKS-005: prevents crypto aggregators from acting on stock signals.
+        if not self._symbol_allowed(event.symbol):
             return
 
         # Filter by signal source if configured (e.g., range_trading only wants S/R signals)
