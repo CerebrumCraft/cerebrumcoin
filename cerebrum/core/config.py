@@ -175,6 +175,30 @@ class RiskConfig(BaseSettings):
             "Default 0 = no minimum hold (backward-compatible). DEC-EXIT-006."
         ),
     )
+    market_hours_gate_enabled: bool = Field(
+        default=False,
+        description=(
+            "Gate off by default until stock trading is active. "
+            "When True, MarketHoursGateRule denies stock orders outside RTH. "
+            "DEC-STOCKS-003."
+        ),
+    )
+    market_hours_gate_stock_symbols: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Symbols treated as equities by MarketHoursGateRule. "
+            "Orders for symbols in this list are subject to RTH enforcement. "
+            "Crypto symbols not in this list pass through unconditionally."
+        ),
+    )
+    market_hours_gate_entry_cutoff_minutes_before_close: int = Field(
+        default=15,
+        description=(
+            "Minutes before market close at which new stock entries are blocked. "
+            "Prevents opening positions too close to EOD flatten window. "
+            "DEC-STOCKS-003."
+        ),
+    )
 
     @field_validator("max_drawdown_percent", "position_size_percent")
     @classmethod
