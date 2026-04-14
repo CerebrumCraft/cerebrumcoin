@@ -59,6 +59,14 @@ min_tp_percent = "0.3"  # Floor: never set TP below 0.3% (covers commission)
 min_profit_to_commission_ratio = "3.0"  # 3x round-trip commission required in recent range
 max_open_positions_per_symbol = 2  # DEC-RISK-005: cap prevents position pile-up
 min_hold_minutes = 15  # DEC-EXIT-006: skip SL/TP exits for first 15 min to reduce premature commission-generating exits
+# --- Market hours gate (DEC-STOCKS-003) — added for stocks ---
+market_hours_gate_enabled = false            # gate off until stocks enabled
+market_hours_gate_stock_symbols = ["AAPL", "MSFT", "NVDA"]
+market_hours_gate_entry_cutoff_minutes_before_close = 15
+# --- End-of-day flatten (DEC-STOCKS-003) — added for stocks ---
+end_of_day_flatten_enabled = false           # gate off until stocks enabled
+end_of_day_flatten_stock_symbols = ["AAPL", "MSFT", "NVDA"]
+end_of_day_flatten_offset_minutes = 5
 
 [monitoring]
 dashboard_enabled = true
@@ -87,12 +95,13 @@ enabled = true
 
 # Alpaca stock trading — uncomment and fill in credentials to enable
 # Leave commented out for crypto-only paper trading sessions
-# [alpaca]
-# api_key = ""
-# secret_key = ""
-# paper = true
-# symbols = ["AAPL", "MSFT", "NVDA"]
-# websocket_enabled = true
+[alpaca]
+enabled = false                              # DEC-STOCKS-001 — set to true after Phase 8 live verification
+api_key_env = "ALPACA_API_KEY_ID"
+secret_key_env = "ALPACA_API_SECRET_KEY"
+paper_base_url = "https://paper-api.alpaca.markets"
+data_feed = "iex"                            # free tier; use "sip" for paid
+symbols = ["AAPL", "MSFT", "NVDA"]
 
 # Hot-swappable risk profiles (Phase 14A, DEC-PROFILE-001)
 # Switch profiles at runtime via ProfileManager.apply_profile(name).
@@ -127,3 +136,33 @@ max_position_age_minutes = 180
 post_fill_cooldown_seconds = 900
 min_signal_strength = "0.55"
 aggregation_threshold = "0.35"
+
+# === ORB (Opening Range Breakout) signal generator ===
+[signal.opening_range]
+enabled = true
+range_minutes = 15
+breakout_buffer_bps = 5                      # 5 bps = 0.05% past ORB high/low = breakout
+min_range_bps = 20                           # reject if opening range < 0.20%
+max_range_bps = 500                          # reject if opening range > 5%
+symbols = ["AAPL", "MSFT", "NVDA"]
+
+# === ORB stocks strategy ===
+[strategy.orb_stocks]
+enabled = false                              # DEC-STOCKS-001 — gate until alpaca also enabled
+initial_balance = 5000.0
+symbols = ["AAPL", "MSFT", "NVDA"]
+signal_source_filter = "OpeningRange"
+aggregation_threshold = 0.4
+position_size_percent = 20.0
+stop_loss_percent = 0.5
+take_profit_percent = 1.0
+max_position_age_minutes = 390
+min_hold_minutes = 5
+post_fill_cooldown_seconds = 600
+min_signal_strength = 0.6
+
+[strategy.orb_stocks.weights]
+technical = 1.0
+sentiment = 0.0
+news = 0.0
+regime = 0.0
