@@ -23,6 +23,7 @@ results. get_strategy_snapshot() provides read access for main.py restore wiring
 
 import asyncio
 import json
+import shutil
 import uuid
 from decimal import Decimal
 from pathlib import Path
@@ -122,6 +123,10 @@ class PaperTradingAdapter(ExchangeAdapter):
         """Initialize paper trading state."""
         # Load state from file if exists
         if self._state_file.exists():
+            # Migrate v2 → v3 before parsing (idempotent on v3 input).
+            # Always runs regardless of whether orb_stocks is enabled — the
+            # orb_stocks snapshot sits dormant until the strategy is activated.
+            migrate_state_v2_to_v3(self._state_file, initial_balance_orb=5000.0)
             self._load_state()
             self._log.info("paper_state_loaded", state_file=str(self._state_file))
         else:
@@ -418,3 +423,53 @@ class PaperTradingAdapter(ExchangeAdapter):
             "trade_count": len(self._trade_history),
             "pnl_usd": str(total_value - self._initial_balance),
         }
+
+
+def migrate_state_v2_to_v3(path: Path | str, *, initial_balance_orb: float) -> dict:
+    """Migrate paper_state.json from v2 to v3 by adding an orb_stocks snapshot.
+
+    @decision DEC-STOCKS-006
+    @title Atomic v2→v3 state migration with .v2.bak backup
+    @status accepted
+    @rationale When stocks are enabled for the first time, the state file
+    must gain an `orb_stocks` strategy snapshot without disturbing the
+    existing crypto snapshots or open positions. Atomic write (tmp + rename)
+    ensures partial migrations can't corrupt the file; a .v2.bak backup
+    preserves the v2 state for rollback.
+
+    Preserves all existing v2 fields verbatim. Adds `orb_stocks` with
+    initial cash. Idempotent on v3 input (no backup created, no file write).
+    """
+    path = Path(path)
+    content = path.read_text().strip()
+    if not content:
+        # Empty file — nothing to migrate; _load_state() will initialise fresh state
+        return {}
+
+    data = json.loads(content)
+
+    if data.get("version", 2) >= 3:
+        return data  # already migrated — no-op
+
+    # Backup before mutation
+    backup = path.parent / f"{path.stem}.v2.bak{path.suffix}"
+    shutil.copy(path, backup)
+
+    # Migrate in-memory
+    data["version"] = 3
+    snapshots = data.setdefault("strategy_snapshots", {})
+    if "orb_stocks" not in snapshots:
+        snapshots["orb_stocks"] = {
+            "cash_balance": str(initial_balance_orb),
+            "initial_balance": str(initial_balance_orb),
+            "peak_equity": str(initial_balance_orb),
+            "total_realized_pnl": "0",
+            "positions": {},
+        }
+
+    # Atomic write
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(path)
+
+    return data
