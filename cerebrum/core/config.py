@@ -199,6 +199,31 @@ class RiskConfig(BaseSettings):
             "DEC-STOCKS-003."
         ),
     )
+    end_of_day_flatten_enabled: bool = Field(
+        default=False,
+        description=(
+            "When True, EndOfDayFlatten is instantiated and closes all open stock "
+            "positions flatten_offset_minutes before RTH close (including early-close "
+            "days). Disabled by default until orb_stocks wiring is active (Task 11). "
+            "DEC-STOCKS-003."
+        ),
+    )
+    end_of_day_flatten_stock_symbols: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Symbols managed by EndOfDayFlatten. Positions in other symbols "
+            "(crypto, etc.) are left untouched. Typically mirrors "
+            "market_hours_gate_stock_symbols."
+        ),
+    )
+    end_of_day_flatten_offset_minutes: int = Field(
+        default=5,
+        description=(
+            "Minutes before RTH close at which EndOfDayFlatten emits close orders. "
+            "Default 5 → flatten at 15:55 ET on normal days, 12:55 ET on early-close "
+            "days. DEC-STOCKS-003."
+        ),
+    )
 
     @field_validator("max_drawdown_percent", "position_size_percent")
     @classmethod
