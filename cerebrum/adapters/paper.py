@@ -93,6 +93,16 @@ class PaperTradingAdapter(ExchangeAdapter):
         self._state_file = state_file
         self._clock: Callable[[], float] = clock if clock is not None else time
 
+        # Per-symbol commission override map (optional).
+        # Enables future per-asset commission modeling — e.g., Alpaca paper trading
+        # charges 0% for US equities while Kraken charges ~0.26% for crypto.
+        # Set via config key "commission_by_symbol": {"AAPL/USD": 0.0, "MSFT/USD": 0.0}.
+        # Symbols absent from this map fall back to commission_percent.
+        self._commission_by_symbol: dict[str, Decimal] = {
+            str(k): Decimal(str(v))
+            for k, v in config.get("commission_by_symbol", {}).items()
+        }
+
         # Portfolio state
         self._balances: dict[str, Decimal] = {}
         self._positions: dict[Symbol, Decimal] = {}
@@ -182,9 +192,15 @@ class PaperTradingAdapter(ExchangeAdapter):
                 slippage_factor = Decimal("1") - (self._slippage_percent / Decimal("100"))
                 fill_price = current_price * slippage_factor
 
-            # Calculate commission
+            # Calculate commission — per-symbol override takes priority over the global rate.
+            # This supports zero-commission brokers (e.g. Alpaca paper for US equities)
+            # coexisting with fee-bearing venues (e.g. Kraken crypto at ~0.26%).
             trade_value = fill_price * order.amount
-            commission = trade_value * (self._commission_percent / Decimal("100"))
+            per_symbol_pct = self._commission_by_symbol.get(str(order.symbol))
+            if per_symbol_pct is not None:
+                commission = trade_value * (per_symbol_pct / Decimal("100"))
+            else:
+                commission = trade_value * (self._commission_percent / Decimal("100"))
 
             # Check if we have sufficient balance
             base_asset, quote_asset = order.symbol.split("/")

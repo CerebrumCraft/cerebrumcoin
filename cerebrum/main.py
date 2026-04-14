@@ -600,6 +600,21 @@ class CerebrumCoin:
         # self.strategy_registry.register(SWING_TRADING_CONFIG)
         # self.strategy_registry.register(NEWS_DRIVEN_CONFIG)
 
+        # orb_stocks: config-driven gate — only registered when [strategy.orb_stocks] enabled = true.
+        # The strategy module (cerebrum/strategies/orb_stocks.py) is created in Task 23.
+        # Until then this block is a deliberate no-op: the import will fail gracefully.
+        _orb_cfg = self._raw_toml.get("strategy", {}).get("orb_stocks", {})
+        if _orb_cfg.get("enabled", False):
+            try:
+                from cerebrum.strategies.orb_stocks import ORB_STOCKS_CONFIG  # type: ignore[import]
+                self.strategy_registry.register(ORB_STOCKS_CONFIG)
+                self._log.info("orb_stocks_strategy_registered")
+            except ImportError:
+                self._log.warning(
+                    "orb_stocks_strategy_unavailable",
+                    reason="cerebrum.strategies.orb_stocks not yet implemented",
+                )
+
         # Build and start all strategy pipelines, injecting shared global guards
         await self.strategy_registry.start_all(shared_global_rules=global_guards)
 
