@@ -121,7 +121,7 @@ class TestTwoStrategyConsolidation:
             event_type=EventType.SIGNAL,
             timestamp=now,
             signal_type=SignalType.TECHNICAL,
-            symbol="BTC/USD",
+            symbol="ETH/USD",
             action=SignalAction.BUY,
             strength=Decimal("0.8"),
             confidence=Decimal("0.9"),
@@ -133,14 +133,14 @@ class TestTwoStrategyConsolidation:
         await asyncio.sleep(0.1)
 
         # mean_reversion's buffer should contain the RSI signal
-        mr_buffer = mr_agg._signal_buffer.get("BTC/USD", [])
+        mr_buffer = mr_agg._signal_buffer.get("ETH/USD", [])
         assert len(mr_buffer) >= 1, (
             f"mean_reversion aggregator should have buffered the RSI signal "
             f"(buffer length: {len(mr_buffer)})"
         )
 
         # range_trading's buffer should remain empty — source filter rejects RSI
-        rt_buffer = rt_agg._signal_buffer.get("BTC/USD", [])
+        rt_buffer = rt_agg._signal_buffer.get("ETH/USD", [])
         assert len(rt_buffer) == 0, (
             f"range_trading aggregator should have rejected the RSI signal "
             f"(buffer length: {len(rt_buffer)}, expected 0)"

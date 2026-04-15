@@ -234,7 +234,7 @@ class TestSingleStrategySignalFlow:
                 event_type=EventType.SIGNAL,
                 timestamp=now + i,
                 signal_type=SignalType.TECHNICAL,
-                symbol="BTC/USD",
+                symbol="ETH/USD",
                 action=SignalAction.BUY,
                 strength=Decimal("0.85"),
                 confidence=Decimal("0.9"),
