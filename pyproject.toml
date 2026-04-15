@@ -57,6 +57,10 @@ addopts = [
     "--cov=cerebrum",
     "--cov-report=term-missing",
 ]
+markers = [
+    "asyncio: mark test as async",
+    "live_alpaca: requires live Alpaca paper-account connection (opt-in via --live-alpaca)",
+]
 
 [tool.ruff]
 line-length = 100
