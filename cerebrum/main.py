@@ -56,8 +56,10 @@ from cerebrum.core.bus import EventBus
 from cerebrum.core.config import Config
 from cerebrum.core.events import OrderEvent
 from cerebrum.core.types import EventType, OrderStatus, OrderType, Side, TradingMode
+from cerebrum.risk.end_of_day_flatten import EndOfDayFlatten
 from cerebrum.risk.exit_monitor import ExitMonitor
 from cerebrum.risk.global_trade_rate import GlobalTradeRateLimitRule
+from cerebrum.risk.market_hours_gate import MarketHoursGateRule
 from cerebrum.risk.manager import RiskManager
 from cerebrum.risk.portfolio import PortfolioTracker
 from cerebrum.risk.rules import (
@@ -249,6 +251,7 @@ class CerebrumCoin:
         self.allocator: Any | None = None            # DarwinianAllocator
         self.conductor: Any | None = None            # Conductor
         self.web_dashboard: Any | None = None        # WebDashboard | None
+        self.end_of_day_flatten: EndOfDayFlatten | None = None  # orb_stocks only
 
         self._shutdown_event = asyncio.Event()
         self._log = logger.bind(component="main")
@@ -617,6 +620,47 @@ class CerebrumCoin:
 
         # Build and start all strategy pipelines, injecting shared global guards
         await self.strategy_registry.start_all(shared_global_rules=global_guards)
+
+        # --- orb_stocks-only: MarketHoursGateRule + EndOfDayFlatten (DEC-STOCKS-003) ---
+        # These components only make sense for RTH-bound stock strategies.  Crypto
+        # strategies (mean_reversion, range_trading) run 24/7 and must not receive
+        # them.  We wire after start_all() so the orb_stocks pipeline already exists
+        # in the registry when we look it up.
+        if "orb_stocks" in self.strategy_registry.active_strategy_names():
+            if config.risk.market_hours_gate_enabled:
+                orb_risk_manager = self.strategy_registry.get_risk_manager("orb_stocks")
+                if orb_risk_manager is not None:
+                    orb_risk_manager._rules.append(
+                        MarketHoursGateRule(
+                            stock_symbols=config.risk.market_hours_gate_stock_symbols,
+                            entry_cutoff_minutes_before_close=(
+                                config.risk.market_hours_gate_entry_cutoff_minutes_before_close
+                            ),
+                        )
+                    )
+                    self._log.info(
+                        "market_hours_gate_wired",
+                        strategy="orb_stocks",
+                        symbols=config.risk.market_hours_gate_stock_symbols,
+                        entry_cutoff_minutes=config.risk.market_hours_gate_entry_cutoff_minutes_before_close,
+                    )
+
+            if config.risk.end_of_day_flatten_enabled:
+                orb_portfolio = self.strategy_registry.get_portfolio("orb_stocks")
+                if orb_portfolio is not None:
+                    self.end_of_day_flatten = EndOfDayFlatten(
+                        bus=self.bus,
+                        portfolio=orb_portfolio,
+                        stock_symbols=config.risk.end_of_day_flatten_stock_symbols,
+                        flatten_offset_minutes=config.risk.end_of_day_flatten_offset_minutes,
+                        strategy_id="orb_stocks",
+                    )
+                    self._log.info(
+                        "end_of_day_flatten_wired",
+                        strategy="orb_stocks",
+                        symbols=config.risk.end_of_day_flatten_stock_symbols,
+                        offset_minutes=config.risk.end_of_day_flatten_offset_minutes,
+                    )
 
         # --- Per-strategy state restore (DEC-PERSIST-001) ---
         # After pipelines are started, restore each strategy's PortfolioTracker

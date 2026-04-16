@@ -60,11 +60,11 @@ min_profit_to_commission_ratio = "3.0"  # 3x round-trip commission required in r
 max_open_positions_per_symbol = 2  # DEC-RISK-005: cap prevents position pile-up
 min_hold_minutes = 15  # DEC-EXIT-006: skip SL/TP exits for first 15 min to reduce premature commission-generating exits
 # --- Market hours gate (DEC-STOCKS-003) — added for stocks ---
-market_hours_gate_enabled = false            # gate off until stocks enabled
+market_hours_gate_enabled = true             # DEC-STOCKS-003: RTH-only enforcement for orb_stocks
 market_hours_gate_stock_symbols = ["AAPL", "MSFT", "NVDA"]
 market_hours_gate_entry_cutoff_minutes_before_close = 15
 # --- End-of-day flatten (DEC-STOCKS-003) — added for stocks ---
-end_of_day_flatten_enabled = false           # gate off until stocks enabled
+end_of_day_flatten_enabled = true            # DEC-STOCKS-003: auto-flatten stock positions before close
 end_of_day_flatten_stock_symbols = ["AAPL", "MSFT", "NVDA"]
 end_of_day_flatten_offset_minutes = 5
 
