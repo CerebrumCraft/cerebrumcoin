@@ -200,6 +200,65 @@ def _maybe_build_alpaca_adapter(config: dict[str, Any], event_bus: Any) -> Any |
     return adapter
 
 
+def _maybe_build_kraken_xstocks_adapter(config: dict[str, Any], event_bus: Any) -> Any | None:
+    """Conditionally instantiate the KrakenXStocksAdapter for 24/7 tokenized equities.
+
+    Returns None when disabled/absent, when the adapter module isn't available,
+    or when credentials are missing.  Mirrors the shape of
+    ``_maybe_build_alpaca_adapter`` so the startup path stays symmetric.
+
+    The ``config`` argument is a plain dict (raw TOML), NOT the typed ``Config``
+    dataclass — keeps this helper independently testable.
+
+    @decision DEC-XSTOCKS-001
+    @title Conditional KrakenXStocks adapter wiring via raw TOML config
+    @status accepted
+    @rationale xStocks is an optional 24/7 tokenized-equity path on top of the
+    existing crypto engine.  Gating on ``kraken_xstocks.enabled`` in raw TOML
+    keeps the crypto-only startup path completely unchanged.  Credential absence
+    → None + warning (graceful) because the adapter itself raises RuntimeError
+    with a clear message; we catch it here so the rest of the engine starts.
+    Module absence → None + warning (graceful) because kraken-sdk is optional.
+    """
+    xstocks_cfg = config.get("kraken_xstocks", {})
+    if not xstocks_cfg.get("enabled", False):
+        return None
+
+    try:
+        from cerebrum.adapters.kraken_xstocks import KrakenXStocksAdapter
+    except ImportError as e:
+        logger.warning(
+            "kraken_xstocks_unavailable",
+            reason="module_not_found",
+            error=str(e),
+        )
+        return None
+
+    adapter_config = {
+        "symbols": xstocks_cfg.get("symbols", []),
+        "poll_interval_seconds": xstocks_cfg.get("poll_interval_seconds", 5),
+    }
+
+    try:
+        adapter = KrakenXStocksAdapter(bus=event_bus, config=adapter_config)
+    except ImportError as e:
+        logger.warning(
+            "kraken_xstocks_unavailable",
+            reason="module_not_found",
+            error=str(e),
+        )
+        return None
+    except RuntimeError as e:
+        logger.warning(
+            "kraken_xstocks_auth_failed",
+            error=str(e),
+        )
+        return None
+
+    logger.info("kraken_xstocks_adapter_built", symbols=xstocks_cfg.get("symbols", []))
+    return adapter
+
+
 class CerebrumCoin:
     """
     Main application controller.
@@ -230,6 +289,7 @@ class CerebrumCoin:
         self.kraken_adapter: KrakenAdapter | None = None
         self.paper_adapter: PaperTradingAdapter | None = None
         self.alpaca_adapter: Any | None = None
+        self.xstocks_adapter: Any | None = None
         self.candle_agg: CandleAggregator | None = None
         self.candle_agg_1h: CandleAggregator | None = None
         self._signal_generators: list[Any] = []
@@ -618,6 +678,17 @@ class CerebrumCoin:
                     reason="cerebrum.strategies.orb_stocks not yet implemented",
                 )
 
+        # xstocks_reversion: config-driven gate — only registered when
+        # [strategy.xstocks_reversion] enabled = true (DEC-XSTOCKS-001).
+        _xstocks_cfg = self._raw_toml.get("strategy", {}).get("xstocks_reversion", {})
+        if _xstocks_cfg.get("enabled", False):
+            try:
+                from cerebrum.strategies.xstocks_reversion import XSTOCKS_REVERSION_CONFIG
+                self.strategy_registry.register(XSTOCKS_REVERSION_CONFIG)
+                self._log.info("xstocks_reversion_strategy_registered")
+            except ImportError:
+                self._log.warning("xstocks_reversion_unavailable")
+
         # Build and start all strategy pipelines, injecting shared global guards
         await self.strategy_registry.start_all(shared_global_rules=global_guards)
 
@@ -832,6 +903,14 @@ class CerebrumCoin:
             await self.alpaca_adapter.connect()
             alpaca_symbols = self._raw_toml.get("alpaca", {}).get("symbols", [])
             await self.alpaca_adapter.subscribe_market_data(alpaca_symbols)
+
+        # Conditionally wire KrakenXStocks adapter for 24/7 tokenized equities
+        # (DEC-XSTOCKS-001).  Disabled by default — crypto-only path unchanged.
+        self.xstocks_adapter = _maybe_build_kraken_xstocks_adapter(self._raw_toml, self.bus)
+        if self.xstocks_adapter is not None:
+            await self.xstocks_adapter.connect()
+            xstocks_symbols = self._raw_toml.get("kraken_xstocks", {}).get("symbols", [])
+            await self.xstocks_adapter.subscribe_market_data(xstocks_symbols)
 
         # Initialize execution adapter based on trading mode
         if config.trading.mode == TradingMode.LIVE:
@@ -1071,6 +1150,9 @@ class CerebrumCoin:
 
         if self.alpaca_adapter:
             await self.alpaca_adapter.disconnect()
+
+        if self.xstocks_adapter:
+            await self.xstocks_adapter.disconnect()
 
         if self.paper_adapter:
             await self.paper_adapter.disconnect()
