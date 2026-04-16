@@ -96,7 +96,7 @@ enabled = true
 # Alpaca stock trading — uncomment and fill in credentials to enable
 # Leave commented out for crypto-only paper trading sessions
 [alpaca]
-enabled = false                              # DEC-STOCKS-001 — set to true after Phase 8 live verification
+enabled = true
 api_key_env = "ALPACA_API_KEY_ID"
 secret_key_env = "ALPACA_API_SECRET_KEY"
 paper_base_url = "https://paper-api.alpaca.markets"
@@ -148,7 +148,7 @@ symbols = ["AAPL", "MSFT", "NVDA"]
 
 # === ORB stocks strategy ===
 [strategy.orb_stocks]
-enabled = false                              # DEC-STOCKS-001 — gate until alpaca also enabled
+enabled = true
 initial_balance = 5000.0
 symbols = ["AAPL", "MSFT", "NVDA"]
 signal_source_filter = "OpeningRange"
@@ -166,3 +166,28 @@ technical = 1.0
 sentiment = 0.0
 news = 0.0
 regime = 0.0
+
+# === Kraken xStocks adapter (tokenized equities, 24/7) ===
+[kraken_xstocks]
+enabled = false                              # DEC-XSTOCKS-001
+symbols = ["AAPLx/USD", "MSFTx/USD", "NVDAx/USD"]
+
+# === xStocks mean-reversion strategy ===
+[strategy.xstocks_reversion]
+enabled = false
+initial_balance = 5000.0
+symbols = ["AAPLx/USD", "MSFTx/USD", "NVDAx/USD"]
+aggregation_threshold = 0.4
+position_size_percent = 20.0
+stop_loss_percent = 1.0
+take_profit_percent = 1.5
+max_position_age_minutes = 120
+min_hold_minutes = 15
+post_fill_cooldown_seconds = 1800
+min_signal_strength = 0.65
+
+[strategy.xstocks_reversion.weights]
+technical = 1.2
+sentiment = 0.0
+news = 0.0
+regime = 0.5

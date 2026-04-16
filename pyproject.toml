@@ -36,6 +36,9 @@ ml = [
 stocks = [
     "alpaca-py>=0.28.0",
 ]
+xstocks = [
+    "python-kraken-sdk>=3.2.0",
+]
 
 [build-system]
 requires = ["hatchling"]

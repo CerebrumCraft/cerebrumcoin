@@ -466,6 +466,14 @@ def migrate_state_v2_to_v3(path: Path | str, *, initial_balance_orb: float) -> d
             "total_realized_pnl": "0",
             "positions": {},
         }
+    if "xstocks_reversion" not in snapshots:
+        snapshots["xstocks_reversion"] = {
+            "cash_balance": str(initial_balance_orb),
+            "initial_balance": str(initial_balance_orb),
+            "peak_equity": str(initial_balance_orb),
+            "total_realized_pnl": "0",
+            "positions": {},
+        }
 
     # Atomic write
     tmp = path.with_suffix(path.suffix + ".tmp")
