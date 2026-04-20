@@ -199,3 +199,69 @@ async def test_aggregator_filters_by_source(started_bus):
         f"SupportResistance signal should have been accepted, buffer has "
         f"{len(agg._signal_buffer['BTC/USD'])} entries"
     )
+
+
+@pytest.mark.asyncio
+async def test_congressional_signal_reaches_only_pelosi_aggregator(started_bus):
+    """Congressional signals must reach pelosi_follow's aggregator and NOT others.
+
+    REQ-GOAL-004 + Phase 15B signal isolation: a SignalEvent tagged
+    metadata["source"]="Congressional" is accepted by an aggregator with
+    signal_source_filter="Congressional" and rejected by aggregators with
+    signal_source_filter="SupportResistance" and "OpeningRange".
+
+    This test is the canonical proof-point for signal isolation — it lives here
+    (alongside the existing SupportResistance isolation test) so the two cases
+    are maintained together.
+    """
+    from time import time as _time
+    from decimal import Decimal as D
+
+    # pelosi_follow aggregator — only accepts Congressional
+    pelosi_agg = SignalAggregator(
+        started_bus,
+        signal_source_filter="Congressional",
+        threshold=D("0.1"),
+    )
+    # Other strategy aggregators with source filters
+    sr_agg = SignalAggregator(
+        started_bus,
+        signal_source_filter="SupportResistance",
+        threshold=D("0.1"),
+    )
+    orb_agg = SignalAggregator(
+        started_bus,
+        signal_source_filter="OpeningRange",
+        threshold=D("0.1"),
+    )
+
+    congressional_signal = SignalEvent(
+        event_type=EventType.SIGNAL,
+        timestamp=_time(),
+        signal_type=SignalType.NEWS,
+        symbol="NVDA",
+        action=SignalAction.BUY,
+        strength=D("0.75"),
+        confidence=D("0.65"),
+        reason="Congressional Stock Purchase by Pelosi (filing_id=test-001)",
+        metadata={
+            "source": "Congressional",
+            "filing_id": "test-001",
+            "filing_date": "2026-04-01",
+        },
+    )
+    await started_bus.publish(congressional_signal)
+    await asyncio.sleep(0.1)
+
+    # pelosi_follow must receive it
+    assert len(pelosi_agg._signal_buffer.get("NVDA", [])) == 1, (
+        "Congressional signal must be buffered by pelosi_follow aggregator"
+    )
+    # SupportResistance aggregator must NOT receive it
+    assert len(sr_agg._signal_buffer.get("NVDA", [])) == 0, (
+        "Congressional signal must NOT reach range_trading (SupportResistance) aggregator"
+    )
+    # OpeningRange aggregator must NOT receive it
+    assert len(orb_agg._signal_buffer.get("NVDA", [])) == 0, (
+        "Congressional signal must NOT reach orb_stocks (OpeningRange) aggregator"
+    )

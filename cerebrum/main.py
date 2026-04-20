@@ -259,6 +259,69 @@ def _maybe_build_kraken_xstocks_adapter(config: dict[str, Any], event_bus: Any) 
     return adapter
 
 
+def _maybe_build_congressional_signal(config: dict[str, Any], event_bus: Any) -> Any | None:
+    """Conditionally instantiate the CongressionalTradeSignal generator.
+
+    Returns None when disabled/absent, or when the congressional module is
+    unavailable.  Raises RuntimeError only when the caller has set enabled=true
+    but the FINNHUB_API_KEY env var is missing — fail-fast so operators know
+    immediately when they misconfigure.
+
+    The ``config`` argument is a plain dict (raw TOML), NOT the typed ``Config``
+    dataclass — keeps this helper independently testable without constructing the
+    full Config object.  Mirrors the shape of ``_maybe_build_kraken_xstocks_adapter``.
+
+    @decision DEC-PELOSI-DATA-001
+    @title Finnhub free-tier congressional-trading endpoint
+    @status accepted
+    @rationale Zero cost, stable JSON contract, filing_id exposed. Non-commercial ToS
+    acceptable for paper-only v1. Revisit Quiver if paper validates and we want live.
+    Finnhub ToS: https://finnhub.io/terms (non-commercial use permitted on free tier).
+    """
+    cong_cfg = config.get("signal", {}).get("congressional", {})
+    if not cong_cfg.get("enabled", False):
+        return None
+
+    try:
+        from cerebrum.signals.congressional import CongressionalTradeSignal
+        from cerebrum.data.congressional_ledger import CongressionalLedger
+    except ImportError as e:
+        logger.warning(
+            "congressional_signal_unavailable",
+            reason="module_not_found",
+            error=str(e),
+        )
+        return None
+
+    api_key_env = cong_cfg.get("api_key_env", "FINNHUB_API_KEY")
+    api_key = os.getenv(api_key_env, "")
+
+    pelosi_cfg = config.get("strategy", {}).get("pelosi_follow", {})
+    symbols = pelosi_cfg.get("symbols", cong_cfg.get("symbols", []))
+    poll_interval = cong_cfg.get("poll_interval_seconds", 300)
+    ledger_path = cong_cfg.get("ledger_path", "data/congressional_ledger.db")
+
+    # Persistent ledger (NOT in-memory) — dedup across restarts (DEC-PELOSI-DATA-001)
+    from pathlib import Path as _Path
+    ledger = CongressionalLedger(db_path=_Path(ledger_path))
+
+    signal_gen = CongressionalTradeSignal(
+        bus=event_bus,
+        symbols=symbols,
+        api_key=api_key,
+        poll_interval_seconds=poll_interval,
+        ledger=ledger,
+    )
+
+    logger.info(
+        "congressional_signal_built",
+        symbols=symbols,
+        poll_interval=poll_interval,
+        ledger_path=ledger_path,
+    )
+    return signal_gen
+
+
 class CerebrumCoin:
     """
     Main application controller.
@@ -312,6 +375,7 @@ class CerebrumCoin:
         self.conductor: Any | None = None            # Conductor
         self.web_dashboard: Any | None = None        # WebDashboard | None
         self.end_of_day_flatten: EndOfDayFlatten | None = None  # orb_stocks only
+        self.congressional_signal: Any | None = None             # pelosi_follow only
 
         self._shutdown_event = asyncio.Event()
         self._log = logger.bind(component="main")
@@ -689,6 +753,19 @@ class CerebrumCoin:
             except ImportError:
                 self._log.warning("xstocks_reversion_unavailable")
 
+        # pelosi_follow: config-driven gate — only registered when
+        # [strategy.pelosi_follow] enabled = true (DEC-PELOSI-UNIV-001).
+        # Signal isolation: signal_source_filter="Congressional" prevents this
+        # strategy from receiving RSI/MACD/BB/VWAP/SR/OpeningRange signals.
+        _pelosi_cfg = self._raw_toml.get("strategy", {}).get("pelosi_follow", {})
+        if _pelosi_cfg.get("enabled", False):
+            try:
+                from cerebrum.strategies.pelosi_follow import PELOSI_FOLLOW_CONFIG
+                self.strategy_registry.register(PELOSI_FOLLOW_CONFIG)
+                self._log.info("pelosi_follow_strategy_registered")
+            except ImportError:
+                self._log.warning("pelosi_follow_unavailable")
+
         # Build and start all strategy pipelines, injecting shared global guards
         await self.strategy_registry.start_all(shared_global_rules=global_guards)
 
@@ -729,6 +806,70 @@ class CerebrumCoin:
                     self._log.info(
                         "end_of_day_flatten_wired",
                         strategy="orb_stocks",
+                        symbols=config.risk.end_of_day_flatten_stock_symbols,
+                        offset_minutes=config.risk.end_of_day_flatten_offset_minutes,
+                    )
+
+        # --- pelosi_follow-only: StalenessGateRule + MarketHoursGateRule + EndOfDayFlatten ---
+        # Wire after start_all() so the pelosi_follow pipeline already exists in the registry.
+        # StalenessGateRule rejects congressional signals older than 45 days (DEC-PELOSI-LAG-001).
+        # MarketHoursGateRule and EndOfDayFlatten cover the pelosi universe symbols via the
+        # config lists extended in paper.toml (symbols now include NVDA, AAPL, MSFT, GOOGL,
+        # AVGO, TEM, PANW alongside the orb_stocks symbols — RTH gate is shared).
+        if "pelosi_follow" in self.strategy_registry.active_strategy_names():
+            _pelosi_raw = self._raw_toml.get("signal", {}).get("congressional", {})
+            _staleness_ceiling = int(_pelosi_raw.get("staleness_ceiling_days", 45))
+
+            pelosi_risk_manager = self.strategy_registry.get_risk_manager("pelosi_follow")
+            if pelosi_risk_manager is not None:
+                try:
+                    from cerebrum.risk.staleness_gate import StalenessGateRule
+                    pelosi_risk_manager._rules.append(
+                        StalenessGateRule(staleness_ceiling_days=_staleness_ceiling)
+                    )
+                    self._log.info(
+                        "staleness_gate_wired",
+                        strategy="pelosi_follow",
+                        staleness_ceiling_days=_staleness_ceiling,
+                    )
+                except ImportError:
+                    self._log.warning("staleness_gate_unavailable")
+
+                if config.risk.market_hours_gate_enabled:
+                    pelosi_risk_manager._rules.append(
+                        MarketHoursGateRule(
+                            stock_symbols=config.risk.market_hours_gate_stock_symbols,
+                            entry_cutoff_minutes_before_close=(
+                                config.risk.market_hours_gate_entry_cutoff_minutes_before_close
+                            ),
+                        )
+                    )
+                    self._log.info(
+                        "market_hours_gate_wired",
+                        strategy="pelosi_follow",
+                        symbols=config.risk.market_hours_gate_stock_symbols,
+                        entry_cutoff_minutes=config.risk.market_hours_gate_entry_cutoff_minutes_before_close,
+                    )
+
+            if config.risk.end_of_day_flatten_enabled:
+                pelosi_portfolio = self.strategy_registry.get_portfolio("pelosi_follow")
+                if pelosi_portfolio is not None:
+                    # Create a second EndOfDayFlatten dedicated to pelosi_follow.
+                    # A single EndOfDayFlatten instance can only hold one portfolio ref,
+                    # so each stock strategy gets its own instance (same symbols list).
+                    pelosi_eod_flatten = EndOfDayFlatten(
+                        bus=self.bus,
+                        portfolio=pelosi_portfolio,
+                        stock_symbols=config.risk.end_of_day_flatten_stock_symbols,
+                        flatten_offset_minutes=config.risk.end_of_day_flatten_offset_minutes,
+                        strategy_id="pelosi_follow",
+                    )
+                    # Store so stop() can clean up; re-use the existing attribute as a list
+                    # by appending to _intelligence_components (lifecycle-managed list).
+                    self._intelligence_components.append(pelosi_eod_flatten)
+                    self._log.info(
+                        "end_of_day_flatten_wired",
+                        strategy="pelosi_follow",
                         symbols=config.risk.end_of_day_flatten_stock_symbols,
                         offset_minutes=config.risk.end_of_day_flatten_offset_minutes,
                     )
@@ -911,6 +1052,13 @@ class CerebrumCoin:
             await self.xstocks_adapter.connect()
             xstocks_symbols = self._raw_toml.get("kraken_xstocks", {}).get("symbols", [])
             await self.xstocks_adapter.subscribe_market_data(xstocks_symbols)
+
+        # Conditionally build CongressionalTradeSignal for pelosi_follow
+        # (DEC-PELOSI-DATA-001).  Disabled by default — only starts when
+        # [signal.congressional] enabled = true in config.
+        self.congressional_signal = _maybe_build_congressional_signal(self._raw_toml, self.bus)
+        if self.congressional_signal is not None:
+            await self.congressional_signal.start()
 
         # Initialize execution adapter based on trading mode
         if config.trading.mode == TradingMode.LIVE:
@@ -1153,6 +1301,9 @@ class CerebrumCoin:
 
         if self.xstocks_adapter:
             await self.xstocks_adapter.disconnect()
+
+        if self.congressional_signal is not None:
+            await self.congressional_signal.stop()
 
         if self.paper_adapter:
             await self.paper_adapter.disconnect()
