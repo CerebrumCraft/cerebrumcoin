@@ -1,0 +1,11 @@
+[
+  {
+    "id": "filing-004",
+    "symbol": "AAPL",
+    "transactionDate": "2026-03-10",
+    "filingDate": "2026-04-10",
+    "transactionType": "Put (ST) Purchase",
+    "amount": "500001-1000000",
+    "representative": "Nancy Pelosi"
+  }
+]
