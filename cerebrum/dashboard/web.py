@@ -205,6 +205,10 @@ class WebDashboard:
         self._server_task: asyncio.Task | None = None
         self._server: uvicorn.Server | None = None
 
+        # Periodic equity snapshot task (no-fill sessions still populate charts)
+        self._snapshot_interval_seconds: float = 30.0
+        self._snapshot_task: asyncio.Task | None = None
+
         # Local cache of denial counts for delta broadcasting
         self._last_denial_counts: dict[str, dict[str, int]] = {}
 
@@ -299,6 +303,9 @@ class WebDashboard:
         self._server_task = asyncio.create_task(
             self._server.serve(), name="web_dashboard_server"
         )
+        self._snapshot_task = asyncio.create_task(
+            self._periodic_snapshot(), name="web_dashboard_snapshots"
+        )
         self._log.info(
             "web_dashboard_started",
             url=f"http://{self._host}:{self._port}",
@@ -322,7 +329,54 @@ class WebDashboard:
             await asyncio.gather(self._server_task, return_exceptions=True)
             self._server_task = None
 
+        if self._snapshot_task:
+            self._snapshot_task.cancel()
+            try:
+                await self._snapshot_task
+            except asyncio.CancelledError:
+                pass
+            self._snapshot_task = None
+
         self._log.info("web_dashboard_stopped")
+
+    async def _periodic_snapshot(self) -> None:
+        """Periodically snapshot global and per-strategy equity so charts populate
+        even when there are zero fills in a session.
+
+        @decision DEC-DASH-007
+        @title Periodic equity snapshot task — fill-independent chart population
+        @status accepted
+        @rationale Session 34 ran 14h with zero fills, leaving _equity_history and
+        _strategy_equity_history empty and blanking the dashboard equity curves.
+        The fill-path snapshot logic at _on_fill (lines 582-609) is additive and
+        kept intact. This task runs every _snapshot_interval_seconds (default 30s)
+        and appends the same shape of point as the fill path, capped at 500 points.
+        Exceptions inside the loop are caught and logged so a transient portfolio
+        read error (e.g. during shutdown) never kills the task.
+        """
+        while True:
+            await asyncio.sleep(self._snapshot_interval_seconds)
+            try:
+                ts = int(time.time())
+                # Global equity snapshot
+                total_equity = float(self._get_global_equity())
+                self._equity_history.append({"ts": ts, "equity": total_equity})
+                if len(self._equity_history) > 500:
+                    self._equity_history = self._equity_history[-500:]
+
+                # Per-strategy equity snapshots
+                for name in self._registry.active_strategy_names():
+                    portfolio = self._registry.get_portfolio(name)
+                    if portfolio:
+                        history = self._strategy_equity_history.setdefault(name, [])
+                        history.append({"ts": ts, "equity": float(portfolio.get_total_equity())})
+                        if len(history) > 500:
+                            self._strategy_equity_history[name] = history[-500:]
+            except Exception as exc:
+                self._log.warning(
+                    "periodic_snapshot_error",
+                    error=str(exc),
+                )
 
     # ------------------------------------------------------------------
     # Route setup
