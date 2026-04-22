@@ -117,6 +117,17 @@ class MeanReversionStrategy:
 # StrategyConfig instance for use with StrategyRegistry (DEC-STRAT-008).
 # Parameters derived from MeanReversionStrategy defaults tuned through Session 6.
 # Capital is 1/4 of $10k — the 4-strategy equal-split starting point.
+#
+# @decision DEC-TUNE-017
+# @title Per-strategy position_size_percent 5.0 → 7.0 (Phase A.1 commission-floor fix)
+# @status accepted
+# @rationale Session 34 (2026-04-22, 14h, zero fills): 420 "Trade value <$100" denials
+# despite paper.toml [risk] position_size_percent = "7.0". Root cause: registry.py
+# fallback logic reads risk_overrides from StrategyConfig first; the Python-source
+# override at "5.0" was silently overriding the TOML value, making the TOML bump dead
+# code for these two strategies. Math: $5,000 × 7% × 0.6 signal-strength floor = $210,
+# comfortably above the $100 minimum trade value floor. Prior: DEC-TUNE-002 (5%=$125)
+# and DEC-SIZING-002 (same). Applied identically to range_trading.py.
 from cerebrum.strategies.base import StrategyConfig  # noqa: E402 (below class def intentional)
 
 MEAN_REVERSION_CONFIG = StrategyConfig(
@@ -130,7 +141,7 @@ MEAN_REVERSION_CONFIG = StrategyConfig(
     aggregator_threshold=Decimal("0.3"),
     risk_overrides={
         "min_signal_strength": "0.5",
-        "position_size_percent": "5.0",  # DEC-TUNE-002: at $2,500 capital, 5%=$125 matches momentum/breakout sizing; 3%=$75 loses too much to commission drag
+        "position_size_percent": "7.0",  # DEC-TUNE-017: Session 34 (2026-04-22): 420 "Trade value <$100" denials despite paper.toml bump to 7.0 — root cause was this Python-source override staying at 5.0 (dead code for registry lookup). Math: $5,000 × 7% × 0.6 strength-floor = $210 > $100 floor. DEC-TUNE-002 context: 5%=$125 was the prior floor-crossing fix vs 3%=$75.
         "post_fill_cooldown_seconds": 1800,  # DEC-TUNE-009: cooldown 900→1800s with consolidated capital
     },
     exit_config={
