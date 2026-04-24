@@ -31,6 +31,39 @@ visibility without crashing the bot.
 based on rolling Sharpe without any LLM cost. Operators who don't want LLM
 overhead (or haven't configured an API key) get full Darwinian allocation.
 The Conductor detects missing key at startup and skips all LLM code paths.
+
+@decision DEC-CONDUCTOR-007
+@title Per-cycle Sharpe refresh: call _refresh_allocator_performance at top of _apply_allocations
+@status accepted
+@rationale update_performance() was called zero times in production (Session 37:
+148 allocation_applied events, all showing sharpe=N/A). The fix feeds closed trades
+from each strategy's PortfolioTracker into the allocator immediately before it reads
+_sharpe to compute allocations or build the Haiku prompt. Trigger design (b) —
+per-Conductor-cycle refresh — is chosen over (a) per-fill and (c) hybrid because:
+(a) per-fill couples PortfolioTracker to allocator on the hot path; (b) one refresh
+call per 15-minute cycle is O(n*trades) and negligible at single-digit trades per
+strategy; (c) hybrid is premature until (b) proves slow.
+
+@decision DEC-CONDUCTOR-009
+@title Equity curve passed as empty list; reserved for future Sortino metrics
+@status accepted
+@rationale update_performance() accepts equity_curve for future Sortino/drawdown
+metrics. Passing [] today ships the minimal working fix. Revisit when Sortino planned.
+
+@decision DEC-CONDUCTOR-010
+@title Minimum 3 closed trades required before calling update_performance
+@status accepted
+@rationale Sharpe over 1-2 trades is noise. With fewer than 3 closed trades the
+strategy's _sharpe[name] stays None and the allocator treats it as neutral (0.0),
+giving equal-split semantics. Prevents a single lucky fill from doubling allocation.
+User confirmed: neutral-on-low-N (equal weight) is the correct policy.
+
+@decision DEC-CONDUCTOR-011
+@title Warmup semantics unchanged; _refresh_allocator_performance only populates the dict
+@status accepted
+@rationale Warmup returns equal-split regardless of _sharpe contents (allocator.py).
+Wiring update_performance only populates the Sharpe dict; it does not shorten or
+alter the warmup period.
 """
 
 import asyncio
@@ -356,6 +389,11 @@ class Conductor:
             _bypass_copilot: Internal flag — set True by approve_pending() so
                              the approval path actually applies the allocation.
         """
+        # DEC-CONDUCTOR-007: refresh Sharpe data before copilot gate so that
+        # even queued (pending) proposals see current performance numbers when
+        # they are eventually applied via approve_pending().
+        self._refresh_allocator_performance()
+
         if self.copilot_mode and not _bypass_copilot:
             # Queue for human approval — overwrite any previous pending proposal
             self._pending_allocation = dict(allocations)
@@ -411,6 +449,44 @@ class Conductor:
                     target_balance=str(round(target_balance, 2)),
                     delta=str(round(delta, 2)),
                 )
+
+    def _refresh_allocator_performance(self) -> None:
+        """
+        Feed closed-trade history from each strategy's PortfolioTracker into
+        the DarwinianAllocator so _sharpe[name] reflects real session data.
+
+        Called at the top of _apply_allocations before the Haiku prompt reads
+        _sharpe or the math fallback computes post-warmup allocations
+        (DEC-CONDUCTOR-007).
+
+        Per-strategy behaviour:
+        - Fetch trades via registry.get_portfolio(name).get_closed_trades()
+          using the allocator's sharpe_window_hours converted to seconds.
+        - If len(trades) >= 3: call allocator.update_performance() so _sharpe
+          gets a real numeric value (DEC-CONDUCTOR-010).
+        - If len(trades) < 3: skip — _sharpe[name] stays None, allocator
+          treats it as neutral (0.0 shift), equal-split fallback applies.
+        - Equity curve is passed as [] (DEC-CONDUCTOR-009).
+
+        Silently skips strategies whose portfolio is not registered in the
+        registry (e.g. strategies added after set_strategy_portfolios()).
+        """
+        window_seconds = self._allocator._sharpe_window_hours * 3600
+        for name in self._allocator._strategies:
+            portfolio = self._registry.get_portfolio(name)
+            if portfolio is None:
+                continue
+            trades = portfolio.get_closed_trades(window_seconds=window_seconds)
+            if len(trades) < 3:
+                # DEC-CONDUCTOR-010: < 3 trades → keep _sharpe=None (neutral)
+                continue
+            self._allocator.update_performance(name, trades=trades, equity_curve=[])
+            self._log.debug(
+                "sharpe_refreshed",
+                strategy=name,
+                trade_count=len(trades),
+                sharpe=self._allocator._sharpe.get(name),
+            )
 
     def _cap_allocations(
         self, allocations: dict[str, Decimal]

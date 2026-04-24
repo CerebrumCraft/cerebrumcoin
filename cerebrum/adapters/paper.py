@@ -127,6 +127,9 @@ class PaperTradingAdapter(ExchangeAdapter):
             # Always runs regardless of whether orb_stocks is enabled — the
             # orb_stocks snapshot sits dormant until the strategy is activated.
             migrate_state_v2_to_v3(self._state_file, initial_balance_orb=5000.0)
+            # Migrate v3 → v4: adds closed_trades list to every strategy snapshot
+            # so Sharpe history survives restarts (DEC-CONDUCTOR-012).
+            migrate_state_v3_to_v4(self._state_file)
             self._load_state()
             self._log.info("paper_state_loaded", state_file=str(self._state_file))
         else:
@@ -482,6 +485,57 @@ def migrate_state_v2_to_v3(path: Path | str, *, initial_balance_orb: float) -> d
             "total_realized_pnl": "0",
             "positions": {},
         }
+
+    # Atomic write
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(path)
+
+    return data
+
+
+def migrate_state_v3_to_v4(path: Path | str) -> dict:
+    """Migrate paper_state.json from v3 to v4 by adding closed_trades to snapshots.
+
+    @decision DEC-CONDUCTOR-012
+    @title Atomic v3→v4 state migration adds closed_trades list to every snapshot
+    @status accepted
+    @rationale Without persisting closed_trades, the DarwinianAllocator Sharpe feed
+    (DEC-CONDUCTOR-008) re-warms from zero on every restart — losing all performance
+    history accumulated during a session. v4 adds a closed_trades key (list, default [])
+    to each strategy snapshot so restore_snapshot() can repopulate the in-memory deque.
+    Migration is idempotent on v4 input. A .v3.bak backup is created before any write,
+    matching the pattern of the v2→v3 migration (DEC-STOCKS-006). Empty closed_trades
+    keys are intentionally written so that sessions that had no closes still load cleanly.
+    Version bump is from 3 → 4 on the top-level "version" key.
+
+    Preserves all existing v3 fields verbatim. Idempotent on v4 input.
+
+    Args:
+        path: Path to paper_state.json.
+
+    Returns:
+        Migrated state dict (or original dict if already v4).
+    """
+    path = Path(path)
+    content = path.read_text().strip()
+    if not content:
+        return {}
+
+    data = json.loads(content)
+
+    if data.get("version", 3) >= 4:
+        return data  # already migrated — no-op
+
+    # Backup before mutation (mirrors v2→v3 pattern)
+    backup = path.parent / f"{path.stem}.v3.bak{path.suffix}"
+    shutil.copy(path, backup)
+
+    # Migrate in-memory: bump version and add closed_trades to each snapshot
+    data["version"] = 4
+    for _name, snapshot in data.get("strategy_snapshots", {}).items():
+        if "closed_trades" not in snapshot:
+            snapshot["closed_trades"] = []
 
     # Atomic write
     tmp = path.with_suffix(path.suffix + ".tmp")
