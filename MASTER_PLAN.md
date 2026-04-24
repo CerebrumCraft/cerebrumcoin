@@ -18,6 +18,34 @@ CerebrumCoin is an autonomous adaptive AI trading agent that integrates news, se
 
 **Status**: ALL PHASES COMPLETED — CerebrumCoin is a fully operational autonomous trading agent
 
+## Current Active Work (Session 40, 2026-04-24)
+
+**Live paper session**: Session 40 running since 2026-04-24 03:03:59 UTC (PID 207994) in `.worktrees/live` on branch `live` (= main HEAD `3b993a8`). Launched via `scripts/launch_paper.sh`. Fresh $10,000 state.
+
+**Active strategies (3)**:
+- `mean_reversion` — enabled
+- `range_trading` — enabled
+- `orb_stocks` — enabled
+
+**Paused strategies**:
+- `pelosi_follow` — paused. Phase 15A (data pipeline) and Phase 15B (strategy wiring) landed; **Phase 15C BLOCKED** because Finnhub `/stock/congressional-trading` is Business/Premium-tier only. Free-tier key returned 403 for all 7 symbols during Session 32. Replacement path tracked in `im40percentgit/cerebrumcoin#35`: port the House Clerk ZIP scraper from `im40percentgit/StockInsightsTracker` with OpenRouter LLM-based PDF extraction.
+- `xstocks_reversion` — paused (Kraken xStocks wiring landed but disabled pending future evaluation).
+
+**Recent production decisions (2026-04-23/24)**:
+
+| ID | Description | Commit | Rationale |
+|----|-------------|--------|-----------|
+| DEC-TUNE-PHASE-A-001 | Session 34 Phase A tuning: `position_size_percent` 5.0→7.0, `volatility_gate_min_range_pct` 0.5→0.35, `bear_halt_min_confidence` 0.7→0.85 | `a6d2d91` (merged via `3b993a8`) | Session 33 analysis (30h 35m, 2 fills, -$8): 99.9% signal denial rate. 48% of 2,204 position_sizing denials were sub-$100 trade values (signal-strength scaling pushed trades below the $100 floor → bigger base size fixes it). 35% of BEAR-halt denials were false positives in a rising market (BTC +0.91%) → raise halt confidence floor to 0.85. Widening volatility gate captures more low-range entries. |
+| DEC-CONDUCTOR-006 | Conductor capital conservation — residual redistribution in `_apply_allocations` | `04c046c` | Per-strategy trackers previously leaked surplus when one had post-fill cash above target. Introduces `global_equity_fn` wiring in `main.py` + `get_global_equity()` on paper adapter + `set_total_capital()` on allocator. Ensures total capital across trackers matches true equity every Conductor cycle. |
+| DEC-CONDUCTOR-007 | `_refresh_allocator_performance` called per Conductor cycle; 3-trade minimum gate for Sharpe feed | `b92f9df` | DarwinianAllocator needs Sharpe input to reallocate. Previously wired but never called. 3-trade floor prevents noise-driven reallocation on single-trade strategies. |
+| DEC-CONDUCTOR-008 | `_closed_trades` deque on `PortfolioTracker` | `b92f9df` | Sharpe requires historical closed-trade returns. Bounded deque prevents unbounded memory growth while preserving enough history for stable Sharpe. |
+| DEC-CONDUCTOR-009 | Equity curve parameter reserved on allocator API | `b92f9df` | Forward-compatible API: pass equity curve alongside closed trades for future Sharpe variants (rolling/weighted). Currently unused but plumbed. |
+| DEC-CONDUCTOR-010 | 3-trade minimum gate explicit in allocator | `c24e0e3` (merge) | Duplicates 007 gate at the allocator layer so the floor is enforced regardless of caller. Defense in depth. |
+| DEC-CONDUCTOR-011 | Warmup behavior unchanged through DarwinianAllocator wiring | `c24e0e3` (merge) | Explicit no-op decision: warmup still runs on equal allocation until trade history matures. Preserves conservative startup behavior. |
+| DEC-CONDUCTOR-012 | v3→v4 state migration, `CURRENT_STATE_VERSION=4` in `paper.py` | `096317d` | Closed-trade history must survive restart for Sharpe to work across sessions. v4 adds `closed_trades` to snapshot; v3 files upgrade with empty deque (no error). |
+
+Detailed analyses in `docs/superpowers/plans/` and `/home/j/.claude/projects/.../memory/project_session34.md`.
+
 ## Technology Stack
 
 | Component | Library | Rationale |
