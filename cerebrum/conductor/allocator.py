@@ -152,6 +152,25 @@ class DarwinianAllocator:
     # Public API
     # ------------------------------------------------------------------
 
+    def set_total_capital(self, value: Decimal) -> None:
+        """
+        Update the total capital baseline used for allocation target computations.
+
+        Called by the Conductor immediately before each ``_apply_allocations``
+        cycle to reflect realised P&L that has accumulated in the shared USD
+        pool since the last allocation (Bug B fix: stale ``_total_capital``).
+
+        Args:
+            value: Current global equity from the live paper adapter.
+        """
+        if value != self._total_capital:
+            self._log.debug(
+                "total_capital_refreshed",
+                old=str(self._total_capital),
+                new=str(value),
+            )
+            self._total_capital = value
+
     def update_performance(
         self,
         strategy_name: str,

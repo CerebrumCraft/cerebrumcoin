@@ -968,6 +968,11 @@ class CerebrumCoin:
             registry=self.strategy_registry,
             allocator=self.allocator,
             anthropic_api_key=anthropic_key,
+            # Wire live global equity so _apply_allocations refreshes
+            # _total_capital on every cycle (DEC-CONDUCTOR-006 Bug B fix).
+            # paper_adapter is guaranteed non-None here (multi-strategy path
+            # only runs after _init_paper_adapter succeeded).
+            global_equity_fn=self.paper_adapter.get_global_equity if self.paper_adapter else None,
         )
         await self.conductor.start()
 

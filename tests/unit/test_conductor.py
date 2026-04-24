@@ -595,8 +595,201 @@ async def test_whole_percentage_allocations_not_rescaled(
 
 
 # ---------------------------------------------------------------------------
-# Test 12: _refresh_allocator_performance calls update_performance for
-# strategies with >= 3 closed trades and populates _sharpe (DEC-CONDUCTOR-007)
+# Test 12 (DEC-CONDUCTOR-006 Bug A): Conservation — post-fill surplus must
+# not leak out of per-strategy accounting
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_conservation_post_fill_surplus(bus, allocator, clock):
+    """
+    Session 37 root cause: one tracker had cash above target (from a
+    profitable fill), the other two were exactly at target. The old code
+    only adjusted the surplus tracker downward and never credited the
+    difference elsewhere — the surplus vanished from per-strategy accounting.
+
+    The two bugs must be fixed together for conservation to hold:
+
+      Bug B (stale total_capital): allocator was initialised with $10,000
+      but the actual system cash is $10,204.74 (mean_reversion's fill
+      surplus). global_equity_fn returns the true cash and refreshes
+      _total_capital so targets are computed against the real balance.
+
+      Bug A (conservation): once targets reflect actual cash, sum(deltas)
+      is naturally near zero. The residual-distribution path handles any
+      rounding remainder. This test verifies that after both fixes the sum
+      of all tracker cash balances equals the actual total cash present in
+      the system.
+
+    Uses real PortfolioTracker objects so adjust_balance accumulates into
+    actual state.
+    """
+    from cerebrum.risk.portfolio import PortfolioTracker
+
+    # mean_reversion earned $204.75 in a closed trade — its cash exceeds its
+    # original equal-third share. The other two are at the original target.
+    surplus_cash = Decimal("3538.08")
+    equal_third = Decimal("10000") / Decimal("3")  # 3333.333...
+    actual_total = surplus_cash + equal_third + equal_third  # 10204.746...
+
+    # Build real PortfolioTracker objects for each strategy
+    pt_mr = PortfolioTracker(bus=bus, initial_balance=surplus_cash, strategy_id="mean_reversion")
+    pt_rt = PortfolioTracker(bus=bus, initial_balance=equal_third, strategy_id="range_trading")
+    pt_orb = PortfolioTracker(bus=bus, initial_balance=equal_third, strategy_id="orb_stocks")
+
+    strategy_names_local = ["mean_reversion", "range_trading", "orb_stocks"]
+    portfolios_local = {
+        "mean_reversion": pt_mr,
+        "range_trading": pt_rt,
+        "orb_stocks": pt_orb,
+    }
+    registry_local = MagicMock(spec=StrategyRegistry)
+    registry_local.get_portfolio.side_effect = lambda n: portfolios_local.get(n)
+
+    # Allocator is initialised with stale $10,000 — Bug B scenario
+    allocator_local = DarwinianAllocator(
+        strategy_names=strategy_names_local,
+        total_capital=Decimal("10000"),
+        warmup_hours=0.0,
+        _clock=clock,
+    )
+
+    # global_equity_fn returns the true cash in the system (Bug B fix)
+    def live_equity_fn() -> Decimal:
+        return actual_total
+
+    conductor = Conductor(
+        bus=bus,
+        registry=registry_local,
+        allocator=allocator_local,
+        anthropic_api_key=None,
+        global_equity_fn=live_equity_fn,
+        _clock=clock,
+    )
+
+    # Equal-split allocations: 33.333...% each
+    equal_pct = Decimal("100") / Decimal("3")
+    allocs = {name: equal_pct for name in strategy_names_local}
+
+    await conductor._apply_allocations(allocs)
+
+    final_sum = sum(portfolios_local[n].get_cash_balance() for n in strategy_names_local)
+    assert abs(final_sum - actual_total) < Decimal("0.02"), (
+        f"Per-strategy cash sum {final_sum} != actual_total {actual_total}; "
+        f"delta={final_sum - actual_total} — capital leaked"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 13 (DEC-CONDUCTOR-006 Bug B): total_capital is refreshed from live
+# global equity before targets are computed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_total_capital_refreshed_from_global_equity_fn(bus, mock_registry, clock):
+    """
+    The allocator is initialised with $10,000 but global equity has grown to
+    $10,500 (e.g. after profitable sessions). The Conductor must call
+    global_equity_fn() before computing targets so that target_balance
+    reflects the new capital, not the stale init value.
+
+    Assert: allocator._total_capital == Decimal("10500") after _apply_allocations.
+    """
+    stale_capital = Decimal("10000")
+    live_equity = Decimal("10500")
+
+    allocator_local = DarwinianAllocator(
+        strategy_names=STRATEGIES,
+        total_capital=stale_capital,
+        warmup_hours=0.0,
+        _clock=clock,
+    )
+
+    equity_fn_called = {"count": 0}
+
+    def mock_equity_fn() -> Decimal:
+        equity_fn_called["count"] += 1
+        return live_equity
+
+    conductor = Conductor(
+        bus=bus,
+        registry=mock_registry,
+        allocator=allocator_local,
+        anthropic_api_key=None,
+        global_equity_fn=mock_equity_fn,
+        _clock=clock,
+    )
+
+    equal_pct = Decimal("100") / Decimal(str(len(STRATEGIES)))
+    allocs = {name: equal_pct for name in STRATEGIES}
+
+    await conductor._apply_allocations(allocs)
+
+    assert equity_fn_called["count"] >= 1, "global_equity_fn was never called"
+    assert allocator_local._total_capital == live_equity, (
+        f"allocator._total_capital={allocator_local._total_capital}, "
+        f"expected {live_equity} after refresh"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 14 (DEC-CONDUCTOR-006): No-op when all trackers already at target
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_adjust_balance_when_already_at_target(bus, clock):
+    """
+    When all strategy trackers already hold exactly their target balance,
+    _apply_allocations must issue zero adjust_balance calls (all deltas are
+    below the 0.01 sub-cent threshold).
+
+    Uses mocked portfolios whose get_cash_balance() returns exactly the
+    equal-split target so no delta exists to apply.
+    """
+    total_capital = Decimal("30000")
+    equal_third = total_capital / Decimal("3")
+
+    strategy_names_local = ["momentum", "mean_reversion", "breakout"]
+    portfolios_local = {}
+    for name in strategy_names_local:
+        p = MagicMock()
+        p.get_cash_balance.return_value = equal_third  # exactly at target
+        portfolios_local[name] = p
+
+    registry_local = MagicMock(spec=StrategyRegistry)
+    registry_local.get_portfolio.side_effect = lambda n: portfolios_local.get(n)
+
+    allocator_local = DarwinianAllocator(
+        strategy_names=strategy_names_local,
+        total_capital=total_capital,
+        warmup_hours=0.0,
+        _clock=clock,
+    )
+
+    conductor = Conductor(
+        bus=bus,
+        registry=registry_local,
+        allocator=allocator_local,
+        anthropic_api_key=None,
+        _clock=clock,
+    )
+
+    equal_pct = Decimal("100") / Decimal("3")
+    allocs = {name: equal_pct for name in strategy_names_local}
+
+    await conductor._apply_allocations(allocs)
+
+    for name, p in portfolios_local.items():
+        assert not p.adjust_balance.called, (
+            f"adjust_balance called on '{name}' even though cash was already at target"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 15 (DEC-CONDUCTOR-007): _refresh_allocator_performance calls
+# update_performance for strategies with >= 3 closed trades and populates _sharpe
 # ---------------------------------------------------------------------------
 
 
@@ -660,8 +853,8 @@ async def test_refresh_allocator_performance_populates_sharpe(
 
 
 # ---------------------------------------------------------------------------
-# Test 13: _refresh_allocator_performance skips strategies with < 3 trades
-# and leaves _sharpe[name] as None (DEC-CONDUCTOR-010)
+# Test 16 (DEC-CONDUCTOR-010): _refresh_allocator_performance skips strategies
+# with < 3 trades and leaves _sharpe[name] as None
 # ---------------------------------------------------------------------------
 
 

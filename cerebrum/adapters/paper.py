@@ -428,6 +428,25 @@ class PaperTradingAdapter(ExchangeAdapter):
             self._state_version = 1
             self._strategy_snapshots = {}
 
+    def get_global_equity(self) -> Decimal:
+        """
+        Return the total USD equity held by this adapter.
+
+        Includes free USD cash plus the mark-to-market value of any open
+        positions at the last known price. Used by the Conductor to refresh
+        ``DarwinianAllocator._total_capital`` before each allocation cycle so
+        that realised P&L is reflected in target balances (Bug B fix).
+
+        When a position's price is unknown (no MARKET_DATA tick yet), its
+        contribution is omitted — this is conservative and matches the
+        behaviour of ``get_portfolio_summary()``.
+        """
+        total = self._balances.get("USD", Decimal("0"))
+        for symbol, amount in self._positions.items():
+            if amount > Decimal("0") and symbol in self._current_prices:
+                total += amount * self._current_prices[symbol]
+        return total
+
     def get_portfolio_summary(self) -> dict[str, Any]:
         """Get current portfolio state for monitoring."""
         total_value = self._balances.get("USD", Decimal("0"))

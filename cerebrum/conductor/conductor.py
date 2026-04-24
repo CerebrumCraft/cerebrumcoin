@@ -121,6 +121,7 @@ class Conductor:
         daily_review_hour: int = 0,
         max_haiku_calls_per_hour: int = 20,
         max_opus_calls_per_day: int = 2,
+        global_equity_fn: "Callable[[], Decimal] | None" = None,
         _clock: Callable[[], float] | None = None,
     ) -> None:
         """
@@ -137,12 +138,21 @@ class Conductor:
             daily_review_hour: UTC hour (0–23) to run Opus daily review.
             max_haiku_calls_per_hour: Rate cap for Haiku calls.
             max_opus_calls_per_day: Rate cap for Opus calls.
+            global_equity_fn: Zero-argument callable that returns the current
+                global USD equity from the live paper adapter. When provided,
+                ``_apply_allocations`` refreshes ``allocator._total_capital``
+                before each cycle so realised P&L is reflected in targets
+                (Bug B fix: stale _total_capital). Pass
+                ``paper_adapter.get_global_equity`` at construction time in
+                ``main.py``. None → use allocator's current total_capital
+                unchanged (backward-compatible for tests and math-only mode).
             _clock: Injectable time source for testing (defaults to time.time).
         """
         self._bus = bus
         self._registry = registry
         self._allocator = allocator
         self._api_key = anthropic_api_key
+        self._global_equity_fn = global_equity_fn
         self._haiku_model = haiku_model
         self._opus_model = opus_model
         self._poll_interval = poll_interval_seconds
@@ -428,26 +438,94 @@ class Conductor:
         allocations = self._cap_allocations(allocations)
 
         self._last_allocations = dict(allocations)
+
+        # @decision DEC-CONDUCTOR-006
+        # @title Live total_capital refresh + conservation check on every allocation cycle
+        # @status accepted
+        # @rationale Session 37 surfaced two capital-leak bugs:
+        #
+        #   Bug B (stale baseline): _total_capital was set once at allocator
+        #   __init__ and never updated. As realised P&L accumulated in the
+        #   shared USD pool (paper adapter), target_balance computations drifted
+        #   from actual global equity. Fix: call global_equity_fn() (wired to
+        #   paper_adapter.get_global_equity) and push the live value into the
+        #   allocator before computing targets.
+        #
+        #   Bug A (conservation violated): when one tracker held post-fill
+        #   surplus above its target and others were exactly at target, only
+        #   that one tracker was adjusted downward and the surplus was never
+        #   credited elsewhere — it vanished from per-strategy accounting.
+        #
+        #   Root cause of the residual: per-strategy targets sum to
+        #   total_capital, but the sum of current balances also equals
+        #   total_capital (assuming no prior leak). So sum(deltas) should
+        #   be zero. However if total_capital was stale (Bug B), the targets
+        #   don't sum to the actual cash in the system → non-zero residual.
+        #   After Bug B is fixed (refresh from global_equity_fn), the residual
+        #   should be zero in the normal case. This check is belt-and-suspenders
+        #   for rounding drift or edge cases where equity_fn lags fills.
+        #
+        #   Residual distribution rule: spread the residual equally across all
+        #   strategies except the one with the largest |delta| (which is the
+        #   post-fill surplus holder driving the imbalance). This ensures the
+        #   surplus extracted from that strategy lands in the others, making
+        #   sum(final_balances) == total_capital. Deterministic, no external
+        #   state required. Equal split is chosen over proportional split
+        #   because all targets are equally valid after capping/normalization.
+        if self._global_equity_fn is not None:
+            live_equity = self._global_equity_fn()
+            self._allocator.set_total_capital(live_equity)
+
         total_capital = self._allocator._total_capital
 
+        # --- Phase 1: compute all deltas without mutating ---
+        pending: list[tuple[str, Decimal, object]] = []  # (name, delta, portfolio)
         for name, pct in allocations.items():
             portfolio = self._registry.get_portfolio(name)
             if portfolio is None:
                 self._log.warning("portfolio_not_found", strategy=name)
                 continue
-
             target_balance = total_capital * pct / Decimal("100")
             current_balance = portfolio.get_cash_balance()
             delta = target_balance - current_balance
+            pending.append((name, delta, portfolio))
 
-            if abs(delta) > Decimal("0.01"):  # ignore sub-cent adjustments
+        # --- Phase 2: conservation check (belt-and-suspenders) ---
+        # sum(deltas) must be ≈ 0: what one tracker loses another must gain.
+        # If non-zero, spread the residual equally to all strategies except
+        # the largest-|delta| one (the post-fill surplus holder) so the cash
+        # it surrenders actually lands in the other trackers.
+        raw_residual = sum(d for _, d, _ in pending)
+        if abs(raw_residual) > Decimal("0.01") and len(pending) > 1:
+            # raw_residual = sum(deltas): negative means we're taking out more
+            # than we're putting in across all trackers. The surplus extracted
+            # from the largest-|delta| strategy must be credited to the others,
+            # so each recipient gets (-raw_residual / n_recipients) added to
+            # their delta. Negation converts "net withdrawal" → "credit to others".
+            largest_idx = max(range(len(pending)), key=lambda i: abs(pending[i][1]))
+            recipients = [i for i in range(len(pending)) if i != largest_idx]
+            per_recipient = -raw_residual / Decimal(str(len(recipients)))
+            self._log.warning(
+                "allocation_conservation_residual_distributed",
+                residual=str(round(raw_residual, 6)),
+                recipient_count=len(recipients),
+                per_recipient=str(round(per_recipient, 6)),
+            )
+            pending = [
+                (name, delta + per_recipient, portfolio) if i in recipients
+                else (name, delta, portfolio)
+                for i, (name, delta, portfolio) in enumerate(pending)
+            ]
+
+        # --- Phase 3: apply adjusted deltas ---
+        for name, delta, portfolio in pending:
+            if abs(delta) > Decimal("0.01"):  # ignore sub-cent noise
                 portfolio.adjust_balance(delta)
                 self._log.info(
                     "allocation_applied",
                     strategy=name,
-                    pct=str(round(pct, 2)),
-                    target_balance=str(round(target_balance, 2)),
                     delta=str(round(delta, 2)),
+                    new_cash=str(round(portfolio.get_cash_balance(), 2)),
                 )
 
     def _refresh_allocator_performance(self) -> None:
