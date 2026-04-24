@@ -581,6 +581,368 @@ Detailed analyses in `docs/superpowers/plans/` and `/home/j/.claude/projects/...
 
 ---
 
+## Decision Catalog
+_Auto-indexed from `@decision` annotations in source on 2026-04-24._
+_Excludes `DEC-TEST-*` and `DEC-TUNE-*` (code-local, non-architectural — not MASTER_PLAN-level)._
+_122 unique decisions across 46 categories._
+
+Each row: ID → short title → source file(s). Grep `@decision DEC-FOO-NNN` in the repo for full rationale and context.
+
+### DEC-ADAPTER-* — Exchange Adapters (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-ADAPTER-001` | Abstract adapter interface for exchange independence | adapters/base.py |
+
+### DEC-AGG-* — Signal Aggregation (2)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-AGG-001` | Signal aggregator with weighted combination and debounce | signals/aggregator.py |
+| `DEC-AGG-002` | Consensus multiplier via sqrt(buy_weight_fraction) | signals/aggregator.py |
+
+### DEC-ALLOC-* — Capital Allocation (3)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-ALLOC-001` | Darwinian capital allocation via rolling Sharpe ratio | conductor/allocator.py |
+| `DEC-ALLOC-002` | Auto-reactivation with exponential backoff prevents permanent deadlock | conductor/allocator.py |
+| `DEC-ALLOC-003` | All-paused edge case: reactivate the least-bad strategy | conductor/allocator.py |
+
+### DEC-ALPACA-* — Alpaca (Stocks) (2)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-ALPACA-001` | Alpaca adapter for multi-asset proof-of-concept | adapters/alpaca.py |
+| `DEC-ALPACA-002` | Conditional Alpaca adapter wiring via raw TOML config | main.py |
+
+### DEC-ANALYZE-* — Session Analysis (2)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-ANALYZE-001` | analyze.py replicates stats logic inline (no cerebrum imports) | s/analyze.py |
+| `DEC-ANALYZE-003` | weekly_report.py delegates to generate_report() from analyze.py | s/weekly_report.py |
+
+### DEC-BACKTEST-* — Backtesting (4)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-BACKTEST-001` | Full multi-strategy backtest reuses entire live pipeline | s/run_backtest.py |
+| `DEC-BACKTEST-002` | News/sentiment and Conductor skipped; RegimeDetector included | s/run_backtest.py |
+| `DEC-BACKTEST-003` | Automatic parameter scaling for non-1m candle intervals | s/run_backtest.py |
+| `DEC-BACKTEST-004` | (no title) | signals/aggregator.py, s/run_backtest.py |
+
+### DEC-BUS-* — Event Bus (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-BUS-001` | Async event bus with type-based subscriptions | core/bus.py |
+
+### DEC-CLEANUP-* — Cleanup / Orphans (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-CLEANUP-001` | One-time orphaned-trade fix using pure stdlib sqlite3 | s/fix_orphaned_trades.py |
+
+### DEC-COMMISSION-* — Commission Gate (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-COMMISSION-001` | Commission-aware minimum trade viability gate | risk/rules.py |
+
+### DEC-CONDUCTOR-* — LLM Conductor (12)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-CONDUCTOR-001` | Event-driven + polling hybrid LLM conductor | conductor/conductor.py |
+| `DEC-CONDUCTOR-002` | Freeze allocations on API failure, never reset | conductor/conductor.py |
+| `DEC-CONDUCTOR-003` | Math-only mode when no API key provided | conductor/conductor.py |
+| `DEC-CONDUCTOR-004` | 50% single-strategy allocation cap to prevent peak-equity spikes | conductor/conductor.py |
+| `DEC-CONDUCTOR-005` | Normalize LLM allocation fractions to percentages | conductor/conductor.py |
+| `DEC-CONDUCTOR-006` | Live total_capital refresh + conservation check on every allocation cycle | conductor/conductor.py |
+| `DEC-CONDUCTOR-007` | Per-cycle Sharpe refresh: call _refresh_allocator_performance at top of _apply_allocations | conductor/conductor.py |
+| `DEC-CONDUCTOR-008` | Rolling closed-trades deque in PortfolioTracker for Darwinian Sharpe feed | risk/portfolio.py |
+| `DEC-CONDUCTOR-009` | Equity curve passed as empty list; reserved for future Sortino metrics | conductor/conductor.py |
+| `DEC-CONDUCTOR-010` | Minimum 3 closed trades required before calling update_performance | conductor/conductor.py |
+| `DEC-CONDUCTOR-011` | Warmup semantics unchanged; _refresh_allocator_performance only populates the dict | conductor/conductor.py |
+| `DEC-CONDUCTOR-012` | Atomic v3→v4 migration + _save_state version correctness closes Sharpe persistence | adapters/paper.py |
+
+### DEC-CONFIG-* — Configuration (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-CONFIG-001` | Pydantic Settings with TOML + env var layering | core/config.py |
+
+### DEC-COOL-* — Post-fill Cooldown (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-COOL-001` | (no title) | risk/rules.py |
+
+### DEC-DASH-* — Dashboard (7)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-DASH-001` | (no title) | dashboard/web.py, risk/portfolio.py |
+| `DEC-DASH-002` | htmx + FastAPI web dashboard for multi-strategy visualization | dashboard/web.py |
+| `DEC-DASH-003` | Copilot mode queues pending allocations rather than blocking the Conductor | dashboard/web.py |
+| `DEC-DASH-004` | Phase 12F state tracked from FillEvents in-memory — no DB queries | dashboard/web.py |
+| `DEC-DASH-005` | ProfileManager wired into WebDashboard as Optional — None means unavailable | dashboard/web.py |
+| `DEC-DASH-006` | Seed "Days Trading" from MIN(entry_time) in trades DB on init | dashboard/web.py |
+| `DEC-DASH-007` | Periodic equity snapshot task — fill-independent chart population | dashboard/web.py |
+
+### DEC-DENIAL-* — Denial Tracking (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-DENIAL-001` | (no title) | risk/manager.py |
+
+### DEC-EVENTS-* — Event Types (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-EVENTS-001` | Immutable frozen dataclasses for all events | core/events.py |
+
+### DEC-EXIT-* — Exit Monitor (5)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-EXIT-001` | ExitMonitor as separate component from RiskManager | risk/exit_monitor.py |
+| `DEC-EXIT-002` | Adaptive take-profit based on recent price range | risk/exit_monitor.py |
+| `DEC-EXIT-003` | ExitMonitor carries strategy_id and tags emitted OrderEvents | risk/exit_monitor.py |
+| `DEC-EXIT-004` | _on_fill clears pending_exits only when position is actually gone | risk/exit_monitor.py |
+| `DEC-EXIT-006` | min_hold_minutes prevents premature SL/TP exits on freshly-opened positions | risk/exit_monitor.py, risk/range_exit_monitor.py |
+
+### DEC-EXPORT-* — Data Export (3)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-EXPORT-001` | LLM fine-tuning JSONL exporter using raw sqlite3 (no ORM) | s/export_finetune.py |
+| `DEC-EXPORT-002` | Trades CSV exporter with flattened signal_snapshot columns | s/export_trades_csv.py |
+| `DEC-EXPORT-003` | Weight history CSV exporter with ISO timestamps | s/export_weights.py |
+
+### DEC-HOURS-* — Trading Hours (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-HOURS-001` | Local calendar market hours check — no external API dependency | risk/market_hours.py |
+
+### DEC-INT-* — Intelligence (LLM/Sentiment) (5)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-INT-001` | News ingestion with graceful degradation | intelligence/news.py, intelligence/social.py |
+| `DEC-INT-002` | Async polling with aiohttp | intelligence/llm.py, intelligence/news.py |
+| `DEC-INT-003` | Optional HMM with rule-based fallback for regime detection | signals/regime.py, signals/sentiment.py |
+| `DEC-INT-004` | Rate limiting and cost control for LLM | intelligence/llm.py |
+| `DEC-INT-005` | Regime-based signal weight adjustment | signals/aggregator.py, signals/regime.py |
+
+### DEC-KRAKEN-* — Kraken (Crypto) (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-KRAKEN-001` | ccxt.pro async WebSocket for real-time data | adapters/kraken.py |
+
+### DEC-LEARN-* — Learning / Weights (3)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-LEARN-001` | Trade outcome tracking with signal snapshots | learning/tracker.py |
+| `DEC-LEARN-002` | Conservative EMA weight adaptation | learning/adapter.py |
+| `DEC-LEARN-003` | Per-regime signal scoring | learning/scorer.py |
+
+### DEC-LIVE-* — Live Trading (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-LIVE-001` | (no title) | adapters/kraken.py |
+
+### DEC-MAIN-* — Main Entrypoint (2)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-MAIN-001` | Graceful shutdown with signal handlers | main.py |
+| `DEC-MAIN-002` | Multi-strategy mode as default with single-strategy fallback | main.py |
+
+### DEC-MONITOR-* — Monitoring / Stats (5)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-MONITOR-001` | Pure function stats calculator | monitoring/stats.py |
+| `DEC-MONITOR-002` | Event-driven dashboard with periodic updates | monitoring/dashboard.py |
+| `DEC-MONITOR-003` | Session reporter with file and console output | monitoring/reporter.py |
+| `DEC-MONITOR-004` | CLI stats viewer with filtering | s/show_stats.py |
+| `DEC-MONITOR-005` | Backtest runner with OHLCV replay | s/run_backtest.py |
+
+### DEC-NEWS-* — News Signals (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-NEWS-001` | News-heavy signal weighting for event-driven trading | strategies/news_driven.py |
+
+### DEC-PAPER-* — Paper Trading Adapter (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-PAPER-001` | File-based state persistence for paper trading | adapters/paper.py |
+
+### DEC-PERSIST-* — State Persistence (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-PERSIST-001` | Per-strategy PortfolioTracker snapshots in paper_state.json | adapters/paper.py, risk/portfolio.py |
+
+### DEC-PLUGIN-* — Plugin System (2)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-PLUGIN-001` | Abstract plugin interface with lifecycle hooks | plugins/base.py |
+| `DEC-PLUGIN-002` | Error isolation in plugin registry | plugins/registry.py |
+
+### DEC-PROFILE-* — Preset Profiles (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-PROFILE-002` | ProfileManager mutates private pipeline attributes for hot-swap | profiles/manager.py |
+
+### DEC-RANGE-* — Range Trading Strategy (7)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-RANGE-001` | RangeDetector as a queryable state object, not an event emitter | strategies/range_detector.py |
+| `DEC-RANGE-002` | Bounce deduplication via proximity zone tracking | strategies/range_detector.py |
+| `DEC-RANGE-003` | Regex-based level extraction from signal.reason string | strategies/range_detector.py |
+| `DEC-RANGE-004` | Structural exits over percentage-based for range trading | risk/range_exit_monitor.py |
+| `DEC-RANGE-005` | Fallback to percentage-based exits when no confirmed range exists | risk/range_exit_monitor.py |
+| `DEC-RANGE-006` | Dedicated range strategy with S/R-only signal filtering | strategies/range_trading.py |
+| `DEC-RANGE-007` | RangeExitMonitor carries strategy_id (same rationale as DEC-EXIT-003) | risk/range_exit_monitor.py |
+
+### DEC-RECONCILE-* — Position Reconciliation (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-RECONCILE-001` | Startup position reconciliation between portfolio trackers and paper adapter | main.py |
+
+### DEC-REGIME-* — Regime Detection (6)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-REGIME-001` | Cumulative return + MA slope for slow-trend detection | signals/regime.py |
+| `DEC-REGIME-002` | (no title) | signals/aggregator.py |
+| `DEC-REGIME-003` | Dual-window regime detection for ultra-slow drift | signals/regime.py |
+| `DEC-REGIME-004` | Trade halt in BEAR regime | risk/rules.py |
+| `DEC-REGIME-005` | Regime hysteresis — require N consecutive readings before transition | risk/rules.py, signals/regime.py |
+| `DEC-REGIME-006` | Block trading during UNKNOWN regime (startup/reconnect window) | risk/rules.py |
+
+### DEC-RISK-* — Risk Management (4)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-RISK-001` | Composable risk rules architecture | risk/rules.py |
+| `DEC-RISK-002` | Portfolio state tracking for exposure calculations | risk/portfolio.py |
+| `DEC-RISK-004` | strategy_id filtering in PortfolioTracker prevents double-counting in multi-strategy mode | risk/portfolio.py |
+| `DEC-RISK-005` | Cap open positions per strategy/symbol | risk/portfolio.py, risk/rules.py |
+
+### DEC-SENSITIVITY-* — Parameter Sensitivity (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-SENSITIVITY-001` | sensitivity.py imports TradeRow/calculate_commission from analyze.py | s/sensitivity.py |
+
+### DEC-SENT-* — Sentiment Dampening (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-SENT-001` | (no title) | signals/aggregator.py |
+
+### DEC-SHUTDOWN-* — Graceful Shutdown (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-SHUTDOWN-001` | Graceful position liquidation on shutdown | main.py |
+
+### DEC-SIGNAL-* — Signal Framework (6)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-SIGNAL-001` | Abstract signal generator with automatic data accumulation | signals/base.py |
+| `DEC-SIGNAL-002` | Source metadata injected by _create_signal | signals/base.py, signals/candles.py |
+| `DEC-SIGNAL-003` | Timeframe metadata injected by _create_signal | signals/base.py, signals/technical.py |
+| `DEC-SIGNAL-004` | pandas-ta for technical indicator calculations | signals/technical.py |
+| `DEC-SIGNAL-005` | VWAP neutral zone (0.5%) to filter near-VWAP noise | signals/technical.py |
+| `DEC-SIGNAL-006` | Pivot-based S/R detection with proximity signals | signals/support_resistance.py |
+
+### DEC-SIZING-* — Position Sizing (2)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-SIZING-001` | Minimum trade value floor to prevent commission-killed micro-trades | risk/rules.py |
+| `DEC-SIZING-002` | Floor signal multiplier at 0.6 to prevent position starvation | risk/rules.py |
+
+### DEC-STATE-* — State Machine (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-STATE-001` | SQLite with aiosqlite for async state persistence | core/state.py |
+
+### DEC-STOCKS-* — Stocks Strategy (3)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-STOCKS-003` | RTH-only enforcement with entry cutoff before close | risk/end_of_day_flatten.py, risk/market_hours_gate.py, ut… |
+| `DEC-STOCKS-004` | orb_stocks strategy — breakout entry, RTH-only, auto-flatten | signals/opening_range.py, strategies/orb_stocks.py, s/rec… |
+| `DEC-STOCKS-006` | Atomic v2→v3 state migration with .v2.bak backup | adapters/paper.py |
+
+### DEC-STRAT-* — Strategy Framework (8)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-STRAT-001` | Mean reversion strategy preset with BB/RSI emphasis | strategies/base.py, strategies/mean_reversion.py |
+| `DEC-STRAT-002` | Breakout strategy preset with MACD/VWAP emphasis | strategies/base.py, strategies/breakout.py |
+| `DEC-STRAT-003` | StrategyRegistry owns pipeline lifecycle with error isolation | strategies/registry.py |
+| `DEC-STRAT-004` | GlobalPortfolio as read-only aggregation view | strategies/global_portfolio.py |
+| `DEC-STRAT-006` | Backward-compatible single-strategy mode in main.py | strategies/momentum.py |
+| `DEC-STRAT-007` | GlobalTradeRateLimitRule for cross-strategy commission control | risk/global_trade_rate.py |
+| `DEC-STRAT-008` | MEAN_REVERSION_CONFIG as StrategyConfig for StrategyRegistry wiring | strategies/mean_reversion.py |
+| `DEC-STRAT-009` | BREAKOUT_CONFIG as StrategyConfig for StrategyRegistry wiring | strategies/breakout.py |
+
+### DEC-SWING-* — Swing Trading Strategy (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-SWING-001` | 1-hour timeframe swing strategy to reduce commission drag | strategies/swing_trading.py |
+
+### DEC-TRACK-* — Trade Tracking (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-TRACK-002` | Orphan trade cleanup at startup | learning/tracker.py |
+
+### DEC-TYPES-* — Core Types (1)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-TYPES-001` | Use Decimal for all financial calculations | core/types.py |
+
+### DEC-VOL-* — Volatility Gate (4)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-VOL-001` | Percentage price range as volatility metric | risk/rules.py |
+| `DEC-VOL-002` | Per-symbol rolling price window via MARKET_DATA event bus subscription | risk/rules.py |
+| `DEC-VOL-003` | Default threshold 0.5%, lookback 300 ticks, both configurable via TOML | risk/rules.py |
+| `DEC-VOL-004` | Macro-window volatility gate for session-level flatness detection | risk/rules.py |
+
+### DEC-XSTOCKS-* — Kraken xStocks (2)
+
+| ID | Title | Source |
+|----|-------|--------|
+| `DEC-XSTOCKS-001` | Conditional KrakenXStocks adapter wiring via raw TOML config | adapters/kraken_xstocks.py, main.py |
+| `DEC-XSTOCKS-002` | xstocks_reversion — 24/7 mean-reversion on Kraken tokenized equities | strategies/xstocks_reversion.py |
+
+
+---
+
 ## Resources
 
 | File | Purpose |
