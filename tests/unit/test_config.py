@@ -292,3 +292,33 @@ def test_default_toml_loads_four_symbols():
     assert config.trading.symbols == expected, (
         f"default.toml should declare all 4 trading pairs; got {config.trading.symbols}"
     )
+
+
+def test_moderate_profile_matches_base_risk_on_phase_a_fields():
+    """Regression: [profiles.moderate] must stay in sync with base [risk] on Phase A fields.
+
+    DEC-PROFILE-MODERATE-SYNC-001: moderate is the default startup profile and overrides
+    base [risk]. If these fields diverge, Phase A tuning silently reverts at session start.
+    """
+    import tomllib
+
+    toml_path = Path(__file__).parents[2] / "config" / "paper.toml"
+    if not toml_path.exists():
+        pytest.skip("config/paper.toml not found")
+
+    with open(toml_path, "rb") as f:
+        cfg = tomllib.load(f)
+
+    base = cfg["risk"]
+    mod = cfg["profiles"]["moderate"]
+
+    assert mod["position_size_percent"] == base["position_size_percent"], (
+        f"[profiles.moderate] position_size_percent={mod['position_size_percent']} "
+        f"!= [risk] position_size_percent={base['position_size_percent']} — "
+        "sync moderate to base [risk] when applying Phase A tuning"
+    )
+    assert mod["max_position_age_minutes"] == base["max_position_age_minutes"], (
+        f"[profiles.moderate] max_position_age_minutes={mod['max_position_age_minutes']} "
+        f"!= [risk] max_position_age_minutes={base['max_position_age_minutes']} — "
+        "sync moderate to base [risk] when applying Phase A tuning"
+    )

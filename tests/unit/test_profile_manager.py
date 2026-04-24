@@ -63,10 +63,10 @@ SAMPLE_TOML = {
             "aggregation_threshold": "0.5",
         },
         "moderate": {
-            "position_size_percent": "5.0",
+            "position_size_percent": "7.0",
             "stop_loss_percent": "1.0",
             "take_profit_percent": "3.0",
-            "max_position_age_minutes": 120,
+            "max_position_age_minutes": 60,
             "post_fill_cooldown_seconds": 1800,
             "min_signal_strength": "0.65",
             "aggregation_threshold": "0.4",
@@ -431,9 +431,9 @@ class TestApplyProfileUpdatesExitParams:
     async def test_max_position_age_converted_to_seconds(self):
         registry, components = _make_full_registry()
         mgr = ProfileManager(registry, SAMPLE_TOML)
-        # moderate: max_position_age_minutes=120 → _max_age_seconds=7200
+        # moderate: max_position_age_minutes=60 → _max_age_seconds=3600 (Phase A sync, DEC-PROFILE-MODERATE-SYNC-001)
         mgr.apply_profile("moderate")
-        assert components["exit_monitor"]._max_age_seconds == 120 * 60
+        assert components["exit_monitor"]._max_age_seconds == 60 * 60
 
     @pytest.mark.asyncio
     async def test_conservative_reduces_max_age_seconds(self):

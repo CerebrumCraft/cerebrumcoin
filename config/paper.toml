@@ -107,6 +107,14 @@ symbols = ["AAPL", "MSFT", "NVDA"]
 # Switch profiles at runtime via ProfileManager.apply_profile(name).
 # Only fields listed here are overridden — unset fields keep the base [risk]/[signals] values.
 
+# @decision DEC-PROFILE-MODERATE-SYNC-001
+# @title Sync [profiles.moderate] to Phase A tuning (DEC-TUNE-PHASE-A-001)
+# @status accepted
+# @rationale moderate profile drifted from base [risk] after Phase A bumped position_size 5→7 and
+# max_age 120→60. At session startup the dashboard applies default_profile="moderate" which overrides
+# base [risk], silently reverting Phase A. Fix: sync position_size_percent and max_position_age_minutes
+# in [profiles.moderate] to match base [risk] so moderate == base [risk] on Phase A fields.
+
 [profiles.conservative]
 # Smallest positions, tightest stops, long cooldowns — for choppy or unknown-regime sessions.
 position_size_percent = "3.0"
@@ -118,11 +126,13 @@ min_signal_strength = "0.75"
 aggregation_threshold = "0.5"
 
 [profiles.moderate]
-# Current paper.toml values — the proven baseline from 20 sessions of tuning.
-position_size_percent = "5.0"
+# Proven baseline synchronized with Phase A tuning (DEC-TUNE-PHASE-A-001) —
+# position_size and max_age bumped to match base [risk]. See
+# @decision DEC-PROFILE-MODERATE-SYNC-001 above for rationale.
+position_size_percent = "7.0"
 stop_loss_percent = "1.0"
 take_profit_percent = "3.0"
-max_position_age_minutes = 120
+max_position_age_minutes = 60
 post_fill_cooldown_seconds = 1800
 min_signal_strength = "0.65"
 aggregation_threshold = "0.4"
