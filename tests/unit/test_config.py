@@ -248,8 +248,8 @@ def test_paper_toml_tuned_parameters():
         "post_fill_cooldown_seconds should be 1800 (30 min, session 13 tuning for choppy markets)"
 
     # Verify volatility gate parameters (Issue #2)
-    assert config.risk.volatility_gate_min_range_pct == Decimal("0.5"), \
-        "volatility_gate_min_range_pct should be 0.5% (covers commission 0.32% + slippage 0.1%)"
+    assert config.risk.volatility_gate_min_range_pct == Decimal("0.35"), \
+        "volatility_gate_min_range_pct should be 0.35% (Phase A, Session 35: 0.5→0.35 after 5h flat-market 0-fill session; 0.35 still above 0.32% commission floor; DEC-TUNE-PHASE-A-001)"
     assert config.risk.volatility_gate_window_size == 300, \
         "volatility_gate_window_size should be 300 ticks (~5 min rolling window)"
 
