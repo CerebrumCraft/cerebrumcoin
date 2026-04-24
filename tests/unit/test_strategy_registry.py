@@ -211,10 +211,10 @@ class TestStrategyRegistryErrorIsolation:
         from cerebrum.strategies.registry import StrategyRegistry, _StrategyPipeline
 
         class FaultyRegistry(StrategyRegistry):
-            def _build_pipeline(self, cfg, shared_global_rules):
+            def _build_pipeline(self, cfg, shared_global_rules, effective_balance=None):
                 if cfg.name == "broken":
                     raise RuntimeError("Simulated pipeline construction failure")
-                return super()._build_pipeline(cfg, shared_global_rules)
+                return super()._build_pipeline(cfg, shared_global_rules, effective_balance)
 
         registry = FaultyRegistry(bus, config)
         registry.register(make_strategy("broken"))

@@ -284,7 +284,20 @@ class PaperTradingAdapter(ExchangeAdapter):
             )
             await self.bus.publish(fill_event)
 
-            # Save state
+            # @decision DEC-FILL-STRATEGY-ID-001
+            # @title Yield before _save_state() so PortfolioTracker processes the fill first
+            # @status accepted
+            # @rationale The event bus delivers FillEvents to subscriber queues
+            # asynchronously. _save_state() called immediately after publish() would
+            # serialise the PortfolioTracker's STALE state (pre-fill), so closed_trades
+            # and realized_pnl would be 0 in the snapshot even though the fill was
+            # processed in-memory. A single asyncio.sleep(0) yields to the event loop,
+            # allowing all pending tasks (including PortfolioTracker._on_fill) to run
+            # before we snapshot. This ensures closed_trades and pnl are captured on
+            # every save — critical for DarwinianAllocator Sharpe feed (DEC-CONDUCTOR-008).
+            await asyncio.sleep(0)
+
+            # Save state after PortfolioTracker has processed the fill
             self._save_state()
 
             log.info(
@@ -294,6 +307,7 @@ class PaperTradingAdapter(ExchangeAdapter):
                 amount=str(order.amount),
                 fill_price=str(fill_price),
                 commission=str(commission),
+                strategy_id=order.strategy_id,
             )
 
         except Exception as e:

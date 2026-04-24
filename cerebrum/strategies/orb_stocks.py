@@ -17,7 +17,10 @@ from cerebrum.strategies.base import StrategyConfig
 
 ORB_STOCKS_CONFIG = StrategyConfig(
     name="orb_stocks",
-    initial_balance=Decimal("5000.0"),
+    initial_balance=Decimal("5000.0"),  # HISTORICAL: was 2-strategy split (DEC-TUNE-008). Now overridden by
+    # StrategyRegistry(pool_usd=...) → pool/N dynamic allocation (DEC-ALLOC-INITIAL-001).
+    # This value is ignored at runtime when pool_usd is set on the registry.
+    # Keep for reference; used only in legacy/backtest paths without pool_usd.
     symbols=["AAPL", "MSFT", "NVDA"],
     signal_source_filter="OpeningRange",
     aggregator_weights={

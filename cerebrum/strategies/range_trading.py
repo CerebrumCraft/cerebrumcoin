@@ -85,7 +85,10 @@ RANGE_TRADING_CONFIG = StrategyConfig(
         "min_tp_percent": "0.2",
         "min_hold_minutes": 15,  # DEC-EXIT-006: skip SL/TP for first 15 min to reduce premature exits
     },
-    initial_balance=Decimal("5000.00"),  # DEC-TUNE-008: 2-strategy split — $5,000 each (was $1,667 across 6)
+    initial_balance=Decimal("5000.00"),  # HISTORICAL: was 2-strategy split (DEC-TUNE-008). Now overridden by
+    # StrategyRegistry(pool_usd=...) → pool/N dynamic allocation (DEC-ALLOC-INITIAL-001).
+    # This value is ignored at runtime when pool_usd is set on the registry.
+    # Keep for reference; used only in legacy/backtest paths without pool_usd.
     symbols=["BTC/USD", "ETH/USD"],  # DEC-TUNE-013: DOGE removed — only 2 trades in session 28 (insufficient data); BTC+ETH only
     exit_monitor_factory=_create_range_exit_monitor,
 )

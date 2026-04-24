@@ -704,7 +704,14 @@ class CerebrumCoin:
         ]
 
         # --- StrategyRegistry ---
-        self.strategy_registry = StrategyRegistry(bus=self.bus, config=config)
+        # Pass pool_usd so initial_balance is computed dynamically as pool / N
+        # (DEC-ALLOC-INITIAL-001). Strategies registered below determine N at
+        # start_all() time — enabling/disabling strategies adjusts automatically.
+        self.strategy_registry = StrategyRegistry(
+            bus=self.bus,
+            config=config,
+            pool_usd=Decimal(str(config.paper.initial_balance_usd)),
+        )
         # @decision DEC-TUNE-008
         # @title Disable momentum, breakout, news_driven — signal cannibalization
         # @status accepted

@@ -108,6 +108,7 @@ class StrategyRegistry:
         bus: EventBus,
         config: Config,
         clock: Callable[[], float] | None = None,
+        pool_usd: Decimal | None = None,
     ) -> None:
         """
         Initialize the strategy registry.
@@ -124,12 +125,37 @@ class StrategyRegistry:
                    historical time into SignalAggregator and PostFillCooldownRule.
                    Live mode always passes None — no behavioral change.
                    (DEC-BACKTEST-004)
+            pool_usd: Total capital pool in USD. When set, each strategy's
+                      initial_balance is computed dynamically as pool / N where
+                      N is the number of active strategies at start_all() time.
+                      This ensures per-strategy balances always sum to the pool
+                      regardless of how many strategies are enabled or disabled.
+                      (DEC-ALLOC-INITIAL-001). When None, falls back to
+                      cfg.initial_balance from each StrategyConfig (legacy path
+                      used by backtests and single-strategy tests).
         """
         self._bus = bus
         self._config = config
         # Injectable clock threaded to per-strategy components that use wall-clock time.
         # None = time.time default (live). BacktestClock in backtest mode.
         self._clock: Callable[[], float] | None = clock
+        # @decision DEC-ALLOC-INITIAL-001
+        # @title Dynamic initial_balance = pool / N computed at start_all() time
+        # @status accepted
+        # @rationale Each strategy was previously seeded with a hardcoded 5000.0
+        # regardless of how many strategies were active. With 3 strategies this
+        # triple-counted the $10k pool to $15k of phantom capital. Position sizing
+        # using position_size_percent × inflated equity produced trades ~50% too
+        # large. Dynamic pool/N ensures balances always sum to pool_usd. Enabling
+        # or disabling strategies (e.g. pelosi_follow re-enable, Phase B momentum)
+        # adjusts automatically without code edits. Per-strategy overrides remain
+        # available via cfg.initial_balance when pool_usd is None (legacy path).
+        # Migration: existing paper_state.json snapshots with inflated values are
+        # not capped on restore — the Conductor's zero-sum deltas (DEC-CONDUCTOR-006)
+        # will converge per-strategy balances toward the new targets within one cycle.
+        # If Conductor convergence proves too slow (>5 cycles), add a cap in
+        # restore_snapshot(). Monitored in Session 41 post-rollout.
+        self._pool_usd: Decimal | None = pool_usd
         self._strategy_configs: dict[str, StrategyConfig] = {}
         self._pipelines: dict[str, _StrategyPipeline] = {}
         self._log = logger.bind(component="strategy_registry")
@@ -181,14 +207,31 @@ class StrategyRegistry:
         shared_rules = shared_global_rules or []
         failed: list[str] = []
 
+        # DEC-ALLOC-INITIAL-001: compute per-strategy balance dynamically when
+        # pool_usd is set. pool / N ensures the sum of all per-strategy balances
+        # equals the total capital pool regardless of how many strategies are active.
+        n_strategies = len(self._strategy_configs)
+        if self._pool_usd is not None and n_strategies > 0:
+            per_strategy_balance = self._pool_usd / Decimal(n_strategies)
+        else:
+            per_strategy_balance = None  # fall through to cfg.initial_balance
+
         for name, cfg in self._strategy_configs.items():
             try:
-                pipeline = self._build_pipeline(cfg, shared_rules)
+                # Use dynamic pool/N balance when available; fall back to per-strategy
+                # cfg.initial_balance for legacy paths (backtest, single-strategy tests).
+                effective_balance = (
+                    per_strategy_balance if per_strategy_balance is not None
+                    else cfg.initial_balance
+                )
+                pipeline = self._build_pipeline(cfg, shared_rules, effective_balance)
                 self._pipelines[name] = pipeline
                 self._log.info(
                     "strategy_pipeline_started",
                     name=name,
-                    initial_balance=str(cfg.initial_balance),
+                    initial_balance=str(effective_balance),
+                    pool_usd=str(self._pool_usd) if self._pool_usd is not None else "n/a",
+                    n_strategies=n_strategies,
                     symbols=cfg.symbols,
                 )
             except Exception as exc:
@@ -269,6 +312,7 @@ class StrategyRegistry:
         self,
         cfg: StrategyConfig,
         shared_global_rules: list[RiskRule],
+        effective_balance: Decimal | None = None,
     ) -> _StrategyPipeline:
         """
         Construct all pipeline components for a single strategy.
@@ -277,6 +321,11 @@ class StrategyRegistry:
             cfg: Strategy configuration.
             shared_global_rules: Already-constructed global rules to append
                                  after per-strategy rules.
+            effective_balance: Capital to seed PortfolioTracker with. When
+                               provided (dynamic pool/N path), overrides
+                               cfg.initial_balance. When None, falls back to
+                               cfg.initial_balance (legacy/backtest path).
+                               See DEC-ALLOC-INITIAL-001.
 
         Returns:
             Fully wired _StrategyPipeline.
@@ -298,9 +347,12 @@ class StrategyRegistry:
         )
 
         # --- PortfolioTracker (strategy_id-filtered — DEC-RISK-004) ---
+        # Use effective_balance (pool/N) when provided; fall back to cfg.initial_balance
+        # for legacy backtest/single-strategy paths. See DEC-ALLOC-INITIAL-001.
+        portfolio_balance = effective_balance if effective_balance is not None else cfg.initial_balance
         portfolio = PortfolioTracker(
             bus=self._bus,
-            initial_balance=cfg.initial_balance,
+            initial_balance=portfolio_balance,
             strategy_id=cfg.name,
         )
 
