@@ -592,3 +592,125 @@ async def test_whole_percentage_allocations_not_rescaled(
     assert abs(applied["breakout"] - Decimal("20")) < Decimal("1"), (
         f"breakout expected ~20%, got {applied['breakout']}%"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 12: _refresh_allocator_performance calls update_performance for
+# strategies with >= 3 closed trades and populates _sharpe (DEC-CONDUCTOR-007)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_refresh_allocator_performance_populates_sharpe(
+    bus, mock_registry, allocator, clock
+):
+    """
+    _refresh_allocator_performance() iterates registered strategies, fetches
+    closed trades via get_closed_trades(), and calls update_performance() for
+    strategies with >= 3 trades. After the call, allocator._sharpe[name]
+    must be a float (not None).
+    """
+    from cerebrum.core.state import TradeRecord
+    from cerebrum.core.types import Side
+
+    def _make_trade_records(pnls: list[float]) -> list[TradeRecord]:
+        import time as _time
+        now = _time.time()
+        records = []
+        for i, pnl in enumerate(pnls):
+            records.append(TradeRecord(
+                id=i,
+                symbol="BTC/USD",
+                side=Side.BUY,
+                entry_time=now - (len(pnls) - i) * 3600,
+                entry_price=Decimal("50000"),
+                exit_time=now - (len(pnls) - i) * 3600 + 60,
+                exit_price=Decimal("50000"),
+                quantity=Decimal("0.1"),
+                pnl=Decimal(str(pnl)),
+                signal_snapshot={},
+                regime="SIDEWAYS",
+                status="closed",
+            ))
+        return records
+
+    # Seed 3 closed trades on each strategy's mock portfolio tracker
+    trades_3 = _make_trade_records([10.0, -5.0, 8.0])
+    for name in STRATEGIES:
+        mock_registry._portfolios[name].get_closed_trades = MagicMock(
+            return_value=trades_3
+        )
+
+    conductor = _make_conductor(bus, mock_registry, allocator, api_key=None, clock=clock)
+
+    # All sharpes should start as None
+    for name in STRATEGIES:
+        assert allocator._sharpe[name] is None
+
+    conductor._refresh_allocator_performance()
+
+    # After refresh, all strategies with 3 trades should have numeric Sharpe
+    for name in STRATEGIES:
+        assert allocator._sharpe[name] is not None, (
+            f"Expected non-None sharpe for '{name}' after refresh with 3 trades"
+        )
+        assert isinstance(allocator._sharpe[name], float), (
+            f"Expected float sharpe for '{name}', got {type(allocator._sharpe[name])}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 13: _refresh_allocator_performance skips strategies with < 3 trades
+# and leaves _sharpe[name] as None (DEC-CONDUCTOR-010)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_refresh_allocator_performance_skips_under_min_trades(
+    bus, mock_registry, allocator, clock
+):
+    """
+    Strategies with fewer than 3 closed trades must NOT have update_performance
+    called on them — _sharpe[name] must stay None (neutral fallback).
+    """
+    from cerebrum.core.state import TradeRecord
+    from cerebrum.core.types import Side
+
+    def _make_trade_records(pnls: list[float]) -> list[TradeRecord]:
+        import time as _time
+        now = _time.time()
+        return [
+            TradeRecord(
+                id=i,
+                symbol="BTC/USD",
+                side=Side.BUY,
+                entry_time=now - (len(pnls) - i) * 3600,
+                entry_price=Decimal("50000"),
+                exit_time=now - (len(pnls) - i) * 3600 + 60,
+                exit_price=Decimal("50000"),
+                quantity=Decimal("0.1"),
+                pnl=Decimal(str(pnl)),
+                signal_snapshot={},
+                regime="SIDEWAYS",
+                status="closed",
+            )
+            for i, pnl in enumerate(pnls)
+        ]
+
+    # 2 trades for all strategies — below the 3-trade minimum
+    trades_2 = _make_trade_records([10.0, -5.0])
+    for name in STRATEGIES:
+        mock_registry._portfolios[name].get_closed_trades = MagicMock(
+            return_value=trades_2
+        )
+
+    conductor = _make_conductor(bus, mock_registry, allocator, api_key=None, clock=clock)
+
+    conductor._refresh_allocator_performance()
+
+    # _sharpe must stay None for all strategies (< 3 trades)
+    for name in STRATEGIES:
+        assert allocator._sharpe[name] is None, (
+            f"Expected _sharpe['{name}'] to stay None with only 2 trades, "
+            f"got {allocator._sharpe[name]}"
+        )

@@ -29,16 +29,30 @@ state to a plain dict using str(Decimal) for lossless round-trip. restore_snapsh
 deserialises it. initial_balance is NOT restored — it is fixed at construction time and
 must not drift. unrealized_pnl is intentionally set to Decimal("0") on restore; it will
 be recalculated on the next MARKET_DATA tick.
+
+@decision DEC-CONDUCTOR-008
+@title Rolling closed-trades deque in PortfolioTracker for Darwinian Sharpe feed
+@status accepted
+@rationale DarwinianAllocator.update_performance() needs a list of closed TradeRecords
+per strategy per cycle. The existing StateManager trade table is SQLite + async — a sync
+read path on a 15-minute allocation cycle would either block or require awaiting inside
+_apply_allocations. An in-memory deque bounded by sharpe_window_hours (default 4h) avoids
+the async boundary, has O(1) append and O(1) eviction, and matches the dashboard pattern
+(DEC-DASH-007 also uses in-memory snapshots). Strategy-scoped tracker means no
+cross-strategy filtering. Trades older than the window are evicted on each append.
 """
 
 import time as time_module
+from collections import deque
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Deque
 
 import structlog
 
 from cerebrum.core.bus import EventBus
 from cerebrum.core.events import Event, FillEvent, MarketDataEvent, PositionUpdateEvent
+from cerebrum.core.state import TradeRecord
 from cerebrum.core.types import Amount, EventType, Price, Side, Symbol
 
 logger = structlog.get_logger()
@@ -73,11 +87,18 @@ class PortfolioTracker:
     - Peak equity tracking for drawdown
     """
 
+    # Default retention window for closed trades fed to DarwinianAllocator (4h).
+    # Matches DarwinianAllocator.sharpe_window_hours default so the Conductor
+    # always passes the correct window without configuration duplication.
+    # Override by passing sharpe_window_hours at construction.
+    _DEFAULT_SHARPE_WINDOW_HOURS: float = 4.0
+
     def __init__(
         self,
         bus: EventBus,
         initial_balance: Decimal,
         strategy_id: str | None = None,
+        sharpe_window_hours: float = _DEFAULT_SHARPE_WINDOW_HOURS,
     ) -> None:
         """
         Initialize portfolio tracker.
@@ -88,6 +109,9 @@ class PortfolioTracker:
             strategy_id: When provided, _on_fill ignores FillEvents whose
                 strategy_id does not match. None accepts all fills (single-
                 strategy backward-compatible mode). See DEC-RISK-004.
+            sharpe_window_hours: Retention window for closed trades deque
+                (DEC-CONDUCTOR-008). Trades older than this are evicted on
+                each append. Defaults to 4h to match DarwinianAllocator default.
         """
         self._bus = bus
         self._cash_balance = initial_balance
@@ -96,6 +120,12 @@ class PortfolioTracker:
         self._positions: dict[Symbol, Position] = {}
         self._peak_equity = initial_balance
         self._total_realized_pnl = Decimal("0.0")
+        self._sharpe_window_seconds: float = sharpe_window_hours * 3600
+
+        # Rolling closed-trades deque for DarwinianAllocator Sharpe feed.
+        # Bounded by wall-clock retention (_sharpe_window_seconds); stale entries
+        # are evicted on each append in _on_fill. See DEC-CONDUCTOR-008.
+        self._closed_trades: Deque[TradeRecord] = deque()
 
         # Track latest prices for all symbols (needed for market order sizing)
         self._latest_prices: dict[Symbol, Price] = {}
@@ -179,12 +209,28 @@ class PortfolioTracker:
                 if abs(new_amount) < Decimal("0.0001"):  # Position closed
                     # Capture state before deletion so we can publish event
                     closed_entry_price = pos.average_entry_price
+                    closed_entry_time = pos.entry_time
                     closed_realized_pnl = pos.realized_pnl
                     del self._positions[symbol]
                     self._log.info(
                         "position_closed",
                         symbol=symbol,
                         realized_pnl=str(realized_pnl),
+                    )
+                    # Record closed trade for DarwinianAllocator Sharpe feed
+                    # (DEC-CONDUCTOR-008). Side is the original open side: if
+                    # filled_amount is negative (sell-to-close) the position
+                    # was a long, so opening side was BUY.
+                    open_side = Side.SELL if filled_amount > 0 else Side.BUY
+                    self._append_closed_trade(
+                        symbol=symbol,
+                        side=open_side,
+                        entry_time=closed_entry_time,
+                        entry_price=closed_entry_price,
+                        exit_time=event.timestamp,
+                        exit_price=fill_price,
+                        quantity=close_amount,
+                        pnl=realized_pnl,
                     )
                     # amount=0 signals closure to subscribers
                     position_event = PositionUpdateEvent(
@@ -279,6 +325,82 @@ class PortfolioTracker:
         # Update position price if we have one
         if symbol in self._positions:
             self._positions[symbol].update_price(event.price)
+
+    # ------------------------------------------------------------------
+    # Closed-trade deque (DEC-CONDUCTOR-008)
+    # ------------------------------------------------------------------
+
+    def _append_closed_trade(
+        self,
+        symbol: Symbol,
+        side: Side,
+        entry_time: float,
+        entry_price: Decimal,
+        exit_time: float,
+        exit_price: Decimal,
+        quantity: Decimal,
+        pnl: Decimal,
+    ) -> None:
+        """
+        Append a completed round-trip to the rolling closed-trades deque.
+
+        Evicts entries older than _sharpe_window_seconds before appending so
+        the deque stays bounded without a fixed max-length. Called internally
+        from _on_fill at the position_closed branch (DEC-CONDUCTOR-008).
+
+        Args:
+            symbol: Traded symbol.
+            side: Opening side (BUY for long trades, SELL for shorts).
+            entry_time: Unix epoch of position open.
+            entry_price: Average entry price.
+            exit_time: Unix epoch of position close (fill timestamp).
+            exit_price: Fill price on the closing leg.
+            quantity: Size of the closed portion.
+            pnl: Realized P&L for this close (commission not deducted — the
+                 Sharpe calc only needs relative return sign and magnitude).
+        """
+        # Evict stale records before appending
+        cutoff = exit_time - self._sharpe_window_seconds
+        while self._closed_trades and self._closed_trades[0].entry_time < cutoff:
+            self._closed_trades.popleft()
+
+        record = TradeRecord(
+            id=None,
+            symbol=symbol,
+            side=side,
+            entry_time=entry_time,
+            entry_price=entry_price,
+            exit_time=exit_time,
+            exit_price=exit_price,
+            quantity=quantity,
+            pnl=pnl,
+            signal_snapshot={},
+            regime="UNKNOWN",  # regime not tracked at this layer
+            status="closed",
+            strategy_id=self._strategy_id,
+        )
+        self._closed_trades.append(record)
+
+    def get_closed_trades(self, window_seconds: float | None = None) -> list[TradeRecord]:
+        """
+        Return closed trades within the given window.
+
+        Args:
+            window_seconds: If provided, only trades whose entry_time falls
+                within the last window_seconds are returned. If None, returns
+                all trades currently in the deque (already bounded by
+                _sharpe_window_seconds from construction).
+
+        Returns:
+            List of TradeRecord (oldest first). Safe to iterate while new
+            trades are being appended — returns a snapshot copy.
+        """
+        if window_seconds is None:
+            return list(self._closed_trades)
+
+        now = time_module.time()
+        cutoff = now - window_seconds
+        return [t for t in self._closed_trades if t.entry_time >= cutoff]
 
     def get_position(self, symbol: Symbol) -> Position | None:
         """Get current position for a symbol."""
@@ -398,10 +520,18 @@ class PortfolioTracker:
         is NOT used by restore_snapshot() because the balance is fixed at
         construction time.
 
+        closed_trades is serialised so Sharpe history survives restarts
+        (DEC-CONDUCTOR-012). Each trade is a minimal flat dict — only the
+        fields needed by calculate_sharpe_ratio (pnl) and _append_closed_trade
+        (all others) are stored.
+
         Returns:
             Dict suitable for json.dumps() containing cash_balance,
-            initial_balance, peak_equity, total_realized_pnl, and positions.
+            initial_balance, peak_equity, total_realized_pnl, positions, and
+            closed_trades.
         """
+        from cerebrum.core.types import Side as _Side  # local import avoids circular
+
         return {
             "cash_balance": str(self._cash_balance),
             "initial_balance": str(self._initial_balance),
@@ -417,23 +547,44 @@ class PortfolioTracker:
                 }
                 for symbol, pos in self._positions.items()
             },
+            # DEC-CONDUCTOR-012: persist closed trades so Sharpe survives restart
+            "closed_trades": [
+                {
+                    "symbol": str(t.symbol),
+                    "side": t.side.value,
+                    "entry_time": t.entry_time,
+                    "entry_price": str(t.entry_price),
+                    "exit_time": t.exit_time,
+                    "exit_price": str(t.exit_price) if t.exit_price is not None else None,
+                    "quantity": str(t.quantity),
+                    "pnl": str(t.pnl) if t.pnl is not None else None,
+                    "strategy_id": t.strategy_id,
+                }
+                for t in self._closed_trades
+            ],
         }
 
     def restore_snapshot(self, snapshot: dict) -> None:
         """
         Restore portfolio state from a saved snapshot.
 
-        Overwrites cash_balance, peak_equity, total_realized_pnl, and
-        positions from the snapshot dict. initial_balance is intentionally
-        NOT restored — it is fixed at construction time.
+        Overwrites cash_balance, peak_equity, total_realized_pnl, positions,
+        and closed_trades from the snapshot dict. initial_balance is
+        intentionally NOT restored — it is fixed at construction time.
 
         unrealized_pnl on restored positions is set to Decimal("0"); it will
         be recalculated automatically on the next MARKET_DATA tick via
         _on_market_data → Position.update_price().
 
+        closed_trades: older entries are silently dropped if they fall outside
+        the current _sharpe_window_seconds. v3 snapshots without the
+        closed_trades key load cleanly (deque stays empty). See DEC-CONDUCTOR-012.
+
         Args:
             snapshot: Dict previously produced by save_snapshot().
         """
+        from cerebrum.core.types import Side as _Side  # local import avoids circular
+
         self._cash_balance = Decimal(snapshot["cash_balance"])
         self._peak_equity = Decimal(snapshot["peak_equity"])
         self._total_realized_pnl = Decimal(snapshot["total_realized_pnl"])
@@ -448,9 +599,41 @@ class PortfolioTracker:
                 realized_pnl=Decimal(pos_data["realized_pnl"]),
                 entry_time=pos_data.get("entry_time", 0.0),
             )
+
+        # DEC-CONDUCTOR-012: restore closed trades for Sharpe continuity across restart.
+        # Stale entries (outside current window) are dropped via the cutoff filter
+        # so the deque remains bounded after restore. Absent key → empty deque (v3 compat).
+        self._closed_trades = deque()
+        now = time_module.time()
+        cutoff = now - self._sharpe_window_seconds
+        for td in snapshot.get("closed_trades", []):
+            entry_time = float(td.get("entry_time", 0.0))
+            if entry_time < cutoff:
+                continue  # older than window — skip
+            exit_price_raw = td.get("exit_price")
+            pnl_raw = td.get("pnl")
+            self._closed_trades.append(
+                TradeRecord(
+                    id=None,
+                    symbol=td["symbol"],
+                    side=_Side(td["side"]),
+                    entry_time=entry_time,
+                    entry_price=Decimal(td["entry_price"]),
+                    exit_time=float(td.get("exit_time") or 0.0),
+                    exit_price=Decimal(exit_price_raw) if exit_price_raw is not None else None,
+                    quantity=Decimal(td["quantity"]),
+                    pnl=Decimal(pnl_raw) if pnl_raw is not None else None,
+                    signal_snapshot={},
+                    regime="UNKNOWN",
+                    status="closed",
+                    strategy_id=td.get("strategy_id"),
+                )
+            )
+
         self._log.info(
             "portfolio_snapshot_restored",
             cash_balance=str(self._cash_balance),
             peak_equity=str(self._peak_equity),
             positions=list(self._positions.keys()),
+            closed_trades_restored=len(self._closed_trades),
         )

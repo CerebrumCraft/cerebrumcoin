@@ -171,7 +171,15 @@ async def test_portfolio_snapshot_peak_equity_preserved(bus):
 
 @pytest.mark.asyncio
 async def test_paper_state_v2_includes_strategy_snapshots(bus, temp_state_file):
-    """After set_strategy_portfolios(), _save_state() writes version=2 and strategy_snapshots."""
+    """After set_strategy_portfolios(), _save_state() writes CURRENT_STATE_VERSION and strategy_snapshots.
+
+    Previously this test asserted version==2 (the old hardcoded literal). Since the
+    DEC-CONDUCTOR-012 companion fix, _save_state() writes CURRENT_STATE_VERSION (4)
+    so migrations are skipped on restart and closed_trades survive. The test name is
+    preserved for history; the assertion is updated to the correct value.
+    """
+    from cerebrum.adapters.paper import CURRENT_STATE_VERSION
+
     adapter = _make_adapter(bus, temp_state_file)
     await adapter.connect()
 
@@ -185,7 +193,7 @@ async def test_paper_state_v2_includes_strategy_snapshots(bus, temp_state_file):
 
     raw = json.loads(temp_state_file.read_text())
 
-    assert raw.get("version") == 2
+    assert raw.get("version") == CURRENT_STATE_VERSION
     assert "strategy_snapshots" in raw
     snaps = raw["strategy_snapshots"]
     assert "momentum" in snaps
@@ -214,9 +222,10 @@ async def test_paper_state_v1_backward_compat(bus, temp_state_file):
     adapter = _make_adapter(bus, temp_state_file)
     await adapter.connect()   # must not raise
 
-    # v1 files are migrated to v3 on connect() (migrate_state_v2_to_v3 is idempotent/
-    # always runs). The version in-memory after load reflects the migrated file.
-    assert adapter._state_version == 3
+    # v1 files are migrated to v3 then v4 on connect() (both migrations are
+    # idempotent and always run). The version in-memory after load reflects
+    # the fully-migrated file.
+    assert adapter._state_version == 4
     assert adapter.get_strategy_snapshot("momentum") is None
     assert adapter.get_strategy_snapshot("any_strategy") is None
 
@@ -335,8 +344,8 @@ async def test_paper_state_v2_round_trip_persistence(bus, temp_state_file):
     adapter2 = _make_adapter(bus, temp_state_file, balance=Decimal("5000"))
     await adapter2.connect()
 
-    # v2 state is migrated to v3 on connect() — snapshot data preserved verbatim
-    assert adapter2._state_version == 3
+    # v2 state is migrated v2→v3→v4 on connect() — snapshot data preserved verbatim
+    assert adapter2._state_version == 4
     snap = adapter2.get_strategy_snapshot("range_trading")
     assert snap is not None
     assert snap["cash_balance"] == "4750"
