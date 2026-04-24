@@ -47,6 +47,14 @@ from cerebrum.core.types import (
 
 logger = structlog.get_logger()
 
+# Current state-file schema version.  Every _save_state() call with portfolios
+# registered must write this value so that connect() on the next restart sees
+# the correct version and skips already-run migrations (idempotent guards on
+# migrate_state_v2_to_v3 / migrate_state_v3_to_v4 use >= checks).
+# Bumping this constant is the ONLY correct way to advance the schema version —
+# never hardcode a literal integer inside _save_state().
+CURRENT_STATE_VERSION = 4
+
 
 class PaperTradingAdapter(ExchangeAdapter):
     """
@@ -344,9 +352,18 @@ class PaperTradingAdapter(ExchangeAdapter):
         """
         Persist state to file.
 
-        Writes v2 format when strategy portfolios are registered (includes
-        version=2 and strategy_snapshots). Writes v1 format otherwise for
-        backward compatibility with existing tooling that reads the file.
+        Writes CURRENT_STATE_VERSION format when strategy portfolios are
+        registered (includes version=CURRENT_STATE_VERSION and
+        strategy_snapshots with closed_trades for Sharpe persistence).
+        Writes v1 format otherwise for backward compatibility with existing
+        tooling that reads the file.
+
+        IMPORTANT: always writes CURRENT_STATE_VERSION (not a hardcoded
+        literal) so that connect() on the next restart sees the correct
+        version and the v2→v3 / v3→v4 migration guards skip cleanly.
+        Writing an old version number here would cause migrations to re-run
+        on every restart, wiping closed_trades and resetting Sharpe history
+        (the defect that DEC-CONDUCTOR-012 fixed).
         """
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -357,9 +374,10 @@ class PaperTradingAdapter(ExchangeAdapter):
             "trade_history": self._trade_history,
         }
 
-        # v2: embed per-strategy snapshots when portfolios are registered
+        # v4: embed per-strategy snapshots (including closed_trades) when portfolios
+        # are registered.  Use CURRENT_STATE_VERSION — never a hardcoded literal.
         if self._strategy_portfolios:
-            state["version"] = 2
+            state["version"] = CURRENT_STATE_VERSION
             state["strategy_snapshots"] = {
                 name: portfolio.save_snapshot()
                 for name, portfolio in self._strategy_portfolios.items()
@@ -498,7 +516,7 @@ def migrate_state_v3_to_v4(path: Path | str) -> dict:
     """Migrate paper_state.json from v3 to v4 by adding closed_trades to snapshots.
 
     @decision DEC-CONDUCTOR-012
-    @title Atomic v3→v4 state migration adds closed_trades list to every snapshot
+    @title Atomic v3→v4 migration + _save_state version correctness closes Sharpe persistence
     @status accepted
     @rationale Without persisting closed_trades, the DarwinianAllocator Sharpe feed
     (DEC-CONDUCTOR-008) re-warms from zero on every restart — losing all performance
@@ -508,6 +526,15 @@ def migrate_state_v3_to_v4(path: Path | str) -> dict:
     matching the pattern of the v2→v3 migration (DEC-STOCKS-006). Empty closed_trades
     keys are intentionally written so that sessions that had no closes still load cleanly.
     Version bump is from 3 → 4 on the top-level "version" key.
+
+    CRITICAL companion fix: _save_state() previously hardcoded "version": 2 when
+    writing snapshots with registered portfolios. That caused connect() on the next
+    restart to re-run both v2→v3 and v3→v4 migrations (both are idempotent on their
+    target version, but v2→v3 replaces snapshots from scratch, wiping closed_trades).
+    _save_state() now writes CURRENT_STATE_VERSION (4) so migrations are skipped on
+    restart and closed_trades survive across process boundaries. Persistence is now
+    end-to-end verified by test_closed_trades_survive_restart_cycle in
+    tests/unit/test_paper_state_migration.py.
 
     Preserves all existing v3 fields verbatim. Idempotent on v4 input.
 

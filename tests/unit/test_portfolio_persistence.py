@@ -171,7 +171,15 @@ async def test_portfolio_snapshot_peak_equity_preserved(bus):
 
 @pytest.mark.asyncio
 async def test_paper_state_v2_includes_strategy_snapshots(bus, temp_state_file):
-    """After set_strategy_portfolios(), _save_state() writes version=2 and strategy_snapshots."""
+    """After set_strategy_portfolios(), _save_state() writes CURRENT_STATE_VERSION and strategy_snapshots.
+
+    Previously this test asserted version==2 (the old hardcoded literal). Since the
+    DEC-CONDUCTOR-012 companion fix, _save_state() writes CURRENT_STATE_VERSION (4)
+    so migrations are skipped on restart and closed_trades survive. The test name is
+    preserved for history; the assertion is updated to the correct value.
+    """
+    from cerebrum.adapters.paper import CURRENT_STATE_VERSION
+
     adapter = _make_adapter(bus, temp_state_file)
     await adapter.connect()
 
@@ -185,7 +193,7 @@ async def test_paper_state_v2_includes_strategy_snapshots(bus, temp_state_file):
 
     raw = json.loads(temp_state_file.read_text())
 
-    assert raw.get("version") == 2
+    assert raw.get("version") == CURRENT_STATE_VERSION
     assert "strategy_snapshots" in raw
     snaps = raw["strategy_snapshots"]
     assert "momentum" in snaps
