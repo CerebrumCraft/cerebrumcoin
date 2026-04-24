@@ -50,3 +50,14 @@ docs/plans/
 .surface-audit-drift.txt
 DECISIONS.md
 firebase-debug.log
+
+# Runtime session logs and recovery artifacts
+logs/
+rescued/
+
+# Local environment backups (contain secrets — never commit)
+.env.bak.*
+
+# Tooling scratch / external research drops
+.cognetivy/
+awesome-ai-in-finance/
