@@ -1,0 +1,11 @@
+[
+  {
+    "id": "filing-003",
+    "symbol": "AVGO",
+    "transactionDate": "2026-03-05",
+    "filingDate": "2026-04-05",
+    "transactionType": "Call (ST) Purchase",
+    "amount": "1000001-5000000",
+    "representative": "Nancy Pelosi"
+  }
+]

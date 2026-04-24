@@ -73,7 +73,7 @@ RANGE_TRADING_CONFIG = StrategyConfig(
     signal_source_filter="SupportResistance",
     risk_overrides={
         "min_signal_strength": "0.5",  # DEC-TUNE-012: raised from 0.3 — weaker S/R signals were generating commission-losing trades
-        "position_size_percent": "5.0",  # DEC-SIZING-002: raised from 2% — at 2% × $5k = $100, any signal_strength < 1.0 caused denial. At 5% × 0.6 floor × $5k = $150, comfortably above $100 min.
+        "position_size_percent": "7.0",  # DEC-TUNE-017: Session 34 (2026-04-22): Python-source 5.0 overrode paper.toml 7.0 via registry fallback — 420 denials. 7% × $5k × 0.6 floor = $210 > $100 min. See mean_reversion.py for full DEC-TUNE-017 rationale.
         "post_fill_cooldown_seconds": 1800,  # DEC-TUNE-010: cooldown 900→1800s (was DEC-TUNE-009: 300→900s) to further reduce trade frequency and commission drag
     },
     exit_config={

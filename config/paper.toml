@@ -35,7 +35,7 @@ rsi_overbought = 75  # Up from 70 - more extreme overbought
 # Increase minimum signal strength for trade entry
 min_signal_strength = "0.65"  # 0.6 → 0.65: slightly higher entry bar
 # Position sizing: 3% reduces commission drag vs 2% default
-position_size_percent = "5.0"  # Up from 3% — larger trades reduce commission's relative bite
+position_size_percent = "7.0"  # 5.0 → 7.0 (2026-04-21, Session 33 analysis): 48% of denials were $<100 trades; 7% × $3,333 per-strategy × 0.6 min-strength = $140, comfortably above $100 floor
 # Exit rules: tighter stop-loss to cut losses faster in sideways conditions
 stop_loss_percent = "1.0"    # 1.5 → 1.0%: session 13 0% WR, cut losses faster
 take_profit_percent = "3.0"  # 3.0% reachable in normal ranges; 4.0% never triggered
@@ -43,7 +43,7 @@ max_position_age_minutes = 60  # DEC-EXIT-005: >2hr holds -$216/14d (25% WR); 15
 # Post-fill cooldown: longer cooldown to reduce churn in range-bound markets
 post_fill_cooldown_seconds = 1800  # 900 → 1800: 30 min cooldown in choppy markets
 # Volatility gate: deny orders when market too flat to cover commission (0.32%) + slippage (0.1%)
-volatility_gate_min_range_pct = "0.5"  # 0.5% threshold; 0.32% commission + 0.1% slippage = 0.42% floor
+volatility_gate_min_range_pct = "0.35"  # 0.5 → 0.35 (Session 35, 2026-04-22): 5h 22m, 0 fills, 270+ vol-gate denials in flat market. 0.35 still above 0.32% commission floor; unlocks ETH trades in 0.2–0.5% ranges while BTC (0.14–0.19%) remains gated.
 volatility_gate_window_size = 300       # ~5 min rolling window (matches regime short window)
 # SIDEWAYS suppression: deny BUY entries in low-vol sideways markets (Issue #3 fix)
 sideways_suppression_min_range_pct = "1.5"  # DEC-TUNE-015: 1.0→1.5% range required in SIDEWAYS; session 28 showed 85% loss rate at 1.0%
@@ -61,11 +61,11 @@ max_open_positions_per_symbol = 2  # DEC-RISK-005: cap prevents position pile-up
 min_hold_minutes = 15  # DEC-EXIT-006: skip SL/TP exits for first 15 min to reduce premature commission-generating exits
 # --- Market hours gate (DEC-STOCKS-003) — added for stocks ---
 market_hours_gate_enabled = true             # DEC-STOCKS-003: RTH-only enforcement for orb_stocks
-market_hours_gate_stock_symbols = ["AAPL", "MSFT", "NVDA"]
+market_hours_gate_stock_symbols = ["AAPL", "MSFT", "NVDA", "GOOGL", "AVGO", "TEM", "PANW"]
 market_hours_gate_entry_cutoff_minutes_before_close = 15
 # --- End-of-day flatten (DEC-STOCKS-003) — added for stocks ---
 end_of_day_flatten_enabled = true            # DEC-STOCKS-003: auto-flatten stock positions before close
-end_of_day_flatten_stock_symbols = ["AAPL", "MSFT", "NVDA"]
+end_of_day_flatten_stock_symbols = ["AAPL", "MSFT", "NVDA", "GOOGL", "AVGO", "TEM", "PANW"]
 end_of_day_flatten_offset_minutes = 5
 
 [monitoring]
@@ -84,7 +84,7 @@ volatility_threshold = 0.03
 ma_period = 10
 buy_suppression_factor = "0.2"
 buy_suppression_min_confidence = "0.8"
-bear_halt_min_confidence = "0.7"   # Halt all trading when BEAR confidence >= 0.7 (session 4: 39% WR in BEAR)
+bear_halt_min_confidence = "0.85"  # 0.7 → 0.85 (2026-04-21, Session 33 analysis): 741 regime-halt denials with BEAR 35% of clock in a +0.9% BTC market; raise bar so only high-conviction BEARs halt
 halt_regimes = ["BEAR", "UNKNOWN"]  # DEC-REGIME-006: block trading before regime detector has data
 long_window_size = 6000           # 3000 → 6000: ~100 min long window for macro trend
 long_cumulative_threshold = 0.001  # 0.1% drift in long window triggers BEAR/BULL
@@ -191,3 +191,37 @@ technical = 1.2
 sentiment = 0.0
 news = 0.0
 regime = 0.5
+
+# === Congressional trade signal generator ===
+# DEC-PELOSI-DATA-001: Finnhub free-tier /stock/congressional-trading endpoint.
+# Polling is per-symbol, so 7 symbols × 1 poll/300s = well within 60 calls/min free tier.
+[signal.congressional]
+enabled = false                              # Paused 2026-04-20: Finnhub free tier returns 403 on /stock/congressional-trading (endpoint is Business/Premium-tier only). Revisit via Clerk-ZIP scraper (see GH issue).
+poll_interval_seconds = 300                  # 5-minute poll interval
+staleness_ceiling_days = 45                  # DEC-PELOSI-LAG-001: STOCK Act statutory max
+options_bullish_proxy_fraction = 0.5         # DEC-PELOSI-OPT-001: call-buy → 0.5x position
+api_key_env = "FINNHUB_API_KEY"              # env var name for Finnhub free-tier key
+ledger_path = "data/congressional_ledger.db"  # persistent dedup ledger (NOT in-memory)
+members = ["Pelosi"]                         # DEC-PELOSI-UNIV-001: Pelosi-only for Phase A/B/C
+
+# === Pelosi-follow strategy ===
+# DEC-PELOSI-UNIV-001: 7 liquid large-caps Pelosi has historically disclosed.
+# DEC-PELOSI-SIZE-001: Fixed $500/trade for Phase A/B.
+[strategy.pelosi_follow]
+enabled = false                              # Paused 2026-04-20: upstream signal source disabled. Re-enable once Clerk-ZIP scraper lands.
+initial_balance = 5000.0
+symbols = ["NVDA", "AAPL", "MSFT", "GOOGL", "AVGO", "TEM", "PANW"]
+signal_source_filter = "Congressional"
+position_size_usd = 500.0                    # DEC-PELOSI-SIZE-001: flat $500/trade
+stop_loss_percent = 3.0
+take_profit_percent = 10.0
+max_position_age_minutes = 43200             # 30 days — hold until disclosed sell (Phase C)
+min_hold_minutes = 60
+post_fill_cooldown_seconds = 3600
+min_signal_strength = 0.5
+
+[strategy.pelosi_follow.weights]
+technical = 0.0
+sentiment = 0.0
+news = 1.0                                   # Congressional signals arrive as SignalType.NEWS
+regime = 0.0

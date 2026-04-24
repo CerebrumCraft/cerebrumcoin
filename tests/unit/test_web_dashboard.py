@@ -1278,3 +1278,118 @@ class TestGetGlobalEquityPaperAdapterGroundTruth:
         payload = d._build_strategies_payload()
         # Drawdown still comes from GlobalPortfolio — starts at 0.0
         assert payload["global_drawdown_pct"] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Test: Periodic equity snapshot task (DEC-DASH-007)
+# ---------------------------------------------------------------------------
+
+
+class TestPeriodicSnapshot:
+    """_periodic_snapshot populates equity history without fills."""
+
+    @pytest.mark.asyncio
+    async def test_snapshot_appends_global_equity(self, dashboard):
+        """After one tick, _equity_history gains one point."""
+        assert len(dashboard._equity_history) == 0
+        dashboard._snapshot_interval_seconds = 0.05
+
+        task = asyncio.create_task(dashboard._periodic_snapshot())
+        await asyncio.sleep(0.2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert len(dashboard._equity_history) >= 1
+        point = dashboard._equity_history[0]
+        assert "ts" in point
+        assert "equity" in point
+        assert point["equity"] == pytest.approx(30000.0)
+
+    @pytest.mark.asyncio
+    async def test_snapshot_populates_per_strategy_history(self, dashboard):
+        """Each active strategy gets an entry in _strategy_equity_history."""
+        assert dashboard._strategy_equity_history == {}
+        dashboard._snapshot_interval_seconds = 0.05
+
+        task = asyncio.create_task(dashboard._periodic_snapshot())
+        await asyncio.sleep(0.2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        for name in STRATEGY_NAMES:
+            assert name in dashboard._strategy_equity_history
+            assert len(dashboard._strategy_equity_history[name]) >= 1
+            assert dashboard._strategy_equity_history[name][0]["equity"] == pytest.approx(10000.0)
+
+    @pytest.mark.asyncio
+    async def test_snapshot_task_started_in_start(self, dashboard, bus):
+        """start() creates _snapshot_task."""
+        assert dashboard._snapshot_task is None
+        await dashboard.start()
+        assert dashboard._snapshot_task is not None
+        assert not dashboard._snapshot_task.done()
+        await dashboard.stop()
+
+    @pytest.mark.asyncio
+    async def test_snapshot_task_cancelled_in_stop(self, dashboard, bus):
+        """stop() cancels and drains _snapshot_task cleanly."""
+        await dashboard.start()
+        task_ref = dashboard._snapshot_task
+        assert task_ref is not None
+
+        await dashboard.stop()
+
+        assert dashboard._snapshot_task is None
+        assert task_ref.cancelled() or task_ref.done()
+
+    @pytest.mark.asyncio
+    async def test_snapshot_exception_does_not_kill_task(self, dashboard):
+        """A transient error in the snapshot body is logged and the loop continues."""
+        # Make _get_global_equity raise once then succeed
+        call_count = 0
+        original = dashboard._get_global_equity
+
+        def _flaky():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("transient portfolio read error")
+            return original()
+
+        dashboard._get_global_equity = _flaky
+        dashboard._snapshot_interval_seconds = 0.05
+
+        task = asyncio.create_task(dashboard._periodic_snapshot())
+        await asyncio.sleep(0.3)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        # Task survived the error — second tick succeeded
+        assert call_count >= 2
+        # After the first tick errored, subsequent ticks still wrote points
+        assert len(dashboard._equity_history) >= 1
+
+    @pytest.mark.asyncio
+    async def test_snapshot_caps_at_500_points(self, dashboard):
+        """Snapshot loop respects the 500-point cap on _equity_history."""
+        dashboard._equity_history = [{"ts": i, "equity": 10000.0} for i in range(500)]
+        dashboard._snapshot_interval_seconds = 0.05
+
+        task = asyncio.create_task(dashboard._periodic_snapshot())
+        await asyncio.sleep(0.2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert len(dashboard._equity_history) == 500

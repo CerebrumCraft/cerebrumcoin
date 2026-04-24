@@ -1,0 +1,11 @@
+[
+  {
+    "id": "filing-stale",
+    "symbol": "GOOG",
+    "transactionDate": "2026-02-25",
+    "filingDate": "2026-03-04",
+    "transactionType": "Stock Purchase",
+    "amount": "15001-50000",
+    "representative": "Nancy Pelosi"
+  }
+]

@@ -253,14 +253,15 @@ class TestStrategyConfigs:
         """BTC/USD removed from momentum (DEC-TUNE-006), breakout (DEC-TUNE-007),
         and mean_reversion (DEC-TUNE-009: 8% WR over 14 days).
         DEC-TUNE-011: DOGE/USD moved from mean_reversion to range_trading.
-        mean_reversion now trades ETH/USD, SOL/USD only."""
+        DEC-TUNE-013: SOL removed from mean_reversion (0% WR, 10 trades, -$28.90 in session 28).
+        mean_reversion now trades ETH/USD only."""
         assert "BTC/USD" not in MOMENTUM_CONFIG.symbols
         assert "BTC/USD" not in MEAN_REVERSION_CONFIG.symbols
         assert "BTC/USD" not in BREAKOUT_CONFIG.symbols
         assert "ETH/USD" in MEAN_REVERSION_CONFIG.symbols
-        assert "SOL/USD" in MEAN_REVERSION_CONFIG.symbols
+        assert "SOL/USD" not in MEAN_REVERSION_CONFIG.symbols  # DEC-TUNE-013: removed — ETH-only now
         assert "DOGE/USD" not in MEAN_REVERSION_CONFIG.symbols  # DEC-TUNE-011: moved to range_trading
-        assert "DOGE/USD" in RANGE_TRADING_CONFIG.symbols  # DEC-TUNE-011: DOGE now in range_trading
+        assert "DOGE/USD" not in RANGE_TRADING_CONFIG.symbols  # DEC-TUNE-013: DOGE removed from range_trading too
 
     def test_all_have_technical_weight(self):
         for cfg in (MOMENTUM_CONFIG, MEAN_REVERSION_CONFIG, BREAKOUT_CONFIG):
@@ -327,6 +328,22 @@ class TestStrategyConfigs:
             SWING_TRADING_CONFIG.aggregator_weights[SignalType.TECHNICAL]
             > SWING_TRADING_CONFIG.aggregator_weights[SignalType.SENTIMENT]
         )
+
+    def test_mean_reversion_position_size_percent_7(self):
+        """DEC-TUNE-017: position_size_percent must be 7.0 to clear the $100 commission floor.
+
+        Session 34 found 420 denials of "Trade value <$100" despite paper.toml bump to 7.0
+        because this Python-source override at 5.0 was silently winning via registry fallback.
+        Math: $5,000 × 7% × 0.6 signal-strength floor = $210 > $100 minimum.
+        """
+        assert MEAN_REVERSION_CONFIG.risk_overrides["position_size_percent"] == "7.0"
+
+    def test_range_trading_position_size_percent_7(self):
+        """DEC-TUNE-017: range_trading position_size_percent must be 7.0 (same floor fix).
+
+        Applied identically to range_trading — same $5k capital, same $100 floor math.
+        """
+        assert RANGE_TRADING_CONFIG.risk_overrides["position_size_percent"] == "7.0"
 
 
 # ---------------------------------------------------------------------------

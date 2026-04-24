@@ -242,8 +242,8 @@ def test_paper_toml_tuned_parameters():
         "take_profit_percent should be 3.0 (new exit rule)"
     assert config.risk.max_position_age_minutes == 60, \
         "max_position_age_minutes should be 60 (DEC-EXIT-005: >2hr holds 25% WR; 15-60min 40% WR)"
-    assert config.risk.position_size_percent == Decimal("5.0"), \
-        "position_size_percent should be 5.0 (tuned in session 4 to reduce commission drag on larger trades)"
+    assert config.risk.position_size_percent == Decimal("7.0"), \
+        "position_size_percent should be 7.0 (Phase A Session 34 bump: 5%×$5k×0.6floor=$150 still hit <$100 denial; 7%×$5k×0.6=$210 clears floor)"
     assert config.risk.post_fill_cooldown_seconds == 1800, \
         "post_fill_cooldown_seconds should be 1800 (30 min, session 13 tuning for choppy markets)"
 
