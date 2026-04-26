@@ -215,6 +215,7 @@ Detailed analyses in `docs/superpowers/plans/` and `/home/j/.claude/projects/...
 | ID | Decision | Rationale | Date |
 |----|----------|-----------|------|
 | DEC-LIVE-001 | Dual safety check for live trading (mode + env flag) | Requires both TRADING_MODE=live AND KRAKEN_LIVE_ENABLED=true before executing real orders; prevents accidental live trading | 2026-02-17 |
+| DEC-LIVE-002 | Dual safety check extended to Alpaca (paper-conditional) | Mirrors DEC-LIVE-001 for Alpaca: requires TRADING_MODE=live AND ALPACA_LIVE_ENABLED=true. Gate is only enforced when config["paper"] is False (Alpaca SDK uses a distinct paper endpoint, so env check is redundant in paper mode). Codex security pass; commits de5cd14 + a078822. | 2026-04-26 |
 | DEC-PLUGIN-001 | Abstract plugin interface with lifecycle hooks | Plugins need initialize/start/stop hooks for clean lifecycle management; bus reference enables event subscription; metadata properties for discovery | 2026-02-17 |
 | DEC-PLUGIN-002 | Error isolation in plugin registry | One failing plugin shouldn't crash the system; registry wraps plugin.start() in try/except, logs failures, continues with healthy plugins | 2026-02-17 |
 | DEC-ALPACA-001 | Alpaca adapter for multi-asset proof | Stock trading proves multi-asset extensibility; Alpaca provides free paper trading for stocks; same ExchangeAdapter interface | 2026-02-17 |
