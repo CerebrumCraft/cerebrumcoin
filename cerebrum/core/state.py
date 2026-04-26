@@ -28,6 +28,22 @@ from cerebrum.core.types import Side, SignalType, Symbol
 logger = structlog.get_logger()
 
 
+_TRADE_UPDATE_COLUMNS = {
+    "symbol",
+    "side",
+    "entry_time",
+    "entry_price",
+    "exit_time",
+    "exit_price",
+    "quantity",
+    "pnl",
+    "signal_snapshot",
+    "regime",
+    "status",
+    "strategy_id",
+}
+
+
 @dataclass
 class TradeRecord:
     """Record of a completed or open trade."""
@@ -175,14 +191,21 @@ class StateManager:
     async def update_trade(self, trade_id: int, **updates: Any) -> None:
         """Update a trade record."""
         assert self._db is not None
+        if not updates:
+            return
+
         set_clauses = []
         values = []
         for key, value in updates.items():
+            if key not in _TRADE_UPDATE_COLUMNS:
+                raise ValueError(f"Invalid trade update column: {key}")
             set_clauses.append(f"{key} = ?")
             if isinstance(value, Decimal):
                 values.append(str(value))
             elif isinstance(value, Side):
                 values.append(value.value)
+            elif key == "signal_snapshot":
+                values.append(json.dumps(value))
             else:
                 values.append(value)
         values.append(trade_id)
@@ -239,12 +262,18 @@ class StateManager:
     async def get_closed_trades(self, regime: str | None = None, limit: int | None = None) -> list[TradeRecord]:
         """Get closed trades, optionally filtered by regime."""
         assert self._db is not None
+        params: list[Any]
         if regime:
-            query, params = "SELECT * FROM trades WHERE status = 'CLOSED' AND regime = ? ORDER BY exit_time DESC", (regime,)
+            query = "SELECT * FROM trades WHERE status = 'CLOSED' AND regime = ? ORDER BY exit_time DESC"
+            params = [regime]
         else:
-            query, params = "SELECT * FROM trades WHERE status = 'CLOSED' ORDER BY exit_time DESC", ()
-        if limit:
-            query += f" LIMIT {limit}"
+            query = "SELECT * FROM trades WHERE status = 'CLOSED' ORDER BY exit_time DESC"
+            params = []
+        if limit is not None:
+            if limit < 1:
+                raise ValueError("limit must be a positive integer")
+            query += " LIMIT ?"
+            params.append(limit)
         async with self._db.execute(query, params) as cursor:
             return [self._row_to_trade_record(row) for row in await cursor.fetchall()]
 

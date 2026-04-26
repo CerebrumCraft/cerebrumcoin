@@ -194,6 +194,39 @@ async def test_alpaca_execute_order(mock_trading_client):
     await bus.stop()
 
 
+@pytest.mark.asyncio
+async def test_alpaca_live_order_requires_dual_env_gate(mock_trading_client, monkeypatch):
+    """Live Alpaca orders are blocked unless both live safety env vars are set."""
+    bus = EventBus()
+    await bus.start()
+
+    monkeypatch.delenv("TRADING_MODE", raising=False)
+    monkeypatch.delenv("ALPACA_LIVE_ENABLED", raising=False)
+
+    adapter = AlpacaAdapter(
+        bus,
+        {"api_key": "test", "secret_key": "test", "paper": False},
+    )
+    adapter._trading_client = mock_trading_client
+    adapter._connected = True
+
+    order = OrderEvent(
+        event_type=EventType.ORDER,
+        timestamp=0.0,
+        order_id="blocked_live_stock_order",
+        symbol="AAPL",
+        side=Side.BUY,
+        order_type=OrderType.MARKET,
+        amount=Decimal("10"),
+    )
+
+    await adapter.execute_order(order)
+
+    mock_trading_client.submit_order.assert_not_called()
+
+    await bus.stop()
+
+
 # @mock-exempt: Alpaca TradingClient is an external service boundary — mocking at the API layer.
 @pytest.mark.asyncio
 async def test_alpaca_execute_order_propagates_strategy_id(mock_trading_client):

@@ -110,6 +110,43 @@ async def test_update_trade():
 
 
 @pytest.mark.asyncio
+async def test_update_trade_rejects_invalid_column():
+    """Trade updates reject unknown column names before SQL execution."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        state = StateManager(db_path)
+        await state.initialize()
+
+        trade = TradeRecord(
+            id=None,
+            symbol="BTC/USDT",
+            side=Side.BUY,
+            entry_time=1234567890.0,
+            entry_price=Decimal("50000"),
+            exit_time=None,
+            exit_price=None,
+            quantity=Decimal("0.1"),
+            pnl=None,
+            signal_snapshot={},
+            regime="BULL",
+            status="OPEN",
+        )
+        trade_id = await state.save_trade(trade)
+
+        with pytest.raises(ValueError, match="Invalid trade update column"):
+            await state.update_trade(
+                trade_id,
+                **{"status = 'CLOSED' WHERE 1=1 --": "ignored"},
+            )
+
+        retrieved = await state.get_trade(trade_id)
+        assert retrieved is not None
+        assert retrieved.status == "OPEN"
+
+        await state.close()
+
+
+@pytest.mark.asyncio
 async def test_get_open_and_closed_trades():
     """Test querying open and closed trades."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -162,6 +199,20 @@ async def test_get_open_and_closed_trades():
         assert len(closed_trades) == 1
         assert closed_trades[0].symbol == "ETH/USDT"
         assert closed_trades[0].status == "CLOSED"
+
+        await state.close()
+
+
+@pytest.mark.asyncio
+async def test_get_closed_trades_rejects_invalid_limit():
+    """Closed-trade queries require positive integer limits."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        state = StateManager(db_path)
+        await state.initialize()
+
+        with pytest.raises(ValueError, match="limit must be a positive integer"):
+            await state.get_closed_trades(limit=0)
 
         await state.close()
 

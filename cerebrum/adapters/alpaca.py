@@ -14,6 +14,7 @@ is an optional dependency — the system works without it.
 """
 
 import asyncio
+import os
 from decimal import Decimal
 from time import time
 from typing import Any
@@ -185,6 +186,23 @@ class AlpacaAdapter(ExchangeAdapter):
         if not self._trading_client:
             self._log.error("not_connected", order_id=order.order_id)
             return
+
+        paper = self.config.get("paper", True)
+        if not paper:
+            trading_mode = os.getenv("TRADING_MODE", "paper")
+            live_enabled = os.getenv("ALPACA_LIVE_ENABLED", "false").lower() == "true"
+            if trading_mode != "live" or not live_enabled:
+                self._log.warning(
+                    "alpaca_live_order_not_enabled",
+                    order_id=order.order_id,
+                    trading_mode=trading_mode,
+                    live_enabled=live_enabled,
+                    message=(
+                        "Dual safety check failed. Set TRADING_MODE=live "
+                        "AND ALPACA_LIVE_ENABLED=true"
+                    ),
+                )
+                return
 
         try:
             from alpaca.trading.requests import MarketOrderRequest
