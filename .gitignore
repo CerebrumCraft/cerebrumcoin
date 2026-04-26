@@ -61,3 +61,7 @@ rescued/
 # Tooling scratch / external research drops
 .cognetivy/
 awesome-ai-in-finance/
+
+# Codex CLI marker (0-byte file dropped on each run)
+.codex
+
