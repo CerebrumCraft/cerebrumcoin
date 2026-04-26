@@ -187,6 +187,21 @@ class AlpacaAdapter(ExchangeAdapter):
             self._log.error("not_connected", order_id=order.order_id)
             return
 
+        # @decision DEC-LIVE-002
+        # @title Dual-env live gate for Alpaca, conditional on paper=False
+        # @status accepted
+        # @rationale Extends DEC-LIVE-001 (Kraken, cerebrum/adapters/kraken.py:188)
+        # to Alpaca: real-money orders require BOTH TRADING_MODE=live AND
+        # ALPACA_LIVE_ENABLED=true. Two independent toggles force deliberate intent
+        # and prevent a misconfigured paper session from accidentally placing live
+        # orders.
+        # Deliberate divergence from Kraken: this gate is only enforced when
+        # config["paper"] is False, whereas Kraken's gate is unconditional. The
+        # Alpaca SDK uses a distinct paper endpoint (paper-api.alpaca.markets), so
+        # paper-mode adapters cannot reach the live brokerage even if env vars
+        # leak — making the env check redundant in paper mode. Keeping paper-mode
+        # frictionless (no env vars required) is the explicit goal here. Do NOT
+        # "consistency-fix" this by removing the `if not paper` guard.
         paper = self.config.get("paper", True)
         if not paper:
             trading_mode = os.getenv("TRADING_MODE", "paper")
