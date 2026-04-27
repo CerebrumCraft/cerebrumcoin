@@ -29,8 +29,22 @@ signals). Injecting metadata["timeframe"] = self._timeframe in _create_signal()
 at the base level means every subclass carries timeframe context for free.
 The default "1m" preserves backward compatibility with all existing generators
 that do not specify a timeframe.
+
+@decision DEC-DIAG-003
+@title Outlier-rejection filter in SignalGenerator for bimodal price feeds
+@status accepted
+@rationale Session 43 confirmed a bimodal NVDA price distribution (two clusters:
+~$103 and ~$210, 2:1 ratio, 14,543 ticks). The anomaly was actively producing buy
+signals on spurious $210 prices. The filter uses a rolling median (robust to the
+outliers themselves) over the last `outlier_window` ticks. Any tick deviating more
+than `outlier_deviation_threshold` (default 50%) from the median is rejected before
+entering _data. Cold-start guard (outlier_min_ticks = window//2) prevents false
+rejects during accumulation. Both window and threshold are configurable kwargs so
+individual generators can tune the filter for their symbol's typical volatility.
+All rejections are logged at WARNING level and counted in outlier_rejected_counts.
 """
 
+import statistics
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from decimal import Decimal
@@ -63,6 +77,9 @@ class SignalGenerator(ABC):
         window_size: int = 100,
         name: str | None = None,
         timeframe: str = "1m",
+        outlier_window: int = 20,
+        outlier_deviation_threshold: float = 0.5,
+        outlier_min_ticks: int | None = None,
     ) -> None:
         """
         Initialize signal generator.
@@ -76,6 +93,14 @@ class SignalGenerator(ABC):
                        "4h", "1d"). Stamped into every signal's metadata so
                        downstream aggregators can filter by timeframe.
                        Default "1m" preserves backward compatibility.
+            outlier_window: Number of recent ticks used to compute the rolling
+                median for outlier detection (DEC-DIAG-003). Default 20.
+            outlier_deviation_threshold: Fractional deviation from rolling median
+                that triggers rejection. Default 0.5 (50%). A tick with price P
+                is rejected when abs(P - median) / median > threshold.
+            outlier_min_ticks: Minimum accumulated ticks per symbol before
+                outlier detection activates. During cold-start, all ticks are
+                accepted regardless of deviation. Default: outlier_window // 2.
         """
         self._bus = bus
         self._signal_type = signal_type
@@ -88,6 +113,22 @@ class SignalGenerator(ABC):
             lambda: deque(maxlen=window_size)
         )
 
+        # DEC-DIAG-003: outlier-rejection filter state
+        # _outlier_price_window: rolling deque of recent accepted prices per symbol
+        # used to compute the median reference for deviation checks.
+        self._outlier_window: int = outlier_window
+        self._outlier_deviation_threshold: float = outlier_deviation_threshold
+        self._outlier_min_ticks: int = (
+            outlier_min_ticks
+            if outlier_min_ticks is not None
+            else max(1, outlier_window // 2)
+        )
+        self._outlier_price_window: dict[Symbol, deque] = defaultdict(
+            lambda: deque(maxlen=outlier_window)
+        )
+        # Per-symbol rejection counters — incremented each time a tick is dropped.
+        self._outlier_rejected_counts: dict[Symbol, int] = {}
+
         self._log = logger.bind(component=f"signal_{self._name}")
 
         # Subscribe to market data
@@ -97,18 +138,70 @@ class SignalGenerator(ABC):
             subscriber_name=self._name,
         )
 
-        self._log.info("signal_generator_initialized", window_size=window_size)
+        self._log.info(
+            "signal_generator_initialized",
+            window_size=window_size,
+            outlier_window=outlier_window,
+            outlier_deviation_threshold=outlier_deviation_threshold,
+            outlier_min_ticks=self._outlier_min_ticks,
+        )
+
+    def _is_outlier_tick(self, symbol: Symbol, price: float) -> bool:
+        """Return True if this tick's price is an outlier vs the rolling median.
+
+        Uses the rolling median of the last outlier_window accepted prices.
+        During cold-start (fewer than outlier_min_ticks accumulated for this
+        symbol), always returns False so all ticks are accepted.
+
+        DEC-DIAG-003: median is used (not mean) because the mean is polluted by
+        the very outliers we want to detect. For the NVDA bimodal case, median
+        of 20 ~$103 ticks = ~$103; a $210 tick deviates 103% > 50% threshold.
+        """
+        price_window = self._outlier_price_window[symbol]
+        if len(price_window) < self._outlier_min_ticks:
+            return False  # cold-start: accept all ticks
+
+        median = statistics.median(price_window)
+        if median == 0.0:
+            return False  # avoid division by zero for zero-price edge case
+
+        deviation = abs(price - median) / abs(median)
+        return deviation > self._outlier_deviation_threshold
 
     async def _on_market_data(self, event: Event) -> None:
         """
         Handle incoming market data events.
 
         Accumulates data and triggers signal generation when ready.
+        Outlier ticks (DEC-DIAG-003) are rejected before entering _data so
+        that RSI, Bollinger Band, and other indicator calculations are not
+        polluted by bimodal price feeds (e.g., NVDA split-adjusted anomaly
+        in Session 43: two clusters at ~$103 and ~$210).
         """
         if not isinstance(event, MarketDataEvent):
             return
 
         symbol = event.symbol
+        price = float(event.price)
+
+        # DEC-DIAG-003: outlier filter — reject before accumulation
+        if self._is_outlier_tick(symbol, price):
+            self._outlier_rejected_counts[symbol] = (
+                self._outlier_rejected_counts.get(symbol, 0) + 1
+            )
+            self._log.warning(
+                "outlier_tick_rejected",
+                symbol=symbol,
+                price=price,
+                rejection_count=self._outlier_rejected_counts[symbol],
+                outlier_window=self._outlier_window,
+                threshold=self._outlier_deviation_threshold,
+            )
+            return  # do not add to _data or update price window
+
+        # Accepted tick: update the rolling price window used for median
+        self._outlier_price_window[symbol].append(price)
+
         self._data[symbol].append(event)
 
         # Only generate signal if we have enough data
@@ -125,6 +218,16 @@ class SignalGenerator(ABC):
                     strength=str(signal.strength),
                     confidence=str(signal.confidence),
                 )
+
+    @property
+    def outlier_rejected_counts(self) -> dict[str, int]:
+        """Return a copy of per-symbol outlier rejection counters.
+
+        Keys are symbol strings (e.g. "NVDA"). Values are the number of ticks
+        rejected as outliers since this generator was created (DEC-DIAG-003).
+        Returns a copy so callers cannot mutate the live dict.
+        """
+        return dict(self._outlier_rejected_counts)
 
     @abstractmethod
     def _generate_signal(

@@ -155,6 +155,20 @@ class SignalAggregator:
         # Per-regime learned weights (updated by WeightAdapter)
         self._regime_weights: dict[str, dict[SignalType, Decimal]] = {}
 
+        # @decision DEC-DIAG-001
+        # @title regime_damped counter for BEAR buy-suppression observability
+        # @status accepted
+        # @rationale The BEAR buy-suppression path (DEC-REGIME-002) silently multiplied
+        # buy_score_norm by 0.2 without recording that dampening occurred. In Session 43,
+        # signal→fill conversion was 0.0008% — knowing how many signals were damped (vs.
+        # blocked by risk rules) is critical for diagnosing gate starvation. Counter is
+        # per-symbol so the dashboard can show which symbols were most suppressed.
+        # regime_damped_detail records the last 200 suppression events as structured dicts
+        # (symbol, strategy_id, multiplier, timestamp) for deeper analysis.
+        self._regime_damped_counts: dict[str, int] = {}
+        self._regime_damped_detail: list[dict] = []
+        self._regime_damped_detail_maxlen: int = 200
+
         # Bind log with strategy context if present
         self._log = logger.bind(
             component="signal_aggregator",
@@ -352,6 +366,30 @@ class SignalAggregator:
         # the BEAR regime was misclassified as SIDEWAYS and buy signals fired freely.
         if self._current_regime == "BEAR" and self._regime_confidence >= self._buy_suppression_min_confidence:
             buy_score_norm *= self._buy_suppression_factor
+            # DEC-DIAG-001: record suppression in regime_damped counters so the dashboard
+            # can distinguish "signal suppressed by BEAR regime" from "signal blocked by
+            # risk rule". Only recorded when there was actually a positive buy score to
+            # suppress (buy_weight_sum > 0), i.e., a real buy signal was dampened.
+            if buy_weight_sum > Decimal("0"):
+                self._regime_damped_counts[symbol] = (
+                    self._regime_damped_counts.get(symbol, 0) + 1
+                )
+                entry = {
+                    "symbol": symbol,
+                    "strategy_id": self._strategy_id,
+                    "multiplier": str(self._buy_suppression_factor),
+                    "timestamp": current_time,
+                    "regime_confidence": str(self._regime_confidence),
+                }
+                self._regime_damped_detail.append(entry)
+                if len(self._regime_damped_detail) > self._regime_damped_detail_maxlen:
+                    self._regime_damped_detail = self._regime_damped_detail[-self._regime_damped_detail_maxlen:]
+                self._log.debug(
+                    "regime_buy_suppressed",
+                    symbol=symbol,
+                    multiplier=str(self._buy_suppression_factor),
+                    regime_confidence=str(self._regime_confidence),
+                )
 
         # Determine aggregate action and strength
         if buy_score_norm > sell_score_norm:
@@ -464,3 +502,24 @@ class SignalAggregator:
             regime=event.to_regime,
             weights={k.value: str(v) for k, v in self._weights.items()},
         )
+
+    @property
+    def regime_damped_counts(self) -> dict[str, int]:
+        """Return a copy of per-symbol BEAR-suppression counters.
+
+        Keys are symbol strings (e.g. "BTC/USD"). Values are the number of times
+        a buy signal for that symbol was dampened by the BEAR regime multiplier
+        (DEC-DIAG-001). Returns a copy so callers cannot mutate the live dict.
+        """
+        return dict(self._regime_damped_counts)
+
+    @property
+    def regime_damped_detail(self) -> list[dict]:
+        """Return a copy of the last N BEAR-suppression event records.
+
+        Each entry is a dict with keys: symbol, strategy_id, multiplier,
+        timestamp, regime_confidence. Capped at _regime_damped_detail_maxlen
+        (default 200) to avoid unbounded memory growth.
+        Returns a shallow copy of the list; individual dicts are not copied.
+        """
+        return list(self._regime_damped_detail)
