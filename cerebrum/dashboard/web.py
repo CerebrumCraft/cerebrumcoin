@@ -412,6 +412,21 @@ class WebDashboard:
             """Guard denial counts per strategy and per rule."""
             return self._build_denials_payload()
 
+        @app.get("/api/denials/by-strategy")
+        async def get_denials_by_strategy() -> dict:
+            """Per-strategy denial breakdown including aggregator regime_damped counts.
+
+            @decision DEC-DIAG-002
+            @title /api/denials/by-strategy — canonical per-strategy denial endpoint
+            @status accepted
+            @rationale /api/denials wraps counts under a "denials" key. This endpoint
+            uses "by_strategy" as the stable top-level key and also merges
+            regime_damped_counts from each strategy's SignalAggregator (DEC-DIAG-001)
+            — those are invisible to /api/denials because damping occurs before signals
+            reach the RiskManager. GET-only, read-only — does not mutate any state.
+            """
+            return self._build_denials_by_strategy_payload()
+
         @app.get("/api/conductor")
         async def get_conductor() -> dict:
             """Conductor state: last allocations, mode, copilot pending."""
@@ -733,6 +748,43 @@ class WebDashboard:
             else:
                 result[name] = {}
         return {"denials": result}
+
+    def _build_denials_by_strategy_payload(self) -> dict:
+        """Build per-strategy denial breakdown for /api/denials/by-strategy.
+
+        Merges two sources of suppression data:
+        1. RiskManager.denial_counts — hard DENY decisions from risk rules
+           (min_signal_strength, position_sizing, regime_halt, etc.)
+        2. SignalAggregator.regime_damped_counts — soft damping by the BEAR
+           buy-suppression multiplier (DEC-DIAG-001). These never reach the
+           RiskManager because the signal is weakened below threshold before
+           being emitted. Prefixed with "regime_damped_" to distinguish from
+           hard denials.
+
+        Returns:
+            {"by_strategy": {strategy_id: {rule_or_reason: count}}}
+        """
+        result: dict[str, Any] = {}
+        for name in self._registry.active_strategy_names():
+            counts: dict[str, int] = {}
+
+            # Source 1: RiskManager hard denials
+            risk_mgr = self._registry.get_risk_manager(name)
+            if risk_mgr and hasattr(risk_mgr, "denial_counts"):
+                counts.update(risk_mgr.denial_counts)
+
+            # Source 2: Aggregator regime-damped soft suppressions (DEC-DIAG-001)
+            aggregator = self._registry.get_aggregator(name)
+            if aggregator and hasattr(aggregator, "regime_damped_counts"):
+                for symbol, damped_count in aggregator.regime_damped_counts.items():
+                    # Prefix with "regime_damped_" so the caller can distinguish
+                    # from hard rule denials. Symbol is appended for per-symbol
+                    # visibility (e.g., "regime_damped_BTC/USD").
+                    counts[f"regime_damped_{symbol}"] = damped_count
+
+            result[name] = counts
+
+        return {"by_strategy": result}
 
     def _build_conductor_payload(self) -> dict:
         """Build Conductor state payload."""

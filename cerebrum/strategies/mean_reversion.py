@@ -157,5 +157,29 @@ MEAN_REVERSION_CONFIG = StrategyConfig(
     # StrategyRegistry(pool_usd=...) → pool/N dynamic allocation (DEC-ALLOC-INITIAL-001).
     # This value is ignored at runtime when pool_usd is set on the registry.
     # Keep for reference; used only in legacy/backtest paths without pool_usd.
+    # @decision DEC-DIAG-004
+    # @title mean_reversion ETH-only symbol gate — diagnosis of why BTC/SOL/DOGE don't trade
+    # @status accepted
+    # @rationale Session 43 (2026-04-27): mean_reversion produced 3 fills, all ETH/USD.
+    # BTC/SOL/DOGE show zero fills despite active signals. Root cause is this symbols list:
+    # the SignalAggregator symbol filter (DEC-STOCKS-005) drops all non-ETH signals before
+    # aggregation — they never reach the RiskManager at all. This is intentional per
+    # DEC-TUNE-013 (SOL removed: 0% WR on 10 trades, -$28.90 in session 28).
+    # BTC was never added to mean_reversion. DOGE likewise never added.
+    #
+    # Gate chain for mean_reversion (why a BTC/USD signal never becomes an order):
+    # 1. SignalAggregator._symbol_allowed("BTC/USD") → False (not in ["ETH/USD"])
+    #    → signal dropped before aggregation, never emitted as COMBINED
+    # 2. RiskManager never sees BTC/USD signals from this strategy pipeline
+    # 3. min_signal_strength=0.5 in risk_overrides is irrelevant for BTC/SOL/DOGE
+    #    because they don't reach the risk layer at all
+    #
+    # Commission-floor math for ETH/USD at current config:
+    # pool=$10k, N=3 strategies → per-strategy $3,333 × 7% × 0.5-strength-floor = $116 > $100 min
+    # Math passes for ETH at ~$2,000 (notional order ≥ $116 buys 0.058 ETH, fees ~$0.12)
+    #
+    # To add BTC: append "BTC/USD" here. Commission floor: $3,333×7%×0.5 = $116 → 0.0023 BTC
+    # at $50k price — well above $100 floor. Consider per-symbol cooldowns to avoid
+    # correlated entries across crypto pairs.
     symbols=["ETH/USD"],  # DEC-TUNE-013: SOL removed — 0% WR on 10 trades (-$28.90) in session 28; ETH-only
 )
