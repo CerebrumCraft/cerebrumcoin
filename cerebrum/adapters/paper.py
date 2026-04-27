@@ -529,28 +529,42 @@ class PaperTradingAdapter(ExchangeAdapter):
         """
         Return the total USD equity held by this adapter.
 
-        Includes free USD cash plus the mark-to-market value of any open
+        Includes free USD cash plus the signed mark-to-market value of all open
         positions at the last known price. Used by the Conductor to refresh
         ``DarwinianAllocator._total_capital`` before each allocation cycle so
         that realised P&L is reflected in target balances (Bug B fix).
 
+        Defense-in-depth companion to DEC-EQUITY-002: the ``amount > 0``
+        filter was dropped so short positions (negative amount) correctly reduce
+        equity, matching the signed arithmetic in PortfolioTracker.get_total_equity()
+        (DEC-RISK-003). The paper adapter does not currently open shorts via
+        execute_order, but callers such as CLI tooling and position-invariant
+        checks should see the correct signed value.
+
         When a position's price is unknown (no MARKET_DATA tick yet), its
-        contribution is omitted — this is conservative and matches the
-        behaviour of ``get_portfolio_summary()``.
+        contribution is omitted — conservative, matches prior behaviour.
         """
         total = self._balances.get("USD", Decimal("0"))
         for symbol, amount in self._positions.items():
-            if amount > Decimal("0") and symbol in self._current_prices:
+            if symbol in self._current_prices:
                 total += amount * self._current_prices[symbol]
         return total
 
     def get_portfolio_summary(self) -> dict[str, Any]:
-        """Get current portfolio state for monitoring."""
+        """Get current portfolio state for monitoring.
+
+        Defense-in-depth companion to DEC-EQUITY-002: the ``amount > 0``
+        filter was dropped so short positions are included in total_value_usd.
+        Matches the signed arithmetic used by PortfolioTracker.get_total_equity()
+        (DEC-RISK-003). The ``symbol in self._current_prices`` guard is preserved
+        — a position with no known price is omitted rather than valued at zero.
+        """
         total_value = self._balances.get("USD", Decimal("0"))
 
-        # Add value of positions
+        # Signed MTM: long positions add value, short positions subtract.
+        # Drop the pre-fix `amount > 0` filter that silently excluded shorts.
         for symbol, amount in self._positions.items():
-            if amount > 0 and symbol in self._current_prices:
+            if symbol in self._current_prices:
                 total_value += amount * self._current_prices[symbol]
 
         return {

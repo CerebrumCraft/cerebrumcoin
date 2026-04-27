@@ -1167,25 +1167,30 @@ class TestPhase12FRoutesRegistered:
 
 
 class TestGetGlobalEquityPaperAdapterGroundTruth:
-    """With paper_adapter set, _get_global_equity uses adapter as ground truth.
+    """_get_global_equity() uses per-strategy PortfolioTrackers as single source of truth.
 
-    Root cause fixed: GlobalPortfolio.get_total_equity() sums all 6 strategy
-    PortfolioTracker equities, double-counting capital because each tracker
-    holds its own cash allocation + position marks independently of the real
-    exchange state (~$11,200 displayed vs ~$9,994 actual). Using
-    PaperTradingAdapter.get_portfolio_summary() as the single source of truth
-    corrects this display bug.
+    DEC-EQUITY-002: After DEC-ALLOC-INITIAL-001 (pool_usd / N per strategy), the
+    double-counting concern that motivated the paper-adapter path is gone. The adapter
+    path had a separate _current_prices dict that desynced from Position.current_price
+    on every tick, producing per-strategy oscillation against a flat global line
+    (Session 43 user report). Fix: sum registry trackers in both paper and live modes.
     """
 
     @pytest.mark.asyncio
-    async def test_with_paper_adapter_returns_adapter_value(
+    async def test_with_paper_adapter_returns_tracker_sum(
         self, bus, registry, conductor, global_portfolio
     ):
-        """_get_global_equity() returns adapter total_value_usd, not GlobalPortfolio sum."""
+        """_get_global_equity() returns sum(tracker equities), not paper adapter value.
+
+        DEC-EQUITY-002: paper_adapter is passed but _get_global_equity() must NOT
+        call get_portfolio_summary() on it. The fix sums per-strategy trackers
+        from the registry — same source used by the per-strategy equity chart.
+        Three strategies at $10,000 each (no fills yet) → sum = $30,000.
+        """
         from unittest.mock import MagicMock
         paper_adapter = MagicMock()
         paper_adapter.get_portfolio_summary.return_value = {
-            "total_value_usd": "9994.00",
+            "total_value_usd": "9994.00",   # adapter value — must NOT be used
             "balances": {"USD": "9994.00"},
             "positions": {},
             "trade_count": 42,
@@ -1203,17 +1208,27 @@ class TestGetGlobalEquityPaperAdapterGroundTruth:
         )
 
         result = d._get_global_equity()
-        assert result == Decimal("9994.00")
+        # Post-fix: returns tracker sum (3 × $10k = $30k), NOT adapter's $9,994
+        assert result == Decimal("30000.00"), (
+            f"Expected tracker sum $30,000 but got {result}. "
+            f"If $9994.00 is returned, _get_global_equity() still uses the paper_adapter path."
+        )
+        # Confirm paper adapter was NOT consulted
+        paper_adapter.get_portfolio_summary.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_build_strategies_payload_uses_adapter_equity(
+    async def test_build_strategies_payload_uses_tracker_equity(
         self, bus, registry, conductor, global_portfolio
     ):
-        """_build_strategies_payload()['global_equity'] reflects adapter value, not inflated sum."""
+        """_build_strategies_payload()['global_equity'] reflects tracker sum, not adapter value.
+
+        DEC-EQUITY-002: Both the global equity line and per-strategy curves now
+        read from the same PortfolioTracker instances — no desync is possible.
+        """
         from unittest.mock import MagicMock
         paper_adapter = MagicMock()
         paper_adapter.get_portfolio_summary.return_value = {
-            "total_value_usd": "9994.00",
+            "total_value_usd": "9994.00",   # adapter value — must NOT be used
             "balances": {"USD": "9994.00"},
             "positions": {},
             "trade_count": 5,
@@ -1231,9 +1246,11 @@ class TestGetGlobalEquityPaperAdapterGroundTruth:
         )
 
         payload = d._build_strategies_payload()
-        # GlobalPortfolio for 3 strategies at $10k each = $30k (inflated).
-        # The adapter returns $9,994 — dashboard must use the adapter value.
-        assert payload["global_equity"] == pytest.approx(9994.0)
+        # Post-fix: tracker sum = 3 × $10k = $30,000, NOT adapter's $9,994
+        assert payload["global_equity"] == pytest.approx(30000.0), (
+            f"Expected $30,000 (tracker sum) but got {payload['global_equity']}. "
+            f"If $9994.0, _get_global_equity() still reads from paper_adapter."
+        )
 
     @pytest.mark.asyncio
     async def test_without_paper_adapter_falls_back_to_global_portfolio(
