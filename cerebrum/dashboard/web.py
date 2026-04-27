@@ -236,15 +236,32 @@ class WebDashboard:
     def _get_global_equity(self) -> Decimal:
         """Ground-truth total portfolio equity.
 
-        Uses PaperTradingAdapter.get_portfolio_summary() in paper mode to avoid
-        double-counting six strategy PortfolioTrackers (each holds its own cash
-        allocation + position marks, inflating the sum vs actual adapter state).
-        Falls back to GlobalPortfolio aggregation in live mode.
+        @decision DEC-EQUITY-002
+        @title Global equity = sum of per-strategy trackers (single source of truth)
+        @status accepted
+        @rationale DEC-ALLOC-INITIAL-001 makes pool_usd / N the per-strategy initial
+        balance, so sum(tracker.get_total_equity()) == global pool by construction.
+        DEC-FILL-STRATEGY-ID-001 ensures every fill reaches the right tracker. The
+        previous paper-adapter source had a long-only filter (paper.py:553) and a
+        separate _current_prices dict that desynced from Position.current_price on
+        every tick, producing visible per-strategy oscillation against a flat global
+        line (user-reported: mean_reversion +$100 then gone, range_trading -$10 then
+        back). See also DEC-EQUITY-001 (snapshot timing) which addresses a different race.
+
+        In both paper and live modes, we now aggregate from the same per-strategy
+        PortfolioTracker instances that the per-strategy equity chart (_on_fill) reads.
+        This eliminates the two-source divergence entirely.
         """
-        if self._paper_adapter is not None:
-            summary = self._paper_adapter.get_portfolio_summary()
-            return Decimal(summary["total_value_usd"])
-        return self._global_portfolio.get_total_equity()
+        # Sum per-strategy trackers — identical source for both the global line and the
+        # per-strategy curves.  The old paper-adapter branch is gone: its _current_prices
+        # dict updated from a separate async subscriber and could be one tick behind (or
+        # ahead of) the tracker's Position.current_price, causing oscillation.
+        total = Decimal("0")
+        for name in self._registry.active_strategy_names():
+            portfolio = self._registry.get_portfolio(name)
+            if portfolio is not None:
+                total += portfolio.get_total_equity()
+        return total
 
     def _seed_first_fill_time(self, db_path: "Path") -> None:
         """Seed _first_fill_time from the trades DB so restarts don't reset the clock.
