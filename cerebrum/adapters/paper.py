@@ -297,6 +297,21 @@ class PaperTradingAdapter(ExchangeAdapter):
             # every save — critical for DarwinianAllocator Sharpe feed (DEC-CONDUCTOR-008).
             await asyncio.sleep(0)
 
+            # @decision DEC-RECONCILE-002
+            # @title In-session post-fill position invariant + fix-up mirrors startup reconciliation
+            # @status accepted
+            # @rationale The startup reconciliation (DEC-RECONCILE-001) only runs at
+            # connect() time. Without a per-fill check, snapshot drift re-accumulates
+            # during the session (~2,000 insufficient_position warnings per overnight run).
+            # After the asyncio.sleep(0) yield above, all PortfolioTrackers have processed
+            # the fill. We now check: sum(tracker.positions[symbol]) == paper.positions[symbol]
+            # for the filled symbol. On violation we log `position_invariant_violated` and
+            # run the same scale-down/zero-out logic as DEC-RECONCILE-001. The check is
+            # O(S) where S = number of registered strategies (typically 1–3). No new
+            # abstractions introduced — uses the same tracker._positions attribute access
+            # as the startup reconciliation in main.py.
+            self._check_position_invariant(order.symbol)
+
             # Save state after PortfolioTracker has processed the fill
             self._save_state()
 
@@ -343,6 +358,74 @@ class PaperTradingAdapter(ExchangeAdapter):
             "strategy_portfolios_registered",
             strategies=list(portfolios.keys()),
         )
+
+    def _check_position_invariant(self, symbol: Symbol) -> None:
+        """
+        Assert per-strategy tracker positions sum to the paper adapter amount for symbol.
+
+        Called after every fill (post asyncio.sleep(0) yield) to catch in-session
+        snapshot drift before it accumulates. If the invariant is violated, logs
+        `position_invariant_violated` and runs the same reconciliation logic as
+        the startup DEC-RECONCILE-001 pass in main.py:
+        - If paper has none: zero out all tracker positions for this symbol.
+        - If tracker total exceeds paper: scale each tracker position down proportionally.
+
+        This is O(S) per fill where S = number of registered strategies (1–3 typical).
+        No new abstractions — uses the same _positions attribute access pattern as
+        main.py's startup reconciliation. See DEC-RECONCILE-002.
+
+        Args:
+            symbol: The symbol to check (the one that was just filled).
+        """
+        if not self._strategy_portfolios:
+            return  # no trackers registered — single-strategy or backtest mode
+
+        paper_amount = self._positions.get(symbol, Decimal("0"))
+
+        tracker_total = sum(
+            pt._positions[symbol].amount
+            for pt in self._strategy_portfolios.values()
+            if symbol in pt._positions
+        )
+
+        # Floating-point epsilon for Decimal comparison
+        epsilon = Decimal("0.0001")
+        if tracker_total <= paper_amount + epsilon:
+            return  # invariant holds
+
+        # Violation detected — log and reconcile
+        self._log.warning(
+            "position_invariant_violated",
+            symbol=symbol,
+            tracker_total=str(tracker_total),
+            paper_amount=str(paper_amount),
+        )
+
+        if paper_amount == Decimal("0"):
+            # Paper has none — zero out all tracker positions for this symbol
+            for pt in self._strategy_portfolios.values():
+                if symbol in pt._positions:
+                    pt._positions[symbol].amount = Decimal("0")
+            self._log.warning(
+                "position_reconciled_zeroed",
+                symbol=symbol,
+                portfolio_total=str(tracker_total),
+                source="in_session_invariant",
+            )
+        else:
+            # Tracker total exceeds paper — scale each strategy down proportionally
+            scale = paper_amount / tracker_total
+            for pt in self._strategy_portfolios.values():
+                if symbol in pt._positions:
+                    pt._positions[symbol].amount = pt._positions[symbol].amount * scale
+            self._log.warning(
+                "position_reconciled_scaled",
+                symbol=symbol,
+                portfolio_total=str(tracker_total),
+                paper_amount=str(paper_amount),
+                scale_factor=str(scale),
+                source="in_session_invariant",
+            )
 
     def get_strategy_snapshot(self, name: str) -> dict | None:
         """
