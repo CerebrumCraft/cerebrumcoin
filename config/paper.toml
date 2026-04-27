@@ -55,8 +55,17 @@ macro_volatility_window_size = 18000    # ~5 hours at 1 tick/sec
 adaptive_tp = true
 tp_multiplier = "1.5"   # effective_tp = range_pct * 1.5 (e.g. 0.4% range -> 0.6% TP)
 min_tp_percent = "0.3"  # Floor: never set TP below 0.3% (covers commission)
-# Commission gate: deny orders when range < commission*2*ratio (0.16%*2*3.0 = 0.96% threshold)
-min_profit_to_commission_ratio = "3.0"  # 3x round-trip commission required in recent range
+# Commission gate: deny orders when range < commission*2*ratio (0.16%*2*2.0 = 0.64% threshold)
+# @decision DEC-COMMISSION-RATIO-001
+# @title Tune min_profit_to_commission_ratio 3.0 → 2.0 to reduce commission_gate denials
+# @status accepted
+# @rationale Session 43 /api/denials showed commission_gate as the second-largest gate on
+# mean_reversion (188 denials) with the old ratio=3.0 requiring a ~0.96% recent range to clear.
+# Kraken paper commission ≈ 0.16%/side → 0.32% round-trip. Old: 3.0 × 0.32% = 0.96% required.
+# New: 2.0 × 0.32% = 0.64% required. A 0.64% threshold still provides a 2× margin over
+# round-trip commission cost, which is sufficient protection against commission-dominated
+# trades. The default.toml already uses 2.0; this brings paper.toml in line.
+min_profit_to_commission_ratio = "2.0"  # 2x round-trip commission required in recent range
 max_open_positions_per_symbol = 2  # DEC-RISK-005: cap prevents position pile-up
 min_hold_minutes = 15  # DEC-EXIT-006: skip SL/TP exits for first 15 min to reduce premature commission-generating exits
 # --- Market hours gate (DEC-STOCKS-003) — added for stocks ---

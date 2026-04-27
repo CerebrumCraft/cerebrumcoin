@@ -648,7 +648,21 @@ class WebDashboard:
             self._commission_totals.get(strategy, 0.0) + commission_usd
         )
 
+        # @decision DEC-EQUITY-001
+        # @title Yield before per-strategy equity snapshot so trackers process fill first
+        # @status accepted
+        # @rationale The event bus delivers FillEvents to all subscriber queues
+        # concurrently. When _on_fill is invoked, PortfolioTracker._on_fill may not
+        # have run yet — both sit in their own async task queues. Snapshotting equity
+        # immediately produces pre-fill (stale) values, causing per-strategy charts to
+        # show phantom sloshing (the sum stays at pool_usd even after profitable trades).
+        # A single asyncio.sleep(0) yields to the event loop, allowing all PortfolioTracker
+        # _on_fill tasks to run before we read their equity. This mirrors the same fix
+        # applied in paper.py _save_state (DEC-FILL-STRATEGY-ID-001).
+        await asyncio.sleep(0)
+
         # Phase 12F: snapshot per-strategy equity for equity curves
+        # Equity is read AFTER yield so trackers have processed the fill (DEC-EQUITY-001).
         for name in self._registry.active_strategy_names():
             portfolio = self._registry.get_portfolio(name)
             if portfolio:
