@@ -157,8 +157,10 @@ prices = state.get("current_prices", {})
 strat_total = 0.0
 for strat_id, snap in snapshots.items():
     equity = float(snap["cash_balance"])
-    for sym, qty in snap.get("positions", {}).items():
-        qty_f = float(qty)
+    for sym, pos in snap.get("positions", {}).items():
+        # v4 schema: snapshot positions are dicts {amount, average_entry_price, ...}
+        # v3 and earlier: raw quantity strings. Support both for backward compat.
+        qty_f = float(pos["amount"]) if isinstance(pos, dict) else float(pos)
         if sym in prices and qty_f != 0.0:
             equity += qty_f * float(prices[sym])
     strat_total += equity
