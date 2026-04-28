@@ -220,7 +220,8 @@ if [[ ! -f "$DB_FILE" ]]; then
     echo "[SKIP] No database at $DB_FILE — check skipped"
     WARN=$((WARN + 1))
 else
-    python3 - "$STATE_FILE" "$DB_FILE" <<'PYEOF'
+    CHECK5_EXIT=0
+    python3 - "$STATE_FILE" "$DB_FILE" <<'PYEOF' || CHECK5_EXIT=$?
 import json, sys, subprocess
 
 state_file, db_file = sys.argv[1], sys.argv[2]
@@ -251,14 +252,15 @@ else:
     print("[WARN] SQLite vs JSON closed-trade mismatch (known Session 43 discrepancy):")
     for strat_id, jc, dc in mismatches:
         print(f"       {strat_id}: JSON={jc}  SQLite={dc}")
-    # WARN only — exit 0, does not set FAIL
-    sys.exit(0)
+    # WARN only — exit 2 signals bash to call warn(); does not set FAIL
+    sys.exit(2)
 PYEOF
-    CHECK5_EXIT=$?
-    if [[ $CHECK5_EXIT -ne 0 ]]; then
-        WARN=$((WARN + 1))
-    else
+    if [[ $CHECK5_EXIT -eq 0 ]]; then
         PASS=$((PASS + 1))
+    elif [[ $CHECK5_EXIT -eq 2 ]]; then
+        warn "SQLite vs JSON closed-trade mismatch — see details above"
+    else
+        FAIL=$((FAIL + 1))
     fi
 fi
 echo ""
