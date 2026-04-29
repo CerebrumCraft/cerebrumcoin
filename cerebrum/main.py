@@ -725,7 +725,20 @@ class CerebrumCoin:
         # self.strategy_registry.register(MOMENTUM_CONFIG)
         self.strategy_registry.register(MEAN_REVERSION_CONFIG)
         # self.strategy_registry.register(BREAKOUT_CONFIG)
-        self.strategy_registry.register(RANGE_TRADING_CONFIG)
+        # @decision DEC-TUNE-018
+        # @title range_trading config-gated via [strategy.range_trading].enabled
+        # @status accepted
+        # @rationale Sessions 44 (6h 53m) and 45 (5h+) both produced 0 fills for
+        #   range_trading. Dominant denial: volatility_gate (62.5% of denials in
+        #   Session 44). The global volatility_gate is calibrated for explosive moves
+        #   while range_trading targets calm S/R bands — structural conflict in the
+        #   current vol regime. Config gate lets operators pause without a code change.
+        #   Default=True preserves backward compat for sessions without the flag set.
+        #   Re-enable when vol regime supports band trading or after a per-strategy
+        #   vol_gate refactor. See MEMORY.md "Watch-item for Session 45 analysis".
+        _range_cfg = self._raw_toml.get("strategy", {}).get("range_trading", {})
+        if _range_cfg.get("enabled", True):
+            self.strategy_registry.register(RANGE_TRADING_CONFIG)
         # @decision DEC-TUNE-005
         # @title Disable swing_trading — Session 18 sole loser
         # @status accepted

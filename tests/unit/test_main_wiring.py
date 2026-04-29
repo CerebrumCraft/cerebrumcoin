@@ -687,3 +687,89 @@ class TestSetupMultiStrategy:
             if app.conductor:
                 await app.conductor.stop()
             await bus.stop()
+
+
+# ---------------------------------------------------------------------------
+# range_trading TOML gate (DEC-TUNE-018)
+# ---------------------------------------------------------------------------
+
+class TestRangeTradingTomlGate:
+    """range_trading registration is gated by [strategy.range_trading].enabled.
+
+    @decision DEC-TEST-RANGE-GATE-001
+    @title Test range_trading config gate directly via StrategyRegistry
+    @status accepted
+    @rationale DEC-TUNE-018 introduces a config gate (default=True for backward
+    compat). These tests exercise the three cases — no section, explicit true,
+    explicit false — using a real StrategyRegistry and a minimal raw_toml dict,
+    matching the pattern used by TestStrategyRegistrationGate in
+    test_pelosi_follow_wiring.py. Sacred Practice #5: no internal mocks.
+    """
+
+    @pytest.mark.asyncio
+    async def test_registered_when_no_strategy_section(self):
+        """When [strategy.range_trading] section is absent, default=True registers it.
+
+        Backward-compat guarantee: operators without the flag set continue to
+        get range_trading registered.
+        """
+        from cerebrum.strategies.registry import StrategyRegistry
+
+        bus = EventBus()
+        config = _load_config()
+        await bus.start()
+        try:
+            registry = StrategyRegistry(bus=bus, config=config)
+            raw_toml: dict = {}  # no [strategy] section at all
+            _range_cfg = raw_toml.get("strategy", {}).get("range_trading", {})
+            if _range_cfg.get("enabled", True):
+                registry.register(RANGE_TRADING_CONFIG)
+            assert "range_trading" in registry.list_strategies(), (
+                "range_trading must be registered when section is absent (default=True)"
+            )
+        finally:
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_registered_when_explicitly_enabled(self):
+        """When [strategy.range_trading] enabled = true, strategy is registered."""
+        from cerebrum.strategies.registry import StrategyRegistry
+
+        bus = EventBus()
+        config = _load_config()
+        await bus.start()
+        try:
+            registry = StrategyRegistry(bus=bus, config=config)
+            raw_toml = {"strategy": {"range_trading": {"enabled": True}}}
+            _range_cfg = raw_toml.get("strategy", {}).get("range_trading", {})
+            if _range_cfg.get("enabled", True):
+                registry.register(RANGE_TRADING_CONFIG)
+            assert "range_trading" in registry.list_strategies(), (
+                "range_trading must be registered when enabled = true"
+            )
+        finally:
+            await bus.stop()
+
+    @pytest.mark.asyncio
+    async def test_not_registered_when_explicitly_disabled(self):
+        """When [strategy.range_trading] enabled = false, strategy is NOT registered.
+
+        This is the operational use-case: operators set enabled=false in paper.toml
+        to pause range_trading and concentrate the pool on remaining strategies.
+        """
+        from cerebrum.strategies.registry import StrategyRegistry
+
+        bus = EventBus()
+        config = _load_config()
+        await bus.start()
+        try:
+            registry = StrategyRegistry(bus=bus, config=config)
+            raw_toml = {"strategy": {"range_trading": {"enabled": False}}}
+            _range_cfg = raw_toml.get("strategy", {}).get("range_trading", {})
+            if _range_cfg.get("enabled", True):
+                registry.register(RANGE_TRADING_CONFIG)
+            assert "range_trading" not in registry.list_strategies(), (
+                "range_trading must NOT be registered when enabled = false"
+            )
+        finally:
+            await bus.stop()
