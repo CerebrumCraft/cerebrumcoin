@@ -42,6 +42,25 @@ entering _data. Cold-start guard (outlier_min_ticks = window//2) prevents false
 rejects during accumulation. Both window and threshold are configurable kwargs so
 individual generators can tune the filter for their symbol's typical volatility.
 All rejections are logged at WARNING level and counted in outlier_rejected_counts.
+
+@decision DEC-DIAG-004
+@title Self-healing outlier filter — consecutive-reject window reset
+@status accepted
+@rationale Session 48 (2026-04-29) exposed a brittle-median-lock-in failure mode
+in DEC-DIAG-003: Alpaca polled a stale $127.885 quote for AAPL during the first
+10.9h of the session (started at 22:16 ET, well outside market hours).  The cold-
+start window absorbed those 10 stale ticks, locked the rolling median at $127.885,
+and then rejected every real $260+ tick for the remaining 33h, producing 192,861
+outlier_tick_rejected log events and causing orb_stocks to take zero fills.
+Root cause: rejected ticks never enter the price window so the median can never
+adapt once locked.  The fix adds a per-symbol consecutive-rejection counter.  After
+`outlier_consecutive_reject_reset` consecutive rejections (default 60 — approx 5
+minutes at 5-second polling) the window is cleared and the cold-start guard re-
+engages, allowing the next incoming cluster to re-establish the median.  Any
+accepted tick resets the consecutive counter to 0.
+DEC-DIAG-003 (NVDA bimodal case) is preserved: a short burst of bad ticks that is
+shorter than the reset threshold is still rejected without triggering a reset.
+Investigation report: tmp/session-48/INVESTIGATION_aapl_outlier.md
 """
 
 import statistics
@@ -80,6 +99,7 @@ class SignalGenerator(ABC):
         outlier_window: int = 20,
         outlier_deviation_threshold: float = 0.5,
         outlier_min_ticks: int | None = None,
+        outlier_consecutive_reject_reset: int = 60,
     ) -> None:
         """
         Initialize signal generator.
@@ -101,6 +121,13 @@ class SignalGenerator(ABC):
             outlier_min_ticks: Minimum accumulated ticks per symbol before
                 outlier detection activates. During cold-start, all ticks are
                 accepted regardless of deviation. Default: outlier_window // 2.
+            outlier_consecutive_reject_reset: Number of consecutive rejections
+                for a symbol that triggers a full window reset (DEC-DIAG-004).
+                After this many consecutive rejected ticks, the rolling price
+                window is cleared and the cold-start guard re-engages, allowing
+                the real price cluster to re-establish the median.  Any accepted
+                tick resets the counter to 0.  Default: 60 (approx 5 minutes at
+                5-second polling).  Set to 0 to disable the self-healing reset.
         """
         self._bus = bus
         self._signal_type = signal_type
@@ -129,6 +156,13 @@ class SignalGenerator(ABC):
         # Per-symbol rejection counters — incremented each time a tick is dropped.
         self._outlier_rejected_counts: dict[Symbol, int] = {}
 
+        # DEC-DIAG-004: self-healing consecutive-rejection counter.
+        # Tracks how many ticks in a row have been rejected for each symbol.
+        # When it reaches _outlier_consecutive_reject_reset the price window is
+        # cleared and cold-start re-engages.  Any accepted tick resets it to 0.
+        self._outlier_consecutive_reject_reset: int = outlier_consecutive_reject_reset
+        self._outlier_consecutive_rejections: dict[Symbol, int] = {}
+
         self._log = logger.bind(component=f"signal_{self._name}")
 
         # Subscribe to market data
@@ -144,6 +178,7 @@ class SignalGenerator(ABC):
             outlier_window=outlier_window,
             outlier_deviation_threshold=outlier_deviation_threshold,
             outlier_min_ticks=self._outlier_min_ticks,
+            outlier_consecutive_reject_reset=outlier_consecutive_reject_reset,
         )
 
     def _is_outlier_tick(self, symbol: Symbol, price: float) -> bool:
@@ -189,17 +224,48 @@ class SignalGenerator(ABC):
             self._outlier_rejected_counts[symbol] = (
                 self._outlier_rejected_counts.get(symbol, 0) + 1
             )
+            # DEC-DIAG-004: track consecutive rejections for self-healing reset.
+            consecutive = self._outlier_consecutive_rejections.get(symbol, 0) + 1
+            self._outlier_consecutive_rejections[symbol] = consecutive
+
             self._log.warning(
                 "outlier_tick_rejected",
                 symbol=symbol,
                 price=price,
                 rejection_count=self._outlier_rejected_counts[symbol],
+                consecutive_rejections=consecutive,
                 outlier_window=self._outlier_window,
                 threshold=self._outlier_deviation_threshold,
             )
+
+            # DEC-DIAG-004: if consecutive rejections reach the reset threshold,
+            # clear the price window so cold-start re-engages and the real price
+            # cluster can establish a new median.  A threshold of 0 disables this.
+            reset_threshold = self._outlier_consecutive_reject_reset
+            if reset_threshold > 0 and consecutive >= reset_threshold:
+                prior_median = (
+                    statistics.median(self._outlier_price_window[symbol])
+                    if len(self._outlier_price_window[symbol]) >= 1
+                    else None
+                )
+                self._outlier_price_window[symbol].clear()
+                self._outlier_consecutive_rejections[symbol] = 0
+                self._log.warning(
+                    "outlier_filter_window_reset",
+                    symbol=symbol,
+                    prior_median=prior_median,
+                    rejected_tick_count=consecutive,
+                    message=(
+                        "Outlier filter reset after sustained consecutive rejections. "
+                        "Cold-start re-engaged. Real price cluster will re-establish median."
+                    ),
+                )
+
             return  # do not add to _data or update price window
 
-        # Accepted tick: update the rolling price window used for median
+        # Accepted tick: update the rolling price window used for median and
+        # reset the consecutive-rejection counter (DEC-DIAG-004).
+        self._outlier_consecutive_rejections[symbol] = 0
         self._outlier_price_window[symbol].append(price)
 
         self._data[symbol].append(event)

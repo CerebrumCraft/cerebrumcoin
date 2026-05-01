@@ -11,13 +11,33 @@ event bus architecture works across asset classes (crypto + stocks).
 Using the same ExchangeAdapter interface as Kraken demonstrates the event bus
 architecture supports multiple asset classes without core changes. alpaca-py
 is an optional dependency — the system works without it.
+
+@decision DEC-ALPACA-002
+@title Gate stock polling on US market hours (09:30-16:00 ET Mon-Fri)
+@status accepted
+@rationale Session 48 (2026-04-29, started 22:16 ET) exposed a two-layer bug:
+Alpaca's StockLatestQuoteRequest returns a frozen stale quote during off-hours
+(AAPL stuck at $127.885 for the first ~10.9h while the real price was $267+).
+These stale ticks fed the outlier filter's cold-start window, locking the median
+at $127.885 and causing 192,861 outlier_tick_rejected events for AAPL over 44h.
+The orb_stocks strategy took zero fills as a result.
+Fix: before each API call in _poll_market_data(), check _is_market_open() and
+sleep for `poll_interval_seconds` without issuing the request when the market is
+closed. This eliminates the stale-quote feed entirely during off-hours and saves
+Alpaca API quota. Stock quotes have no value when exchanges are closed.
+v1 limitation: no NYSE holiday handling — weekday+time window only. Tracked as
+a known follow-up. US market times: 09:30-16:00 ET, Mon(0)-Fri(4).
+Investigation report: tmp/session-48/INVESTIGATION_aapl_outlier.md
 """
 
 import asyncio
+import datetime
 import os
 from decimal import Decimal
 from time import time
 from typing import Any
+
+import pytz
 
 import structlog
 
@@ -135,8 +155,48 @@ class AlpacaAdapter(ExchangeAdapter):
 
         self._log.info("market_data_subscribed", symbols=symbols)
 
+    _ET = pytz.timezone("America/New_York")
+    _MARKET_OPEN = datetime.time(9, 30)
+    _MARKET_CLOSE = datetime.time(16, 0)
+
+    def _is_market_open(
+        self, now: datetime.datetime | None = None
+    ) -> bool:
+        """
+        Return True if US equity markets are currently open.
+
+        Regular session: Mon-Fri 09:30-16:00 US Eastern Time.
+        v1 limitation: NYSE holidays are NOT handled — weekday + time window
+        only.  This is a known follow-up (see DEC-ALPACA-002).
+
+        Args:
+            now: Timezone-aware datetime to check.  Defaults to current wall
+                 clock time in ET.  Accepts any tz-aware datetime — it is
+                 converted to ET internally.  Passing a value is primarily for
+                 testing.
+        """
+        if now is None:
+            now = datetime.datetime.now(tz=self._ET)
+        else:
+            now = now.astimezone(self._ET)
+
+        # Weekday check: Mon=0 … Fri=4; Sat=5, Sun=6
+        if now.weekday() > 4:
+            return False
+
+        current_time = now.time()
+        return self._MARKET_OPEN <= current_time < self._MARKET_CLOSE
+
     async def _poll_market_data(self, symbol: Symbol) -> None:
-        """Poll market data for a symbol."""
+        """Poll market data for a symbol.
+
+        DEC-ALPACA-002: skips the Alpaca API call when US equity markets are
+        closed (_is_market_open() returns False).  During off-hours Alpaca
+        returns frozen stale quotes that corrupt the outlier filter's cold-start
+        window (Session 48 root cause — see INVESTIGATION_aapl_outlier.md).
+        The poll loop continues running and re-checks every poll_interval_seconds
+        so it picks up trading naturally when the market opens.
+        """
         from alpaca.data.requests import StockLatestQuoteRequest
 
         log = self._log.bind(symbol=symbol)
@@ -144,6 +204,13 @@ class AlpacaAdapter(ExchangeAdapter):
 
         try:
             while self._connected and self._data_client:
+                # DEC-ALPACA-002: gate on market hours — stale off-hours quotes
+                # corrupt the outlier filter's cold-start window.
+                if not self._is_market_open():
+                    log.debug("market_closed_skipping_poll", symbol=symbol)
+                    await asyncio.sleep(self.config.get("poll_interval_seconds", 5))
+                    continue
+
                 try:
                     request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
                     quotes = self._data_client.get_stock_latest_quote(request)
